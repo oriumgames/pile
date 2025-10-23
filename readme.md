@@ -1,5 +1,7 @@
 # Pile
 
+minimal world format for small worlds
+
 ## Overview
 Pile is a single-file world format and provider for Dragonfly server software. It targets small worlds, templates, and user-generated content. Each dimension is stored as a single `.pile` file with paletted blocks/biomes, optional Zstandard compression, and support for streaming/background saves.
 
@@ -45,3 +47,6 @@ World directory (created as needed):
 - Empty sections are extremely compact and compress well
 - Entities/scheduled ticks scale with actual usage
 - If you expect very large worlds, consider a chunk-addressable backend instead
+
+## Acknowledgments
+This work is based on [hollow-cube/go-polar](https://github.com/hollow-cube/go-polar).

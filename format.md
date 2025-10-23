@@ -1,6 +1,6 @@
 # Pile World File Format (v1)
 
-This document describes the binary file format used by Pile, a compact single-file world format inspired by (and forked from) Polar, with several structural and behavioral differences. Pile stores one file per dimension:
+This document describes the binary file format used by Pile, a compact single-file world format based on Polar, with several structural and behavioral differences. Pile stores one file per dimension:
 - overworld: overworld.pile
 - nether: nether.pile
 - end: end.pile
