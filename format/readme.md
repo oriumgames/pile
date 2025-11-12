@@ -35,14 +35,14 @@ import (
 func main() {
     // Create a new world
     world := format.NewWorld(-4, 20) // sections from -4 to 20 (Y: -64 to 319)
-    
+
     // Create a chunk
     chunk := &format.Chunk{
         X: 0,
         Z: 0,
         Sections: make([]*format.Section, 24),
     }
-    
+
     // Add a simple section with stone blocks
     chunk.Sections[0] = &format.Section{
         BlockPalette: []string{"minecraft:stone"},
@@ -50,14 +50,14 @@ func main() {
         BiomePalette: []string{"minecraft:plains"},
         BiomeData:    []int64{},
     }
-    
+
     world.SetChunk(chunk)
-    
+
     // Write to file
     f, _ := os.Create("world.pile")
     defer f.Close()
     format.Write(f, world)
-    
+
     // Read from file
     f2, _ := os.Open("world.pile")
     defer f2.Close()
@@ -203,7 +203,7 @@ for x := int32(-10); x < 10; x++ {
             Z:        z,
             Sections: make([]*format.Section, 24),
         }
-        
+
         // Bedrock layer
         chunk.Sections[4] = &format.Section{
             BlockPalette: []string{"minecraft:bedrock"},
@@ -211,7 +211,7 @@ for x := int32(-10); x < 10; x++ {
             BiomePalette: []string{"minecraft:plains"},
             BiomeData:    []int64{},
         }
-        
+
         // Dirt layers
         for i := 5; i < 8; i++ {
             chunk.Sections[i] = &format.Section{
@@ -221,7 +221,7 @@ for x := int32(-10); x < 10; x++ {
                 BiomeData:    []int64{},
             }
         }
-        
+
         // Grass layer
         chunk.Sections[8] = &format.Section{
             BlockPalette: []string{"minecraft:grass_block"},
@@ -229,7 +229,7 @@ for x := int32(-10); x < 10; x++ {
             BiomePalette: []string{"minecraft:plains"},
             BiomeData:    []int64{},
         }
-        
+
         world.SetChunk(chunk)
     }
 }
@@ -237,44 +237,6 @@ for x := int32(-10); x < 10; x++ {
 f, _ := os.Create("flat_world.pile")
 format.WriteWithCompression(f, world, format.CompressionLevelBest)
 f.Close()
-```
-
-### World Analysis Tool
-```go
-f, _ := os.Open("world.pile")
-world, _ := format.Read(f)
-f.Close()
-
-fmt.Printf("World Info:\n")
-fmt.Printf("  Chunks: %d\n", world.ChunkCount())
-fmt.Printf("  Y Range: %d to %d\n", world.MinSection*16, world.MaxSection*16)
-
-blockCount := make(map[string]int)
-entityCount := make(map[string]int)
-
-for _, chunk := range world.Chunks() {
-    for _, section := range chunk.Sections {
-        if section != nil {
-            for _, block := range section.BlockPalette {
-                blockCount[block]++
-            }
-        }
-    }
-    
-    for _, entity := range chunk.Entities {
-        entityCount[entity.ID]++
-    }
-}
-
-fmt.Println("\nBlock Types:")
-for block, count := range blockCount {
-    fmt.Printf("  %s: %d sections\n", block, count)
-}
-
-fmt.Println("\nEntities:")
-for entity, count := range entityCount {
-    fmt.Printf("  %s: %d\n", entity, count)
-}
 ```
 
 ### Working with Entities
@@ -312,11 +274,49 @@ f2.Close()
 
 chunk = loaded.Chunk(0, 0)
 for _, entity := range chunk.Entities {
-    fmt.Printf("Entity: %s at [%.1f, %.1f, %.1f]\n", 
-        entity.ID, 
-        entity.Position[0], 
-        entity.Position[1], 
+    fmt.Printf("Entity: %s at [%.1f, %.1f, %.1f]\n",
+        entity.ID,
+        entity.Position[0],
+        entity.Position[1],
         entity.Position[2])
+}
+```
+
+### World Analysis Tool
+```go
+f, _ := os.Open("world.pile")
+world, _ := format.Read(f)
+f.Close()
+
+fmt.Printf("World Info:\n")
+fmt.Printf("  Chunks: %d\n", world.ChunkCount())
+fmt.Printf("  Y Range: %d to %d\n", world.MinSection*16, world.MaxSection*16)
+
+blockCount := make(map[string]int)
+entityCount := make(map[string]int)
+
+for _, chunk := range world.Chunks() {
+    for _, section := range chunk.Sections {
+        if section != nil {
+            for _, block := range section.BlockPalette {
+                blockCount[block]++
+            }
+        }
+    }
+
+    for _, entity := range chunk.Entities {
+        entityCount[entity.ID]++
+    }
+}
+
+fmt.Println("\nBlock Types:")
+for block, count := range blockCount {
+    fmt.Printf("  %s: %d sections\n", block, count)
+}
+
+fmt.Println("\nEntities:")
+for entity, count := range entityCount {
+    fmt.Printf("  %s: %d\n", entity, count)
 }
 ```
 
