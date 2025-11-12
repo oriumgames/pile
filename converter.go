@@ -234,9 +234,14 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 
 	// Create Pile sections
 	sections := make([]*Section, sectionCount)
+	subs := ch.Sub()
 
 	for i := range sectionCount {
-		sub := ch.Sub()[i]
+		// Bounds check to prevent panic if chunk has fewer sections than expected
+		if i >= len(subs) {
+			break
+		}
+		sub := subs[i]
 
 		if sub.Empty() {
 			continue

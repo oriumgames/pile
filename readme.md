@@ -9,7 +9,7 @@ Pile is a single-file world format and provider for Dragonfly server software. I
 - Single-file per dimension
 - Configurable compression: none, fast, default, best (Zstd)
 - Paletted storage for blocks and biomes
-- Full chunk data: blocks, biomes, entities, block entities, light, scheduled ticks
+- Full chunk data: blocks, biomes, entities, block entities, scheduled ticks
 - Embedded world metadata (settings)
 - Thread-safe provider with read/write locks
 - Background and streaming saves to reduce stalls/peak memory

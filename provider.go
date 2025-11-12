@@ -328,13 +328,13 @@ func (p *Provider) saveInternal() error {
 		// Streaming write path: Stream chunk-by-chunk to reduce peak memory usage.
 		if p.streamingSaves {
 			if err := writeWorldStreaming(f, d.world, p.compressionLevel); err != nil {
-				f.Close()
+				_ = f.Close() // Ignore error on cleanup path
 				return fmt.Errorf("write(streaming) %s: %w", path, err)
 			}
 		} else {
 			// Legacy path: Buffer entire world before writing.
 			if err := writeWorldWithCompression(f, d.world, p.compressionLevel); err != nil {
-				f.Close()
+				_ = f.Close() // Ignore error on cleanup path
 				return fmt.Errorf("write %s: %w", path, err)
 			}
 		}
@@ -503,20 +503,14 @@ func (p *Provider) EnableBackgroundSaves() {
 func (p *Provider) DisableBackgroundSaves() {
 	p.mu.Lock()
 	stop := p.stopCh
+	// Set to nil to prevent double-close and mark as disabled
 	p.stopCh = nil
-	save := p.saveCh
 	p.saveCh = nil
 	p.mu.Unlock()
 
+	// Signal goroutine to stop
 	if stop != nil {
 		close(stop)
-	}
-	// Drain any remaining pending save signal to allow goroutine to exit if needed.
-	if save != nil {
-		select {
-		case <-save:
-		default:
-		}
 	}
 }
 

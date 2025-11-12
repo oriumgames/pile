@@ -105,8 +105,14 @@ type byteReader struct {
 
 func (br *byteReader) ReadByte() (byte, error) {
 	b := make([]byte, 1)
-	_, err := br.r.Read(b)
-	return b[0], err
+	n, err := br.r.Read(b)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, io.EOF
+	}
+	return b[0], nil
 }
 
 // reader is a helper for reading binary data with convenient typed methods.

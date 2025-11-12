@@ -92,7 +92,7 @@ Chunk:
 
 ## Section encoding
 
-A section is a 16x16x16 cube of blocks and per-block biomes. Data is stored paletted for compactness. Lighting is stored as nibble data with lightweight run encodings.
+A section is a 16x16x16 cube of blocks and per-block biomes. Data is stored paletted for compactness.
 
 Section:
 - Block palette:
@@ -105,19 +105,10 @@ Section:
   - string biome_name[M] (e.g., "minecraft:plains")
   - varint biome_data_len = Lm
   - int64 biome_data[Lm] (paletted indices, bit-packed)
-- Block light:
-  - int8 light_flag
-    - 0 = none (no data follows)
-    - 1 = all zeros (no data follows)
-    - 2 = all 15s (no data follows)
-    - 3 = variable data: exactly 2048 bytes follow (4 bits per block, 2 blocks per byte)
-- Sky light: same structure and flags as block light
 
 Empty section encoding (canonical):
 - Block palette: size = 1, entry = "minecraft:air", block_data_len = 0
 - Biome palette: size = 1, entry = "minecraft:plains", biome_data_len = 0
-- Block light: flag = 0
-- Sky light: flag = 0
 
 ### Paletted int64 packing
 
@@ -129,12 +120,6 @@ Empty section encoding (canonical):
   - The `b` bits for the palette index are written at that offset in the word’s least significant bits.
 - The linear index `i` uses the (x, z, y) ordering described in “Binary conventions”.
 
-### Light nibble packing
-
-When `light_flag == 3`, 2048 bytes follow:
-- Each byte contains two 4-bit values (nibbles): index `i` even stored in the low nibble, index `i` odd stored in the high nibble.
-- The same linear index mapping (x, z, y) is used.
-
 ---
 
 ## Block entities
@@ -143,9 +128,9 @@ When `light_flag == 3`, 2048 bytes follow:
 - block_entity[block_entity_count]
 
 block_entity:
-- uint32 packed_xz
+- uint8 packed_xz
   - x: bits 0..3 (0..15), z: bits 4..7 (0..15)
-  - Note: only 4 bits are used for each of x and z (local within the 16x16 chunk). Older comments may imply a wider packing; the actual encoding is 4 bits per axis here.
+  - Only 4 bits are used for each of x and z (local within the 16x16 chunk).
 - int32 y (absolute Y)
 - string id (e.g., "minecraft:chest")
 - bytes data (NBT compound, uninterpreted by the format)
@@ -174,7 +159,7 @@ Notes:
 - scheduled_tick[scheduled_tick_count]
 
 scheduled_tick:
-- uint32 packed_xz (same 4-bit-per-axis packing as block entities)
+- uint8 packed_xz (same 4-bit-per-axis packing as block entities)
 - int32 y (absolute Y)
 - string block (block identifier who owns the tick, e.g., "minecraft:oak_sapling")
 - varint tick (int64; absolute tick time)
@@ -254,21 +239,9 @@ Readers:
 
 ---
 
-## Differences from Polar (high-level)
-
-- Per-dimension files (overworld.pile, nether.pile, end.pile) with a shared world settings blob stored in the overworld’s `world_user_data`.
-- Streaming save path supported: the uncompressed length field in the header is not authoritative and must be ignored.
-- Explicit entity records: identifier and UUID precede the NBT payload.
-- Scheduled block ticks stored per chunk with compact local XZ packing and absolute Y and tick times.
-- Section light uses a small flag scheme (none/all-0/all-15/raw 2048 bytes) to reduce redundancy.
-- Biomes are stored per-block in each section using the same palette+packing as blocks.
-- Fixed-size numbers are big-endian; variable-length integers are signed LEB128.
-
----
-
 ## Implementation notes
 
 - Section indexing across Y: The i-th section in a chunk corresponds to Y-section index `(min_section + i)`. Within a section, block Y is the relative 0..15 value described under “Binary conventions.”
 - Local X/Z are always 0..15 and packed into `packed_xz` with 4 bits per axis.
-- Consumers are encouraged to recalculate lighting if needed. Light blobs are optional and may be omitted (flag 0) or highly compressed (flags 1/2).
+- Lighting data is not stored in the format. Consumers should recalculate lighting when loading worlds.
 - When writing empty sections, prefer the canonical empty-section encoding described above.
