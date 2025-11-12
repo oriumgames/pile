@@ -43,17 +43,17 @@ func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
 				return nil, fmt.Errorf("convert section %d biomes: %w", i, err)
 			}
 		}
-
-		// Note: Skip light data restoration - let the world recalculate it
-		// Light data in Dragonfly uses a special COW system that's difficult to restore
-		// The world will automatically recalculate lighting when chunks are loaded
 	}
 
 	// Convert block entities
 	blockEntities := make([]chunk.BlockEntity, 0, len(c.BlockEntities))
 	for _, be := range c.BlockEntities {
-		x, y, z := be.Position()
-		pos := cube.Pos{int(x), int(y), int(z)}
+		// Get local position within chunk
+		localX, y, localZ := be.Position()
+		// Convert to absolute world coordinates
+		absX := int(c.X)*16 + int(localX)
+		absZ := int(c.Z)*16 + int(localZ)
+		pos := cube.Pos{absX, int(y), absZ}
 
 		var data map[string]any
 		if len(be.Data) > 0 {
@@ -97,7 +97,11 @@ func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
 	// Convert scheduled ticks
 	scheduled := make([]chunk.ScheduledBlockUpdate, 0, len(c.ScheduledTicks))
 	for _, t := range c.ScheduledTicks {
-		x, y, z := t.Position()
+		// Get local position within chunk
+		localX, y, localZ := t.Position()
+		// Convert to absolute world coordinates
+		absX := int(c.X)*16 + int(localX)
+		absZ := int(c.Z)*16 + int(localZ)
 		var rid uint32
 		if b, ok := world.BlockByName(t.Block, nil); ok {
 			rid = world.BlockRuntimeID(b)
@@ -106,7 +110,7 @@ func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
 			rid = world.BlockRuntimeID(air)
 		}
 		scheduled = append(scheduled, chunk.ScheduledBlockUpdate{
-			Pos:   cube.Pos{int(x), int(y), int(z)},
+			Pos:   cube.Pos{absX, int(y), absZ},
 			Block: rid,
 			Tick:  t.Tick,
 		})
@@ -219,45 +223,6 @@ func convertSectionBiomes(ch *chunk.Chunk, section *Section, sectionY int16) err
 	return nil
 }
 
-// convertSectionLight converts light data from Pile to Dragonfly format.
-func convertSectionLight(ch *chunk.Chunk, section *Section, sectionY int16) error {
-	sub := ch.Sub()[ch.SubIndex(sectionY<<4)]
-
-	// Set block light - iterate through all blocks in the section
-	if len(section.BlockLight) == 2048 {
-		for i := range 4096 {
-			x := uint8(i & 0xF)
-			y := uint8((i >> 8) & 0xF)
-			z := uint8((i >> 4) & 0xF)
-
-			// Extract 4-bit light value (2 values per byte)
-			byteIdx := i / 2
-			shift := uint(i%2) * 4
-			lightLevel := (section.BlockLight[byteIdx] >> shift) & 0xF
-
-			sub.SetBlockLight(x, y, z, lightLevel)
-		}
-	}
-
-	// Set sky light
-	if len(section.SkyLight) == 2048 {
-		for i := range 4096 {
-			x := uint8(i & 0xF)
-			y := uint8((i >> 8) & 0xF)
-			z := uint8((i >> 4) & 0xF)
-
-			// Extract 4-bit light value
-			byteIdx := i / 2
-			shift := uint(i%2) * 4
-			lightLevel := (section.SkyLight[byteIdx] >> shift) & 0xF
-
-			sub.SetSkyLight(x, y, z, lightLevel)
-		}
-	}
-
-	return nil
-}
-
 // columnToChunk converts a Dragonfly chunk.Column to a Pile Chunk.
 func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, error) {
 	ch := col.Chunk
@@ -293,10 +258,6 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 		section.BiomePalette = biomePalette
 		section.BiomeData = biomeData
 
-		// Convert light data - extract light values block by block
-		section.BlockLight = extractLightData(sub, true)
-		section.SkyLight = extractLightData(sub, false)
-
 		sections[i] = section
 	}
 
@@ -313,8 +274,8 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 		}
 
 		// Calculate relative position and pack
-		relX := uint32(be.Pos.X() & 0xF)
-		relZ := uint32(be.Pos.Z() & 0xF)
+		relX := uint8(be.Pos.X() & 0xF)
+		relZ := uint8(be.Pos.Z() & 0xF)
 		packedXZ := relX | (relZ << 4)
 
 		// Extract ID from NBT data if available
@@ -359,8 +320,8 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 	// Convert scheduled ticks
 	ticks := make([]ScheduledTick, 0, len(col.ScheduledBlocks))
 	for _, t := range col.ScheduledBlocks {
-		relX := uint32(t.Pos.X() & 0xF)
-		relZ := uint32(t.Pos.Z() & 0xF)
+		relX := uint8(t.Pos.X() & 0xF)
+		relZ := uint8(t.Pos.Z() & 0xF)
 		packedXZ := relX | (relZ << 4)
 
 		name, _, _ := chunk.RuntimeIDToState(t.Block)
@@ -465,53 +426,6 @@ func extractBiomesFromChunk(ch *chunk.Chunk, sectionIdx int) ([]string, []int64)
 	data := encodeIndices(biomeIndices, bitsPerBiome)
 
 	return biomePaletteList, data
-}
-
-// extractLightData extracts light data from a sub-chunk.
-func extractLightData(sub *chunk.SubChunk, blockLight bool) []byte {
-	if sub.Empty() {
-		return nil
-	}
-
-	// Check if we have light data
-	// If not initialized, return nil (will be encoded as flag 0)
-	defer func() {
-		if r := recover(); r != nil {
-			// Light data not initialized, return nil
-		}
-	}()
-
-	lightData := make([]byte, 2048)
-	hasNonZero := false
-
-	for i := range 4096 {
-		x := uint8(i & 0xF)
-		y := uint8((i >> 8) & 0xF)
-		z := uint8((i >> 4) & 0xF)
-
-		var lightLevel uint8
-		if blockLight {
-			lightLevel = sub.BlockLight(x, y, z)
-		} else {
-			lightLevel = sub.SkyLight(x, y, z)
-		}
-
-		if lightLevel != 0 {
-			hasNonZero = true
-		}
-
-		// Pack 2 light values per byte (4 bits each)
-		byteIdx := i / 2
-		shift := uint(i%2) * 4
-		lightData[byteIdx] |= (lightLevel & 0xF) << shift
-	}
-
-	// If all zeros, return nil (will be encoded more efficiently)
-	if !hasNonZero {
-		return nil
-	}
-
-	return lightData
 }
 
 // calculateBitsPerBlock calculates the number of bits needed for a palette of the given size.

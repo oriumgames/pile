@@ -147,7 +147,7 @@ func decodeChunk(rd *reader, minSection, maxSection int32) (*Chunk, error) {
 	}
 	chunk.ScheduledTicks = make([]ScheduledTick, 0, tickCount)
 	for i := range tickCount {
-		pxz, err := rd.ReadUInt32()
+		pxz, err := rd.ReadByte()
 		if err != nil {
 			return nil, fmt.Errorf("read scheduled tick %d packed xz: %w", i, err)
 		}
@@ -252,57 +252,14 @@ func decodeSection(rd *reader) (*Section, error) {
 		section.BiomeData[i] = val
 	}
 
-	// Read light data
-	blockLight, err := readLightData(rd)
-	if err != nil {
-		return nil, fmt.Errorf("read block light: %w", err)
-	}
-	section.BlockLight = blockLight
-
-	skyLight, err := readLightData(rd)
-	if err != nil {
-		return nil, fmt.Errorf("read sky light: %w", err)
-	}
-	section.SkyLight = skyLight
-
 	return section, nil
-}
-
-// readLightData reads light data from the reader.
-// Format: byte flag (0=none, 1=all zeros, 2=all 15s, 3=variable data)
-func readLightData(rd *reader) ([]byte, error) {
-	flag, err := rd.ReadInt8()
-	if err != nil {
-		return nil, err
-	}
-
-	switch flag {
-	case 0:
-		// No light data
-		return nil, nil
-	case 1:
-		// All zeros
-		return make([]byte, 2048), nil
-	case 2:
-		// All 15s
-		data := make([]byte, 2048)
-		for i := range data {
-			data[i] = 0xFF
-		}
-		return data, nil
-	case 3:
-		// Variable data
-		return rd.ReadN(2048)
-	default:
-		return nil, fmt.Errorf("invalid light data flag: %d", flag)
-	}
 }
 
 // decodeBlockEntity decodes a BlockEntity from a reader.
 func decodeBlockEntity(rd *reader) (*BlockEntity, error) {
 	be := &BlockEntity{}
 
-	packedXZ, err := rd.ReadUInt32()
+	packedXZ, err := rd.ReadByte()
 	if err != nil {
 		return nil, fmt.Errorf("read packed xz: %w", err)
 	}

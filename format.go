@@ -117,7 +117,6 @@ type Chunk struct {
 // Data is stored in a paletted format for efficiency:
 // - Palettes contain unique block/biome names
 // - Data arrays contain packed indices into the palette
-// - Light data is stored as 4 bits per block (2048 bytes total)
 type Section struct {
 	// Block palette and data
 	BlockPalette []string // Unique block names in this section
@@ -126,10 +125,6 @@ type Section struct {
 	// Biome palette and data
 	BiomePalette []string // Unique biome names in this section
 	BiomeData    []int64  // Packed palette indices
-
-	// Light data (2048 bytes each, 4 bits per block)
-	BlockLight []byte // Block light levels (emitted by blocks)
-	SkyLight   []byte // Sky light levels (sunlight)
 }
 
 // IsEmpty returns true if the section contains only air.
@@ -139,8 +134,8 @@ func (s *Section) IsEmpty() bool {
 
 // BlockEntity represents a block with NBT data (chest, sign, etc).
 type BlockEntity struct {
-	// Packed position within chunk (12 bits X, 12 bits Z, 40 bits Y)
-	PackedXZ uint32
+	// Packed position within chunk (4 bits X, 4 bits Z = 8 bits total)
+	PackedXZ uint8
 	Y        int32
 	ID       string
 	Data     []byte // NBT encoded data
@@ -166,7 +161,7 @@ type Entity struct {
 
 // ScheduledTick represents a scheduled block update stored at chunk granularity.
 type ScheduledTick struct {
-	PackedXZ uint32 // Local XZ in chunk (lower 4 bits X, next 4 bits Z)
+	PackedXZ uint8  // Local XZ in chunk (lower 4 bits X, next 4 bits Z)
 	Y        int32  // Absolute Y
 	Block    string // Optional: Block identifier responsible for the tick
 	Tick     int64  // Tick at which the update should fire

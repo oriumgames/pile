@@ -64,7 +64,7 @@ func encodeChunk(buf *buffer, c *Chunk, minSection, maxSection int32) {
 	// Write scheduled ticks (v4)
 	buf.WriteVarInt(int64(len(c.ScheduledTicks)))
 	for _, t := range c.ScheduledTicks {
-		buf.WriteUInt32(t.PackedXZ)
+		buf.WriteByte(t.PackedXZ)
 		buf.WriteInt32(t.Y)
 		buf.WriteString(t.Block)
 		buf.WriteVarInt(t.Tick)
@@ -102,10 +102,6 @@ func encodeSection(buf *buffer, s *Section) {
 	for _, val := range s.BiomeData {
 		buf.WriteInt64(val)
 	}
-
-	// Write light data
-	writeLightData(buf, s.BlockLight)
-	writeLightData(buf, s.SkyLight)
 }
 
 // encodeEmptySection encodes an empty section (all air).
@@ -119,49 +115,11 @@ func encodeEmptySection(buf *buffer) {
 	buf.WriteVarInt(1)
 	buf.WriteString("minecraft:plains")
 	buf.WriteVarInt(0) // No biome data needed
-
-	// No light data
-	buf.WriteInt8(0) // No block light
-	buf.WriteInt8(0) // No sky light
-}
-
-// writeLightData writes light data to the buffer.
-// Format: byte flag (0=none, 1=all zeros, 2=all 15s, 3=variable data)
-func writeLightData(buf *buffer, light []byte) {
-	if len(light) == 0 {
-		buf.WriteInt8(0) // No light data
-		return
-	}
-
-	// Check if all zeros
-	allZero := true
-	allFifteen := true
-	for _, b := range light {
-		if b != 0 {
-			allZero = false
-		}
-		if b != 0xFF {
-			allFifteen = false
-		}
-	}
-
-	if allZero {
-		buf.WriteInt8(1)
-		return
-	}
-	if allFifteen {
-		buf.WriteInt8(2)
-		return
-	}
-
-	// Variable data
-	buf.WriteInt8(3)
-	_, _ = buf.Write(light)
 }
 
 // encodeBlockEntity encodes a BlockEntity into a buffer.
 func encodeBlockEntity(buf *buffer, be *BlockEntity) {
-	buf.WriteUInt32(be.PackedXZ)
+	buf.WriteByte(be.PackedXZ)
 	buf.WriteInt32(be.Y)
 	buf.WriteString(be.ID)
 	buf.WriteBytes(be.Data)
