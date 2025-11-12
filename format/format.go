@@ -1,6 +1,8 @@
 package format
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
 )
 
@@ -14,6 +16,10 @@ const (
 	// Compression types
 	CompressionNone = 0
 	CompressionZstd = 1
+
+	// Recommended world size limits (not enforced, for validation helpers)
+	MaxReasonableSections = 128  // 2048 blocks tall
+	MinReasonableSections = -128 // Supports deep underground builds
 )
 
 // World represents a Pile world containing chunks.
@@ -27,6 +33,7 @@ type World struct {
 
 	streaming  bool             // Enable streaming mode when saving
 	chunkIndex map[int64]uint64 // Optional chunk offset index for streaming encoder
+	readOnly   bool             // If true, prevents modifications to the world
 }
 
 // NewWorld creates a new Pile world with the given section range.
@@ -41,6 +48,36 @@ func NewWorld(minSection, maxSection int32) *World {
 	}
 }
 
+// ValidateDimensions checks if the world dimensions are reasonable.
+// Returns an error if dimensions exceed recommended limits.
+// This is advisory only - the format supports any int32 range.
+func (w *World) ValidateDimensions() error {
+	if w.MinSection < MinReasonableSections {
+		return fmt.Errorf("MinSection %d is below recommended minimum %d", w.MinSection, MinReasonableSections)
+	}
+	if w.MaxSection > MaxReasonableSections {
+		return fmt.Errorf("MaxSection %d exceeds recommended maximum %d", w.MaxSection, MaxReasonableSections)
+	}
+	if w.MinSection >= w.MaxSection {
+		return fmt.Errorf("MinSection %d must be less than MaxSection %d", w.MinSection, w.MaxSection)
+	}
+	sectionCount := w.MaxSection - w.MinSection
+	if sectionCount > 512 {
+		return fmt.Errorf("section count %d is very large and may cause memory issues", sectionCount)
+	}
+	return nil
+}
+
+// SetReadOnly marks the world as read-only, preventing modifications.
+func (w *World) SetReadOnly(readOnly bool) {
+	w.readOnly = readOnly
+}
+
+// IsReadOnly returns true if the world is marked as read-only.
+func (w *World) IsReadOnly() bool {
+	return w.readOnly
+}
+
 // Chunk returns the chunk at the given coordinates, or nil if not found.
 func (w *World) Chunk(x, z int32) *Chunk {
 	if w.chunks == nil {
@@ -50,7 +87,17 @@ func (w *World) Chunk(x, z int32) *Chunk {
 }
 
 // SetChunk sets a chunk at the given coordinates.
+// Silently ignores the operation if the world is read-only.
 func (w *World) SetChunk(c *Chunk) {
+	if w.readOnly {
+		return // Silently ignore modifications to read-only worlds
+	}
+	w.setChunk(c)
+}
+
+// setChunk is an internal method that bypasses read-only checks.
+// Used during decoding to populate the world.
+func (w *World) setChunk(c *Chunk) {
 	if w.chunks == nil {
 		w.chunks = make(map[int64]*Chunk)
 	}

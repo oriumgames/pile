@@ -343,6 +343,74 @@ format.Write(f, pileWorld)
 f.Close()
 ```
 
+## Custom World Sizes
+
+The format supports **any world size** through MinSection and MaxSection parameters:
+
+```go
+// Standard Overworld (Y: -64 to 319)
+world := format.NewWorld(-4, 20)
+
+// Tall world (Y: -1024 to 1023)
+world := format.NewWorld(-64, 64)
+
+// Custom underground world (Y: -512 to 0)
+world := format.NewWorld(-32, 0)
+
+// Skyblock world (Y: 0 to 255)
+world := format.NewWorld(0, 16)
+```
+
+### Validation
+
+Use `ValidateDimensions()` to check if world size is reasonable (advisory only):
+
+```go
+world := format.NewWorld(-64, 64)
+if err := world.ValidateDimensions(); err != nil {
+    // World size exceeds recommended limits
+    // This is a warning - the format still supports it
+}
+```
+
+**Recommended limits** (not enforced):
+- MinSection: -128 (Y: -2048)
+- MaxSection: 128 (Y: 2047)
+- Section count: < 512
+
+The format technically supports int32 range, but very large worlds may cause memory issues.
+
+## Read-Only Mode
+
+Load worlds in read-only mode to prevent accidental modifications:
+
+```go
+// Load in read-only mode
+f, _ := os.Open("world.pile")
+world, _ := format.ReadOnly(f)
+f.Close()
+
+// Reading is allowed
+chunk := world.Chunk(0, 0)
+
+// Modifications will panic
+world.SetChunk(chunk) // panic: cannot modify read-only world
+
+// Check read-only status
+if world.IsReadOnly() {
+    fmt.Println("World is read-only")
+}
+
+// Can disable read-only mode if needed
+world.SetReadOnly(false)
+```
+
+**Use cases for read-only mode:**
+- Analysis tools that shouldn't modify worlds
+- Format inspection/debugging
+- Safe world conversion (prevent accidental writes to source)
+- Multi-threaded read-only access
+
 ## Format Specification
 
 See [format.md](format.md) for the complete binary format specification.

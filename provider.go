@@ -47,6 +47,7 @@ type Provider struct {
 
 	dirty            bool             // Track if we need to save
 	compressionLevel CompressionLevel // Compression level for saves
+	readOnly         bool             // When true, prevents all modifications
 
 	// Background save subsystem
 	saveCh         chan struct{} // Non-blocking save trigger channel
@@ -62,8 +63,29 @@ func New(dir string) (*Provider, error) {
 
 // NewWithCompression creates a new Pile provider with a specific compression level.
 func NewWithCompression(dir string, compressionLevel CompressionLevel) (*Provider, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create pile directory: %w", err)
+	return newProvider(dir, compressionLevel, false)
+}
+
+// NewReadOnly creates a new read-only Pile provider in the given directory.
+// All modification operations (StoreColumn, SaveSettings, SavePlayerSpawnPosition) will be silently ignored.
+// The provider will not create any files if they don't exist.
+func NewReadOnly(dir string) (*Provider, error) {
+	return NewReadOnlyWithCompression(dir, CompressionLevelDefault)
+}
+
+// NewReadOnlyWithCompression creates a new read-only Pile provider with a specific compression level.
+// The compression level is only used if the provider is later converted to read-write mode.
+func NewReadOnlyWithCompression(dir string, compressionLevel CompressionLevel) (*Provider, error) {
+	return newProvider(dir, compressionLevel, true)
+}
+
+// newProvider is the internal constructor that all public constructors delegate to.
+func newProvider(dir string, compressionLevel CompressionLevel, readOnly bool) (*Provider, error) {
+	// Only create directory if not read-only
+	if !readOnly {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create pile directory: %w", err)
+		}
 	}
 
 	p := &Provider{
@@ -71,10 +93,11 @@ func NewWithCompression(dir string, compressionLevel CompressionLevel) (*Provide
 		settings:         defaultSettings(),
 		playerSpawns:     make(map[uuid.UUID]cube.Pos),
 		compressionLevel: compressionLevel,
+		readOnly:         readOnly,
 	}
 
 	// Try to load existing worlds
-	if err := p.load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := p.load(readOnly); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load pile worlds: %w", err)
 	}
 
@@ -88,6 +111,13 @@ func (p *Provider) SetCompressionLevel(level CompressionLevel) {
 	p.mu.Unlock()
 }
 
+// IsReadOnly returns true if the provider is in read-only mode.
+func (p *Provider) IsReadOnly() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.readOnly
+}
+
 // Settings returns the world settings.
 func (p *Provider) Settings() *world.Settings {
 	p.mu.RLock()
@@ -96,8 +126,13 @@ func (p *Provider) Settings() *world.Settings {
 }
 
 // SaveSettings saves the world settings.
+// Silently ignores the operation if the provider is read-only.
 func (p *Provider) SaveSettings(s *world.Settings) {
 	p.mu.Lock()
+	if p.readOnly {
+		p.mu.Unlock()
+		return
+	}
 	p.settings = s
 	p.dirty = true
 	p.mu.Unlock()
@@ -123,9 +158,14 @@ func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.C
 }
 
 // StoreColumn stores a chunk column to the appropriate dimension.
+// Silently ignores the operation if the provider is read-only.
 func (p *Provider) StoreColumn(pos world.ChunkPos, dim world.Dimension, col *chunk.Column) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.readOnly {
+		return nil
+	}
 
 	w := p.worldForDim(dim)
 	if w == nil {
@@ -154,8 +194,13 @@ func (p *Provider) LoadPlayerSpawnPosition(id uuid.UUID) (cube.Pos, bool, error)
 }
 
 // SavePlayerSpawnPosition saves a player's spawn position.
+// Silently ignores the operation if the provider is read-only.
 func (p *Provider) SavePlayerSpawnPosition(id uuid.UUID, pos cube.Pos) error {
 	p.mu.Lock()
+	if p.readOnly {
+		p.mu.Unlock()
+		return nil
+	}
 	p.playerSpawns[id] = pos
 	p.dirty = true
 	p.mu.Unlock()
@@ -163,12 +208,17 @@ func (p *Provider) SavePlayerSpawnPosition(id uuid.UUID, pos cube.Pos) error {
 }
 
 // Close saves all pending changes and closes the provider.
+// Does nothing if the provider is read-only.
 func (p *Provider) Close() error {
 	// Stop background saver to avoid concurrent writes during shutdown.
 	p.DisableBackgroundSaves()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.readOnly {
+		return nil
+	}
 
 	if p.dirty {
 		return p.saveInternal()
@@ -177,9 +227,15 @@ func (p *Provider) Close() error {
 }
 
 // Save forces a save of all worlds.
+// Does nothing if the provider is read-only.
 func (p *Provider) Save() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.readOnly {
+		return nil
+	}
+
 	return p.saveInternal()
 }
 
@@ -261,7 +317,7 @@ func dimensionFileName(dim world.Dimension) string {
 }
 
 // load loads all world files from disk.
-func (p *Provider) load() error {
+func (p *Provider) load(readOnly bool) error {
 	dims := []world.Dimension{world.Overworld, world.Nether, world.End}
 
 	for _, dim := range dims {
@@ -274,7 +330,12 @@ func (p *Provider) load() error {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 
-		w, err := format.Read(f)
+		var w *format.World
+		if readOnly {
+			w, err = format.ReadOnly(f)
+		} else {
+			w, err = format.Read(f)
+		}
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
@@ -352,7 +413,7 @@ func (p *Provider) saveInternal() error {
 // defaultSettings returns default world settings.
 func defaultSettings() *world.Settings {
 	return &world.Settings{
-		Name:            "Pile World",
+		Name:            "World",
 		Spawn:           cube.Pos{0, 64, 0},
 		Time:            6000,
 		TimeCycle:       true,

@@ -24,6 +24,18 @@ const (
 
 // Read reads a Pile world from a reader.
 func Read(r io.Reader) (*World, error) {
+	return read(r, false)
+}
+
+// ReadOnly reads a Pile world from a reader in read-only mode.
+// The returned world cannot be modified (SetChunk will panic).
+// This is useful for read-only operations like analysis, inspection, or conversion.
+func ReadOnly(r io.Reader) (*World, error) {
+	return read(r, true)
+}
+
+// read is the internal read function that supports both read-write and read-only modes.
+func read(r io.Reader, readOnly bool) (*World, error) {
 	// Read magic number
 	var magic uint32
 	if err := binary.Read(r, binary.BigEndian, &magic); err != nil {
@@ -66,7 +78,17 @@ func Read(r io.Reader) (*World, error) {
 	}
 
 	// Read world data
-	return DecodeWorld(dataReader)
+	world, err := DecodeWorld(dataReader)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set read-only mode if requested
+	if readOnly {
+		world.SetReadOnly(true)
+	}
+
+	return world, nil
 }
 
 // Write writes a Pile world to a writer with default compression.

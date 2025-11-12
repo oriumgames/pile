@@ -28,13 +28,16 @@ Use Go modules:
 - Compression:
   - New with level: `pile.NewWithCompression(dir, pile.CompressionLevelDefault)`
   - Change later: `provider.SetCompressionLevel(pile.CompressionLevelBest)`
+- Read-only mode:
+  - `pile.NewReadOnly(dir)` or `pile.NewReadOnlyWithCompression(dir, level)`
+  - Prevents all modifications, useful for inspection or analysis
 - Streaming saves:
   - `provider.SetStreamingSaves(true)` to write chunk-by-chunk
 - Background saves:
   - `provider.EnableBackgroundSaves()` then trigger with `provider.SaveAsync()`
   - Stop with `provider.DisableBackgroundSaves()`
 - Introspection:
-  - `provider.ChunkCount()`, `provider.DimensionChunkCount(world.Overworld)`, `provider.IsDirty()`
+  - `provider.ChunkCount()`, `provider.DimensionChunkCount(world.Overworld)`, `provider.IsDirty()`, `provider.IsReadOnly()`
 
 ## File Layout
 World directory (created as needed):

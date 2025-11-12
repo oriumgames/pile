@@ -51,7 +51,7 @@ func DecodeWorld(r io.Reader) (*World, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode chunk %d (total: %d): %w", i, chunkCount, err)
 		}
-		w.SetChunk(chunk)
+		w.setChunk(chunk)
 	}
 
 	return w, nil
