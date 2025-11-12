@@ -6,7 +6,7 @@ require (
 	github.com/df-mc/dragonfly v0.10.8
 	github.com/df-mc/goleveldb v1.1.9
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.18.1
+	github.com/oriumgames/pile/format v0.0.0-00010101000000-000000000000
 	github.com/sandertv/gophertunnel v1.50.1
 )
 
@@ -15,5 +15,8 @@ require (
 	github.com/df-mc/worldupgrader v1.0.20 // indirect
 	github.com/go-gl/mathgl v1.2.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/segmentio/fasthash v1.0.3 // indirect
 )
+
+replace github.com/oriumgames/pile/format => ./format

@@ -8,11 +8,12 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
+	"github.com/oriumgames/pile/format"
 	"github.com/sandertv/gophertunnel/minecraft/nbt"
 )
 
 // chunkToColumn converts a Pile Chunk to a Dragonfly chunk.Column.
-func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
+func chunkToColumn(c *format.Chunk, dimRange cube.Range) (*chunk.Column, error) {
 	// Get air block and its runtime ID
 	air, _ := world.BlockByName("minecraft:air", nil)
 	airRID := world.BlockRuntimeID(air)
@@ -86,6 +87,21 @@ func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
 				data["identifier"] = e.ID
 			}
 		}
+
+		// Inject position, rotation, velocity back into NBT (Dragonfly format)
+		data["Pos"] = []float32{
+			e.Position[0],
+			e.Position[1],
+			e.Position[2],
+		}
+		data["Yaw"] = e.Rotation[0]
+		data["Pitch"] = e.Rotation[1]
+		data["Motion"] = []float32{
+			e.Velocity[0],
+			e.Velocity[1],
+			e.Velocity[2],
+		}
+
 		// Preserve UniqueID if present in NBT.
 		var id int64
 		if v, ok := data["UniqueID"].(int64); ok {
@@ -125,7 +141,7 @@ func chunkToColumn(c *Chunk, dimRange cube.Range) (*chunk.Column, error) {
 }
 
 // convertSectionBlocks converts block data from Pile to Dragonfly format.
-func convertSectionBlocks(ch *chunk.Chunk, section *Section, sectionY int16, airRID uint32) error {
+func convertSectionBlocks(ch *chunk.Chunk, section *format.Section, sectionY int16, airRID uint32) error {
 	if len(section.BlockPalette) == 0 {
 		return nil
 	}
@@ -176,7 +192,7 @@ func convertSectionBlocks(ch *chunk.Chunk, section *Section, sectionY int16, air
 }
 
 // convertSectionBiomes converts biome data from Pile to Dragonfly format.
-func convertSectionBiomes(ch *chunk.Chunk, section *Section, sectionY int16) error {
+func convertSectionBiomes(ch *chunk.Chunk, section *format.Section, sectionY int16) error {
 	if len(section.BiomePalette) == 0 {
 		return nil
 	}
@@ -224,7 +240,7 @@ func convertSectionBiomes(ch *chunk.Chunk, section *Section, sectionY int16) err
 }
 
 // columnToChunk converts a Dragonfly chunk.Column to a Pile Chunk.
-func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, error) {
+func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*format.Chunk, error) {
 	ch := col.Chunk
 
 	// Calculate section count
@@ -233,7 +249,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 	sectionCount := int(maxSection - minSection)
 
 	// Create Pile sections
-	sections := make([]*Section, sectionCount)
+	sections := make([]*format.Section, sectionCount)
 	subs := ch.Sub()
 
 	for i := range sectionCount {
@@ -247,7 +263,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 			continue
 		}
 
-		section := &Section{}
+		section := &format.Section{}
 
 		// Convert blocks (layer 0 only for now)
 		if len(sub.Layers()) > 0 {
@@ -267,7 +283,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 	}
 
 	// Convert block entities
-	blockEntities := make([]BlockEntity, 0, len(col.BlockEntities))
+	blockEntities := make([]format.BlockEntity, 0, len(col.BlockEntities))
 	for _, be := range col.BlockEntities {
 		var data []byte
 		if be.Data != nil {
@@ -289,7 +305,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 			id = idVal
 		}
 
-		blockEntities = append(blockEntities, BlockEntity{
+		blockEntities = append(blockEntities, format.BlockEntity{
 			PackedXZ: packedXZ,
 			Y:        int32(be.Pos.Y()),
 			ID:       id,
@@ -298,7 +314,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 	}
 
 	// Convert entities
-	entities := make([]Entity, 0, len(col.Entities))
+	entities := make([]format.Entity, 0, len(col.Entities))
 	for _, e := range col.Entities {
 		var data []byte
 		if e.Data != nil {
@@ -316,14 +332,40 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 			id = idVal
 		}
 
-		entities = append(entities, Entity{
-			ID:   id,
-			Data: data,
+		// Extract position, rotation, velocity from NBT (Dragonfly format)
+		var position [3]float32
+		var rotation [2]float32
+		var velocity [3]float32
+
+		if e.Data != nil {
+			// Position: "Pos" [float32, float32, float32]
+			if pos, ok := e.Data["Pos"].([]float32); ok && len(pos) == 3 {
+				position = [3]float32{pos[0], pos[1], pos[2]}
+			}
+			// Rotation: "Yaw" and "Pitch" (float32)
+			if yaw, ok := e.Data["Yaw"].(float32); ok {
+				rotation[0] = yaw
+			}
+			if pitch, ok := e.Data["Pitch"].(float32); ok {
+				rotation[1] = pitch
+			}
+			// Velocity: "Motion" [float32, float32, float32]
+			if motion, ok := e.Data["Motion"].([]float32); ok && len(motion) == 3 {
+				velocity = [3]float32{motion[0], motion[1], motion[2]}
+			}
+		}
+
+		entities = append(entities, format.Entity{
+			ID:       id,
+			Position: position,
+			Rotation: rotation,
+			Velocity: velocity,
+			Data:     data,
 		})
 	}
 
 	// Convert scheduled ticks
-	ticks := make([]ScheduledTick, 0, len(col.ScheduledBlocks))
+	ticks := make([]format.ScheduledTick, 0, len(col.ScheduledBlocks))
 	for _, t := range col.ScheduledBlocks {
 		relX := uint8(t.Pos.X() & 0xF)
 		relZ := uint8(t.Pos.Z() & 0xF)
@@ -334,7 +376,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 			name = "minecraft:air"
 		}
 
-		ticks = append(ticks, ScheduledTick{
+		ticks = append(ticks, format.ScheduledTick{
 			PackedXZ: packedXZ,
 			Y:        int32(t.Pos.Y()),
 			Block:    name,
@@ -342,7 +384,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*Chunk, 
 		})
 	}
 
-	return &Chunk{
+	return &format.Chunk{
 		X:              x,
 		Z:              z,
 		Sections:       sections,

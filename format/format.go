@@ -1,7 +1,6 @@
-package pile
+package format
 
 import (
-	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/google/uuid"
 )
 
@@ -30,12 +29,12 @@ type World struct {
 	chunkIndex map[int64]uint64 // Optional chunk offset index for streaming encoder
 }
 
-// newWorld creates a new Pile world with the given dimension range.
-func newWorld(r cube.Range) *World {
+// NewWorld creates a new Pile world with the given section range.
+func NewWorld(minSection, maxSection int32) *World {
 	return &World{
 		Version:     CurrentVersion,
-		MinSection:  int32(r[0] >> 4), // Convert Y to section index
-		MaxSection:  int32(r[1] >> 4),
+		MinSection:  minSection,
+		MaxSection:  maxSection,
 		chunks:      make(map[int64]*Chunk),
 		dirtyChunks: make(map[int64]bool),
 		chunkIndex:  make(map[int64]uint64),
@@ -96,6 +95,11 @@ func (w *World) IsDirty() bool {
 	return len(w.dirtyChunks) > 0
 }
 
+// ChunkCount returns the number of chunks in the world.
+func (w *World) ChunkCount() int {
+	return len(w.chunks)
+}
+
 // Chunk represents a 16x16 column of sections spanning the entire height of a dimension.
 type Chunk struct {
 	X        int32      // Chunk X coordinate in world space
@@ -153,9 +157,9 @@ func (b *BlockEntity) Position() (x, y, z int32) {
 type Entity struct {
 	UUID     uuid.UUID  // Stable entity UUID
 	ID       string     // Entity identifier, e.g. "minecraft:zombie"
-	Position [3]float64 // X, Y, Z
-	Rotation [2]float32 // Yaw, Pitch
-	Velocity [3]float32 // VX, VY, VZ
+	Position [3]float32 // X, Y, Z position
+	Rotation [2]float32 // Yaw, Pitch rotation
+	Velocity [3]float32 // VX, VY, VZ velocity
 	Data     []byte     // NBT-encoded entity data (additional attributes)
 }
 

@@ -1,15 +1,14 @@
-package pile
+package format
 
 import (
 	"fmt"
 	"io"
 
-	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/google/uuid"
 )
 
-// decodeWorld decodes a World from a reader.
-func decodeWorld(r io.Reader, _ cube.Range) (*World, error) {
+// DecodeWorld decodes a World from a reader.
+func DecodeWorld(r io.Reader) (*World, error) {
 	rd := newReader(r)
 
 	w := &World{
@@ -125,15 +124,54 @@ func decodeChunk(rd *reader, minSection, maxSection int32) (*Chunk, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read entity %d uuid: %w", i, err)
 		}
+		// Read position (float32)
+		posX, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d position X: %w", i, err)
+		}
+		posY, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d position Y: %w", i, err)
+		}
+		posZ, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d position Z: %w", i, err)
+		}
+		// Read rotation (float32)
+		yaw, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d rotation yaw: %w", i, err)
+		}
+		pitch, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d rotation pitch: %w", i, err)
+		}
+		// Read velocity (float32)
+		velX, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d velocity X: %w", i, err)
+		}
+		velY, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d velocity Y: %w", i, err)
+		}
+		velZ, err := rd.ReadFloat32()
+		if err != nil {
+			return nil, fmt.Errorf("read entity %d velocity Z: %w", i, err)
+		}
+		// Read additional data
 		data, err := rd.ReadBytes()
 		if err != nil {
 			return nil, fmt.Errorf("read entity %d data: %w", i, err)
 		}
 		u, _ := uuid.Parse(uidStr)
 		chunk.Entities = append(chunk.Entities, Entity{
-			UUID: u,
-			ID:   id,
-			Data: data,
+			UUID:     u,
+			ID:       id,
+			Position: [3]float32{posX, posY, posZ},
+			Rotation: [2]float32{yaw, pitch},
+			Velocity: [3]float32{velX, velY, velZ},
+			Data:     data,
 		})
 	}
 

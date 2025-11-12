@@ -145,11 +145,21 @@ block_entity:
 entity:
 - string identifier (e.g., "minecraft:zombie")
 - string uuid (RFC4122 textual form, e.g., "123e4567-e89b-12d3-a456-426614174000")
+- float32 position_x (big-endian)
+- float32 position_y (big-endian)
+- float32 position_z (big-endian)
+- float32 rotation_yaw (big-endian)
+- float32 rotation_pitch (big-endian)
+- float32 velocity_x (big-endian)
+- float32 velocity_y (big-endian)
+- float32 velocity_z (big-endian)
 - bytes data (NBT compound, optional)
-  - The payload may include position, rotation, velocity, and other fields. Pile does not enforce a schema; consumers may infer from their runtime.
+  - Additional entity attributes (fire duration, age, name tag, etc.). Pile does not enforce a schema; consumers may infer from their runtime.
 
 Notes:
-- The identifier and UUID are stored explicitly for fast indexing and stable identity. The NBT payload may or may not duplicate this data.
+- The identifier, UUID, position, rotation, and velocity are stored explicitly for fast access and indexing.
+- All positional data is stored as float32.
+- The NBT payload may duplicate some of this data (e.g., for compatibility with other formats) but is not required to.
 
 ---
 

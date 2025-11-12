@@ -1,4 +1,4 @@
-package pile
+package format
 
 import (
 	"bytes"
@@ -24,6 +24,16 @@ func (b *buffer) WriteUInt64(v uint64) {
 
 // WriteInt64 writes an int64 in big-endian format.
 func (b *buffer) WriteInt64(v int64) {
+	_ = binary.Write(b, binary.BigEndian, v)
+}
+
+// WriteFloat64 writes a float64 in big-endian format.
+func (b *buffer) WriteFloat64(v float64) {
+	_ = binary.Write(b, binary.BigEndian, v)
+}
+
+// WriteFloat32 writes a float32 in big-endian format.
+func (b *buffer) WriteFloat32(v float32) {
 	_ = binary.Write(b, binary.BigEndian, v)
 }
 
@@ -135,6 +145,20 @@ func (r *reader) ReadUInt64() (uint64, error) {
 // ReadInt64 reads an int64 in big-endian format.
 func (r *reader) ReadInt64() (int64, error) {
 	var v int64
+	err := binary.Read(r.r, binary.BigEndian, &v)
+	return v, err
+}
+
+// ReadFloat64 reads a float64 in big-endian format.
+func (r *reader) ReadFloat64() (float64, error) {
+	var v float64
+	err := binary.Read(r.r, binary.BigEndian, &v)
+	return v, err
+}
+
+// ReadFloat32 reads a float32 in big-endian format.
+func (r *reader) ReadFloat32() (float32, error) {
+	var v float32
 	err := binary.Read(r.r, binary.BigEndian, &v)
 	return v, err
 }

@@ -1,10 +1,8 @@
 package pile
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,21 +12,21 @@ import (
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/df-mc/goleveldb/leveldb"
 	"github.com/google/uuid"
-	"github.com/klauspost/compress/zstd"
+	"github.com/oriumgames/pile/format"
 )
 
 // CompressionLevel represents the compression level for saving worlds.
-type CompressionLevel int
+type CompressionLevel = format.CompressionLevel
 
 const (
 	// CompressionLevelNone disables compression.
-	CompressionLevelNone CompressionLevel = iota
+	CompressionLevelNone = format.CompressionLevelNone
 	// CompressionLevelFast uses fast compression (level 1).
-	CompressionLevelFast
+	CompressionLevelFast = format.CompressionLevelFast
 	// CompressionLevelDefault uses default compression (level 3).
-	CompressionLevelDefault
+	CompressionLevelDefault = format.CompressionLevelDefault
 	// CompressionLevelBest uses best compression (level 9).
-	CompressionLevelBest
+	CompressionLevelBest = format.CompressionLevelBest
 )
 
 // Provider implements world.Provider for the Pile world format.
@@ -40,9 +38,9 @@ type Provider struct {
 	settings *world.Settings
 
 	// Separate worlds for each dimension
-	overworld *World
-	nether    *World
-	end       *World
+	overworld *format.World
+	nether    *format.World
+	end       *format.World
 
 	// Player spawn positions
 	playerSpawns map[uuid.UUID]cube.Pos
@@ -131,7 +129,7 @@ func (p *Provider) StoreColumn(pos world.ChunkPos, dim world.Dimension, col *chu
 
 	w := p.worldForDim(dim)
 	if w == nil {
-		w = newWorld(dim.Range())
+		w = format.NewWorld(int32(dim.Range()[0]>>4), int32(dim.Range()[1]>>4))
 		p.setWorldForDim(dim, w)
 	}
 
@@ -192,13 +190,13 @@ func (p *Provider) ChunkCount() int {
 
 	count := 0
 	if p.overworld != nil {
-		count += len(p.overworld.chunks)
+		count += p.overworld.ChunkCount()
 	}
 	if p.nether != nil {
-		count += len(p.nether.chunks)
+		count += p.nether.ChunkCount()
 	}
 	if p.end != nil {
-		count += len(p.end.chunks)
+		count += p.end.ChunkCount()
 	}
 	return count
 }
@@ -212,7 +210,7 @@ func (p *Provider) DimensionChunkCount(dim world.Dimension) int {
 	if w == nil {
 		return 0
 	}
-	return len(w.chunks)
+	return w.ChunkCount()
 }
 
 // IsDirty returns whether the provider has unsaved changes.
@@ -223,7 +221,7 @@ func (p *Provider) IsDirty() bool {
 }
 
 // worldForDim returns the world for the given dimension.
-func (p *Provider) worldForDim(dim world.Dimension) *World {
+func (p *Provider) worldForDim(dim world.Dimension) *format.World {
 	switch dim {
 	case world.Overworld:
 		return p.overworld
@@ -237,7 +235,7 @@ func (p *Provider) worldForDim(dim world.Dimension) *World {
 }
 
 // setWorldForDim sets the world for the given dimension.
-func (p *Provider) setWorldForDim(dim world.Dimension, w *World) {
+func (p *Provider) setWorldForDim(dim world.Dimension, w *format.World) {
 	switch dim {
 	case world.Overworld:
 		p.overworld = w
@@ -276,7 +274,7 @@ func (p *Provider) load() error {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 
-		w, err := readWorld(f, dim.Range())
+		w, err := format.Read(f)
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
@@ -301,7 +299,7 @@ func (p *Provider) load() error {
 func (p *Provider) saveInternal() error {
 	dims := []struct {
 		dim   world.Dimension
-		world *World
+		world *format.World
 	}{
 		{world.Overworld, p.overworld},
 		{world.Nether, p.nether},
@@ -327,13 +325,13 @@ func (p *Provider) saveInternal() error {
 
 		// Streaming write path: Stream chunk-by-chunk to reduce peak memory usage.
 		if p.streamingSaves {
-			if err := writeWorldStreaming(f, d.world, p.compressionLevel); err != nil {
+			if err := format.WriteStreaming(f, d.world, p.compressionLevel); err != nil {
 				_ = f.Close() // Ignore error on cleanup path
 				return fmt.Errorf("write(streaming) %s: %w", path, err)
 			}
 		} else {
 			// Legacy path: Buffer entire world before writing.
-			if err := writeWorldWithCompression(f, d.world, p.compressionLevel); err != nil {
+			if err := format.WriteWithCompression(f, d.world, p.compressionLevel); err != nil {
 				_ = f.Close() // Ignore error on cleanup path
 				return fmt.Errorf("write %s: %w", path, err)
 			}
@@ -348,117 +346,6 @@ func (p *Provider) saveInternal() error {
 	}
 
 	p.dirty = false
-	return nil
-}
-
-// readWorld reads a Pile world from a reader.
-func readWorld(r io.Reader, dimRange cube.Range) (*World, error) {
-	// Read magic number
-	var magic uint32
-	if err := binary.Read(r, binary.BigEndian, &magic); err != nil {
-		return nil, fmt.Errorf("read magic: %w", err)
-	}
-	if magic != MagicNumber {
-		return nil, fmt.Errorf("invalid magic number: got 0x%08X, want 0x%08X", magic, MagicNumber)
-	}
-
-	// Read version
-	var version int16
-	if err := binary.Read(r, binary.BigEndian, &version); err != nil {
-		return nil, fmt.Errorf("read version: %w", err)
-	}
-	if version > CurrentVersion {
-		return nil, fmt.Errorf("unsupported version: %d (max supported: %d)", version, CurrentVersion)
-	}
-
-	// Read compression type
-	var compression uint8
-	if err := binary.Read(r, binary.BigEndian, &compression); err != nil {
-		return nil, fmt.Errorf("read compression: %w", err)
-	}
-
-	// Read data length (unused but required for format compatibility)
-	_, err := readVarInt(r)
-	if err != nil {
-		return nil, fmt.Errorf("read data length: %w", err)
-	}
-
-	// Read and optionally decompress data
-	var dataReader io.Reader = r
-	if compression == CompressionZstd {
-		decoder, err := zstd.NewReader(r)
-		if err != nil {
-			return nil, fmt.Errorf("create zstd decoder: %w", err)
-		}
-		defer decoder.Close()
-		dataReader = decoder
-	}
-
-	// Read world data
-	return decodeWorld(dataReader, dimRange)
-}
-
-// writeWorld writes a Pile world to a writer.
-func writeWorld(w io.Writer, world *World) error {
-	return writeWorldWithCompression(w, world, CompressionLevelDefault)
-}
-
-// writeWorldWithCompression writes a Pile world to a writer with a specific compression level.
-func writeWorldWithCompression(w io.Writer, world *World, compressionLevel CompressionLevel) error {
-	buf := newBuffer()
-
-	// Encode world data
-	encodeWorld(buf, world)
-	data := buf.Bytes()
-
-	// Compress based on compression level
-	compression := CompressionNone
-	compressedData := data
-
-	if compressionLevel != CompressionLevelNone && len(data) > 1024 {
-		// Map compression level to zstd level
-		var zstdLevel zstd.EncoderLevel
-		switch compressionLevel {
-		case CompressionLevelFast:
-			zstdLevel = zstd.SpeedFastest
-		case CompressionLevelDefault:
-			zstdLevel = zstd.SpeedDefault
-		case CompressionLevelBest:
-			zstdLevel = zstd.SpeedBestCompression
-		default:
-			zstdLevel = zstd.SpeedDefault
-		}
-
-		encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstdLevel))
-		if err == nil {
-			compressed := encoder.EncodeAll(data, make([]byte, 0, len(data)))
-			if len(compressed) < len(data) {
-				compression = CompressionZstd
-				compressedData = compressed
-			}
-			encoder.Close()
-		}
-	}
-
-	// Write header
-	if err := binary.Write(w, binary.BigEndian, uint32(MagicNumber)); err != nil {
-		return fmt.Errorf("write magic: %w", err)
-	}
-	if err := binary.Write(w, binary.BigEndian, int16(CurrentVersion)); err != nil {
-		return fmt.Errorf("write version: %w", err)
-	}
-	if err := binary.Write(w, binary.BigEndian, uint8(compression)); err != nil {
-		return fmt.Errorf("write compression: %w", err)
-	}
-	if err := writeVarInt(w, int64(len(data))); err != nil {
-		return fmt.Errorf("write data length: %w", err)
-	}
-
-	// Write data
-	if _, err := w.Write(compressedData); err != nil {
-		return fmt.Errorf("write data: %w", err)
-	}
-
 	return nil
 }
 
@@ -557,99 +444,4 @@ func (p *Provider) runSaver() {
 			return
 		}
 	}
-}
-
-// writeWorldStreaming writes a Pile world to a writer using a streaming approach.
-// It writes the world header first, followed by world data streamed chunk-by-chunk.
-// For compressed output, a streaming Zstd encoder is used.
-// Note: The uncompressed data length in the header is written as a placeholder and not validated by the decoder.
-func writeWorldStreaming(w io.Writer, world *World, compressionLevel CompressionLevel) error {
-	// Determine compression mode.
-	compression := CompressionNone
-	var dataWriter io.Writer = w
-	var zstdWriter *zstd.Encoder
-
-	if compressionLevel != CompressionLevelNone {
-		compression = CompressionZstd
-		// Map compression level to zstd level
-		var zstdLevel zstd.EncoderLevel
-		switch compressionLevel {
-		case CompressionLevelFast:
-			zstdLevel = zstd.SpeedFastest
-		case CompressionLevelDefault:
-			zstdLevel = zstd.SpeedDefault
-		case CompressionLevelBest:
-			zstdLevel = zstd.SpeedBestCompression
-		default:
-			zstdLevel = zstd.SpeedDefault
-		}
-		enc, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstdLevel))
-		if err != nil {
-			return fmt.Errorf("create zstd encoder: %w", err)
-		}
-		zstdWriter = enc
-		dataWriter = enc
-	}
-
-	// Write header.
-	if err := binary.Write(w, binary.BigEndian, uint32(MagicNumber)); err != nil {
-		if zstdWriter != nil {
-			_ = zstdWriter.Close()
-		}
-		return fmt.Errorf("write magic: %w", err)
-	}
-	if err := binary.Write(w, binary.BigEndian, int16(world.Version)); err != nil {
-		if zstdWriter != nil {
-			_ = zstdWriter.Close()
-		}
-		return fmt.Errorf("write version: %w", err)
-	}
-	if err := binary.Write(w, binary.BigEndian, uint8(compression)); err != nil {
-		if zstdWriter != nil {
-			_ = zstdWriter.Close()
-		}
-		return fmt.Errorf("write compression: %w", err)
-	}
-	// Placeholder for uncompressed data length (decoder does not validate).
-	if err := writeVarInt(w, 0); err != nil {
-		if zstdWriter != nil {
-			_ = zstdWriter.Close()
-		}
-		return fmt.Errorf("write data length: %w", err)
-	}
-
-	// Stream world data.
-	// 1) Fixed world header (min/max sections, user data, chunk count)
-	hdr := newBuffer()
-	hdr.WriteInt32(world.MinSection)
-	hdr.WriteInt32(world.MaxSection)
-	hdr.WriteBytes(world.UserData)
-	chunks := world.Chunks()
-	hdr.WriteVarInt(int64(len(chunks)))
-	if _, err := dataWriter.Write(hdr.Bytes()); err != nil {
-		if zstdWriter != nil {
-			_ = zstdWriter.Close()
-		}
-		return fmt.Errorf("write world header: %w", err)
-	}
-
-	// 2) Each chunk in sequence
-	for _, c := range chunks {
-		cb := newBuffer()
-		encodeChunk(cb, c, world.MinSection, world.MaxSection)
-		if _, err := dataWriter.Write(cb.Bytes()); err != nil {
-			if zstdWriter != nil {
-				_ = zstdWriter.Close()
-			}
-			return fmt.Errorf("write chunk (%d,%d): %w", c.X, c.Z, err)
-		}
-	}
-
-	// Finalize compression stream, if any.
-	if zstdWriter != nil {
-		if err := zstdWriter.Close(); err != nil {
-			return fmt.Errorf("close zstd stream: %w", err)
-		}
-	}
-	return nil
 }
