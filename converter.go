@@ -531,20 +531,45 @@ func decodeIndices(data []int64, bitsPerBlock, count int) []int {
 }
 
 // encodeBlockState encodes a block name and properties into a string format.
-// Format: "name" or "name{prop1:value1,prop2:value2}"
+// Format: "name" or "name[prop1=value1,prop2=value2]"
+// Values are encoded with type-specific formats:
+// - boolean: true/false
+// - byte/uint8: 0x00 to 0xFF (hex prefix)
+// - int32: plain number
+// - float32: decimal number
+// - string: "quoted"
 func encodeBlockState(name string, properties map[string]any) string {
 	if len(properties) == 0 {
 		return name
 	}
 
-	// Use Minecraft format with square brackets
 	result := name + "["
 	first := true
 	for k, v := range properties {
 		if !first {
 			result += ","
 		}
-		result += fmt.Sprintf("%s=%v", k, v)
+
+		// Encode value with type-specific format
+		var valueStr string
+		switch val := v.(type) {
+		case bool:
+			valueStr = fmt.Sprintf("%v", val)
+		case byte:
+			valueStr = fmt.Sprintf("0x%02x", val)
+		case int32:
+			valueStr = fmt.Sprintf("%d", val)
+		case int:
+			valueStr = fmt.Sprintf("%d", val)
+		case float32:
+			valueStr = fmt.Sprintf("%.1f", val)
+		case string:
+			valueStr = fmt.Sprintf("\"%s\"", val)
+		default:
+			valueStr = fmt.Sprintf("%v", val)
+		}
+
+		result += fmt.Sprintf("%s=%s", k, valueStr)
 		first = false
 	}
 	result += "]"
@@ -630,7 +655,13 @@ func splitProperties(s string) []string {
 	return result
 }
 
-// parsePropertyValue attempts to parse a property value as the appropriate type.
+// parsePropertyValue attempts to parse a property value from string.
+// Recognizes type-specific formats:
+// - true/false -> boolean
+// - 0x00-0xFF (hex) -> byte
+// - plain numbers with decimal -> float32
+// - plain integers -> int32
+// - "quoted" -> string
 func parsePropertyValue(s string) any {
 	// Try boolean
 	if s == "true" {
@@ -640,18 +671,43 @@ func parsePropertyValue(s string) any {
 		return false
 	}
 
-	// Try integer
+	// Try hex byte (0x00 to 0xFF)
+	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		var b byte
+		if _, err := fmt.Sscanf(s, "0x%02x", &b); err == nil {
+			return b
+		}
+	}
+
+	// Try quoted string
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+
+	// Try float (has decimal point)
+	if containsChar(s, '.') {
+		var f float32
+		if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
+			return f
+		}
+	}
+
+	// Try integer (int32)
 	var i int32
 	if _, err := fmt.Sscanf(s, "%d", &i); err == nil {
 		return i
 	}
 
-	// Try float
-	var f float32
-	if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
-		return f
-	}
-
 	// Default to string
 	return s
+}
+
+// containsChar checks if a string contains a character
+func containsChar(s string, c byte) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return true
+		}
+	}
+	return false
 }
