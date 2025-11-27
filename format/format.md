@@ -83,8 +83,6 @@ Chunk:
 - entity[entity_count]
 - varint scheduled_tick_count
 - scheduled_tick[scheduled_tick_count]
-- bytes heightmaps
-  - Reserved for future use. May be empty.
 - bytes chunk_user_data
   - Reserved for future use. May be empty.
 
@@ -173,13 +171,6 @@ scheduled_tick:
 - int32 y (absolute Y)
 - string block (block identifier who owns the tick, e.g., "minecraft:oak_sapling")
 - varint tick (int64; absolute tick time)
-
----
-
-## Heightmaps (reserved)
-
-- bytes heightmaps
-  - Currently unused. If present, the interpretation is application-defined. May be empty.
 
 ---
 

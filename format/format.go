@@ -158,8 +158,6 @@ type Chunk struct {
 	Entities []Entity
 	// ScheduledTicks stores scheduled block updates (scheduled ticks).
 	ScheduledTicks []ScheduledTick
-	// Heightmaps stores heightmap data (currently unused, reserved for future use)
-	Heightmaps []byte
 	// UserData stores arbitrary chunk metadata (reserved for future use)
 	UserData []byte
 }

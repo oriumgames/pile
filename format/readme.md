@@ -101,7 +101,6 @@ type Chunk struct {
     BlockEntities  []BlockEntity
     Entities       []Entity
     ScheduledTicks []ScheduledTick
-    Heightmaps     []byte
     UserData       []byte
 }
 ```

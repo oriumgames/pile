@@ -73,9 +73,6 @@ func EncodeChunk(buf *buffer, c *Chunk, minSection, maxSection int32) {
 		buf.WriteVarInt(t.Tick)
 	}
 
-	// Write heightmaps (currently empty)
-	buf.WriteBytes(c.Heightmaps)
-
 	// Write user data
 	buf.WriteBytes(c.UserData)
 }

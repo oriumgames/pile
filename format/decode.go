@@ -209,13 +209,6 @@ func decodeChunk(rd *reader, minSection, maxSection int32) (*Chunk, error) {
 		})
 	}
 
-	// Read heightmaps
-	heightmaps, err := rd.ReadBytes()
-	if err != nil {
-		return nil, fmt.Errorf("read heightmaps: %w", err)
-	}
-	chunk.Heightmaps = heightmaps
-
 	// Read user data
 	userData, err := rd.ReadBytes()
 	if err != nil {
