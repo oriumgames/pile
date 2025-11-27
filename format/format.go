@@ -147,6 +147,20 @@ func (w *World) ChunkCount() int {
 	return len(w.chunks)
 }
 
+// GetUserData returns the world's user data.
+func (w *World) GetUserData() []byte {
+	return w.UserData
+}
+
+// SetUserData sets the world's user data.
+// Silently ignores the operation if the world is read-only.
+func (w *World) SetUserData(data []byte) {
+	if w.readOnly {
+		return
+	}
+	w.UserData = data
+}
+
 // Chunk represents a 16x16 column of sections spanning the entire height of a dimension.
 type Chunk struct {
 	X        int32      // Chunk X coordinate in world space
