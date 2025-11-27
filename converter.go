@@ -148,9 +148,12 @@ func convertSectionBlocks(ch *chunk.Chunk, section *format.Section, sectionY int
 
 	// Convert palette strings to runtime IDs
 	runtimePalette := make([]uint32, len(section.BlockPalette))
-	for i, blockName := range section.BlockPalette {
-		// Try to parse block name and get block
-		block, ok := world.BlockByName(blockName, nil)
+	for i, blockState := range section.BlockPalette {
+		// Parse block state string into name and properties
+		name, properties := parseBlockState(blockState)
+
+		// Try to get block with properties
+		block, ok := world.BlockByName(name, properties)
 		if !ok {
 			// Unknown block, use air
 			block, _ = world.BlockByName("minecraft:air", nil)
@@ -399,15 +402,16 @@ func convertStorageToPile(storage *chunk.PalettedStorage) ([]string, []int64) {
 	palette := storage.Palette()
 	paletteLen := palette.Len()
 
-	// Convert runtime IDs to block names
+	// Convert runtime IDs to block names with properties
 	blockNames := make([]string, paletteLen)
 	for i := range paletteLen {
 		rid := palette.Value(uint16(i))
-		name, _, _ := chunk.RuntimeIDToState(rid)
+		name, properties, _ := chunk.RuntimeIDToState(rid)
 		if name == "" {
 			name = "minecraft:air"
 		}
-		blockNames[i] = name
+		// Encode block with properties in a parseable format
+		blockNames[i] = encodeBlockState(name, properties)
 	}
 
 	// Encode indices
@@ -524,4 +528,130 @@ func decodeIndices(data []int64, bitsPerBlock, count int) []int {
 	}
 
 	return indices
+}
+
+// encodeBlockState encodes a block name and properties into a string format.
+// Format: "name" or "name{prop1:value1,prop2:value2}"
+func encodeBlockState(name string, properties map[string]any) string {
+	if len(properties) == 0 {
+		return name
+	}
+
+	// Use Minecraft format with square brackets
+	result := name + "["
+	first := true
+	for k, v := range properties {
+		if !first {
+			result += ","
+		}
+		result += fmt.Sprintf("%s=%v", k, v)
+		first = false
+	}
+	result += "]"
+	return result
+}
+
+// parseBlockState parses a block state string into name and properties.
+// Handles formats: "name" or "name[prop1=value1,prop2=value2]"
+func parseBlockState(blockState string) (string, map[string]any) {
+	// Find the opening bracket
+	bracketIdx := -1
+	for i, c := range blockState {
+		if c == '[' {
+			bracketIdx = i
+			break
+		}
+	}
+
+	// No properties
+	if bracketIdx == -1 {
+		return blockState, nil
+	}
+
+	name := blockState[:bracketIdx]
+	propsStr := blockState[bracketIdx+1:]
+
+	// Remove closing bracket
+	if len(propsStr) > 0 && propsStr[len(propsStr)-1] == ']' {
+		propsStr = propsStr[:len(propsStr)-1]
+	}
+
+	// Parse properties
+	properties := make(map[string]any)
+	if len(propsStr) > 0 {
+		pairs := splitProperties(propsStr)
+		for _, pair := range pairs {
+			equalsIdx := -1
+			for i, c := range pair {
+				if c == '=' {
+					equalsIdx = i
+					break
+				}
+			}
+			if equalsIdx == -1 {
+				continue
+			}
+			key := pair[:equalsIdx]
+			valueStr := pair[equalsIdx+1:]
+
+			// Try to parse as different types
+			properties[key] = parsePropertyValue(valueStr)
+		}
+	}
+
+	return name, properties
+}
+
+// splitProperties splits a property string by commas, handling nested structures.
+func splitProperties(s string) []string {
+	var result []string
+	var current string
+	depth := 0
+
+	for _, c := range s {
+		if c == '{' || c == '[' {
+			depth++
+		} else if c == '}' || c == ']' {
+			depth--
+		} else if c == ',' && depth == 0 {
+			if len(current) > 0 {
+				result = append(result, current)
+				current = ""
+			}
+			continue
+		}
+		current += string(c)
+	}
+
+	if len(current) > 0 {
+		result = append(result, current)
+	}
+
+	return result
+}
+
+// parsePropertyValue attempts to parse a property value as the appropriate type.
+func parsePropertyValue(s string) any {
+	// Try boolean
+	if s == "true" {
+		return true
+	}
+	if s == "false" {
+		return false
+	}
+
+	// Try integer
+	var i int32
+	if _, err := fmt.Sscanf(s, "%d", &i); err == nil {
+		return i
+	}
+
+	// Try float
+	var f float32
+	if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
+		return f
+	}
+
+	// Default to string
+	return s
 }
