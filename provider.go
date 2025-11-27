@@ -67,7 +67,7 @@ func NewWithCompression(dir string, compressionLevel CompressionLevel) (*Provide
 }
 
 // NewReadOnly creates a new read-only Pile provider in the given directory.
-// All modification operations (StoreColumn, SaveSettings, SavePlayerSpawnPosition) will be silently ignored.
+// All modification operations (StoreColumn, SetUserData, SavePlayerSpawnPosition) will be silently ignored.
 // The provider will not create any files if they don't exist.
 func NewReadOnly(dir string) (*Provider, error) {
 	return NewReadOnlyWithCompression(dir, CompressionLevelDefault)
@@ -125,16 +125,11 @@ func (p *Provider) Settings() *world.Settings {
 	return p.settings
 }
 
-// SaveSettings saves the world settings.
-// Silently ignores the operation if the provider is read-only.
+// SaveSettings sets the world settings.
+// Pile doesn't store any settings data.
 func (p *Provider) SaveSettings(s *world.Settings) {
 	p.mu.Lock()
-	if p.readOnly {
-		p.mu.Unlock()
-		return
-	}
 	p.settings = s
-	p.dirty = true
 	p.mu.Unlock()
 }
 
@@ -290,6 +285,27 @@ func (p *Provider) worldForDim(dim world.Dimension) *format.World {
 	}
 }
 
+// GetUserData returns the user data for the specified dimension.
+func (p *Provider) GetUserData() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.overworld.UserData
+}
+
+// SetUserData sets the user data for the specified dimension.
+// Silently ignores the operation if the provider is read-only.
+func (p *Provider) SetUserData(d world.Dimension, data []byte) {
+	if p.readOnly {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.overworld.SetUserData(data)
+	p.dirty = true
+}
+
 // setWorldForDim sets the world for the given dimension.
 func (p *Provider) setWorldForDim(dim world.Dimension, w *format.World) {
 	switch dim {
@@ -344,15 +360,6 @@ func (p *Provider) load(readOnly bool) error {
 		p.setWorldForDim(dim, w)
 	}
 
-	// Load settings from metadata if available
-	if p.overworld != nil && len(p.overworld.UserData) > 0 {
-		settings := &Settings{}
-		if err := decodeSettings(p.overworld.UserData, settings); err == nil {
-			// Successfully loaded settings - convert to world.Settings
-			p.settings = settingsFromInternal(settings)
-		}
-	}
-
 	return nil
 }
 
@@ -365,12 +372,6 @@ func (p *Provider) saveInternal() error {
 		{world.Overworld, p.overworld},
 		{world.Nether, p.nether},
 		{world.End, p.end},
-	}
-
-	// Encode settings into overworld metadata
-	if p.overworld != nil {
-		settings := settingsToInternal(p.settings)
-		p.overworld.UserData = encodeSettings(settings)
 	}
 
 	for _, d := range dims {
@@ -413,12 +414,9 @@ func (p *Provider) saveInternal() error {
 // defaultSettings returns default world settings.
 func defaultSettings() *world.Settings {
 	return &world.Settings{
-		Name:            "World",
-		Spawn:           cube.Pos{0, 64, 0},
+		Name:            "Pile",
 		Time:            6000,
-		TimeCycle:       true,
-		WeatherCycle:    true,
-		DefaultGameMode: world.GameModeSurvival,
+		DefaultGameMode: world.GameModeAdventure,
 		Difficulty:      world.DifficultyNormal,
 	}
 }

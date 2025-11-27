@@ -6,7 +6,7 @@ require (
 	github.com/df-mc/dragonfly v0.10.8
 	github.com/df-mc/goleveldb v1.1.9
 	github.com/google/uuid v1.6.0
-	github.com/oriumgames/pile/format v0.1.2
+	github.com/oriumgames/pile/format v0.1.4
 	github.com/sandertv/gophertunnel v1.50.1
 )
 
