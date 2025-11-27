@@ -147,11 +147,6 @@ func (w *World) ChunkCount() int {
 	return len(w.chunks)
 }
 
-// GetUserData returns the world's user data.
-func (w *World) GetUserData() []byte {
-	return w.UserData
-}
-
 // SetUserData sets the world's user data.
 // Silently ignores the operation if the world is read-only.
 func (w *World) SetUserData(data []byte) {
