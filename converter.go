@@ -18,8 +18,11 @@ func chunkToColumn(c *format.Chunk, dimRange cube.Range) (*chunk.Column, error) 
 	air, _ := world.BlockByName("minecraft:air", nil)
 	airRID := world.BlockRuntimeID(air)
 
-	// Create Dragonfly chunk
-	ch := chunk.New(airRID, dimRange)
+	// Create Dragonfly chunk. Since dragonfly v0.11.0 chunk.New takes the block
+	// registry rather than a bare air runtime ID: the registry is what resolves
+	// runtime IDs to states, so a chunk now carries the mapping its storages are
+	// encoded against instead of assuming the global one.
+	ch := chunk.New(world.DefaultBlockRegistry, dimRange)
 
 	// Convert sections
 	for i, section := range c.Sections {
@@ -374,7 +377,7 @@ func columnToChunk(col *chunk.Column, x, z int32, dimRange cube.Range) (*format.
 		relZ := uint8(t.Pos.Z() & 0xF)
 		packedXZ := relX | (relZ << 4)
 
-		name, _, _ := chunk.RuntimeIDToState(t.Block)
+		name, _, _ := world.DefaultBlockRegistry.RuntimeIDToState(t.Block)
 		if name == "" {
 			name = "minecraft:air"
 		}
@@ -406,7 +409,7 @@ func convertStorageToPile(storage *chunk.PalettedStorage) ([]string, []int64) {
 	blockNames := make([]string, paletteLen)
 	for i := range paletteLen {
 		rid := palette.Value(uint16(i))
-		name, properties, _ := chunk.RuntimeIDToState(rid)
+		name, properties, _ := world.DefaultBlockRegistry.RuntimeIDToState(rid)
 		if name == "" {
 			name = "minecraft:air"
 		}
