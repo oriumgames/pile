@@ -55,13 +55,18 @@ func (w *nbtWalker) i32() (int32, error) {
 	return v, nil
 }
 
-// name skips a tag name (u16 length + bytes).
-func (w *nbtWalker) name() error {
+// name reads a tag name (u16 length + bytes) and returns it.
+func (w *nbtWalker) name() (string, error) {
 	n, err := w.u16()
 	if err != nil {
-		return err
+		return "", err
 	}
-	return w.skip(n)
+	if w.remaining() < n {
+		return "", corruptf("nbt: truncated name (want %d bytes, have %d)", n, w.remaining())
+	}
+	s := string(w.b[w.off : w.off+n])
+	w.off += n
+	return s, nil
 }
 
 // minPayloadSize is the smallest number of bytes a payload of the given tag
@@ -99,8 +104,13 @@ func validateNBT(b []byte) error {
 	if t != tagCompound {
 		return corruptf("nbt: root tag type %d is not a compound", t)
 	}
-	if err := w.name(); err != nil {
+	root, err := w.name()
+	if err != nil {
 		return err
+	}
+	if root != "" {
+		// One canonical envelope: the root compound is unnamed.
+		return corruptf("nbt: root compound must be unnamed, got %q", root)
 	}
 	if err := w.payload(tagCompound, 0); err != nil {
 		return err
@@ -180,6 +190,10 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 		}
 		return nil
 	case tagCompound:
+		// Keys must be unique and strictly ascending: duplicates are
+		// ambiguous, and a fixed order is what makes equal content produce
+		// equal bytes across independent writers.
+		prev, first := "", true
 		for {
 			ct, err := w.u8()
 			if err != nil {
@@ -191,9 +205,17 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 			if _, ok := minPayloadSize(ct); !ok {
 				return corruptf("nbt: unknown tag type %d", ct)
 			}
-			if err := w.name(); err != nil {
+			key, err := w.name()
+			if err != nil {
 				return err
 			}
+			if !first && key <= prev {
+				if key == prev {
+					return corruptf("nbt: duplicate compound key %q", key)
+				}
+				return corruptf("nbt: compound keys must ascend, %q follows %q", key, prev)
+			}
+			prev, first = key, false
 			if err := w.payload(ct, depth+1); err != nil {
 				return err
 			}

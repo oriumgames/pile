@@ -162,6 +162,11 @@ const (
 	// maxLayers matches Bedrock's sub chunk storage count, which is encoded
 	// as a byte on disk.
 	maxLayers = 256
+	// maxDirEntries bounds an indexed directory. The directory is one frame
+	// and every entry costs at least a few bytes, so the ceiling that the
+	// design can actually reach is set by the directory decode limit, not by
+	// maxChunks: advertising more would be a promise the layout cannot keep.
+	maxDirEntries = 1 << 22
 	// maxStructureCells bounds a structure's 16-cube cell grid. Unlike a
 	// world, a structure is a single in-memory object, so this is both a
 	// wire validity rule and an allocation bound: 2^20 cells spans a

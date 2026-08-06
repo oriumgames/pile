@@ -21,9 +21,11 @@ func borderToNBT(b *Border) ([]byte, error) {
 	if b == nil {
 		return nil, nil
 	}
+	// Fixed-size arrays encode as NBT array tags (slices encode as lists),
+	// which is what the border schema specifies.
 	return format.MarshalNBT(map[string]any{
-		"min": []int32{b.Min[0], b.Min[1]},
-		"max": []int32{b.Max[0], b.Max[1]},
+		"min": [2]int32{b.Min[0], b.Min[1]},
+		"max": [2]int32{b.Max[0], b.Max[1]},
 	})
 }
 

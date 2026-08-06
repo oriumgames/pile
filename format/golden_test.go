@@ -213,10 +213,35 @@ func TestGoldenFormatStability(t *testing.T) {
 		compareGolden(t, filepath.Join(goldenDir, "golden_structure.pile"), buf.Bytes())
 	})
 
+	t.Run("structure_zstd", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, goldenStructure(t, reg), reg, Options{Compression: CompressionBest}); err != nil {
+			t.Fatal(err)
+		}
+		newHashes["structure_zstd"] = xxhash.Sum64(buf.Bytes())
+		compareGolden(t, filepath.Join(goldenDir, "golden_structure_zstd.pile"), buf.Bytes())
+	})
+
 	t.Run("indexed", func(t *testing.T) {
 		b := buildGoldenIndexed(t, reg)
 		newHashes["indexed"] = xxhash.Sum64(b)
 		compareGolden(t, filepath.Join(goldenDir, "golden_indexed.pile"), b)
+	})
+
+	// A compacted indexed file is deliberately not byte-locked: compaction
+	// trains a shared dictionary, and the trainer is not reproducible, so
+	// these files legitimately differ run to run. Indexed mode is documented
+	// as history-dependent for exactly this reason, and ContentHash is the
+	// identity mechanism there. The fixture is still regenerated under
+	// -update and its structure is locked by TestGoldenFormatReadable.
+	t.Run("indexed_compact", func(t *testing.T) {
+		if !*update {
+			t.Skip("compacted indexed files are not byte-reproducible; structure is checked in TestGoldenFormatReadable")
+		}
+		b := buildGoldenIndexedCompact(t, reg)
+		if err := os.WriteFile(filepath.Join(goldenDir, "golden_indexed_compact.pile"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	})
 }
 
@@ -249,6 +274,60 @@ func compareGolden(t *testing.T, path string, got []byte) {
 // buildGoldenIndexed writes a fixed indexed world (records, palette segments,
 // metadata, directory, footer chain) and returns its bytes. Compaction runs so
 // the dictionary path is exercised too.
+// buildGoldenIndexedCompact pins the paths the uncompressed fixture cannot
+// reach: compressed frames, dictionary training and compaction.
+func buildGoldenIndexedCompact(t *testing.T, reg world.BlockRegistry) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "compact.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := goldenWorld(t, reg)
+	// Enough varied records to make compaction meaningful and to give the
+	// dictionary trainer material it can actually work with: identical
+	// samples make training decline (or, upstream, panic).
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	dirt, _ := reg.StateToRuntimeID("minecraft:dirt", map[string]any{})
+	for i := range int32(24) {
+		c := d.Columns[int(i)%len(d.Columns)]
+		c.X, c.Z = i, i%3
+		ch := c.Col.Chunk.Clone()
+		for y := int16(-64); y < -64+int16(i%12); y++ {
+			ch.SetBlock(uint8(i%16), y, uint8((i*7)%16), 0, dirt)
+		}
+		ch.SetBlock(uint8((i*3)%16), -58, uint8(i%16), 0, stone)
+		c.Col = &chunk.Column{
+			Chunk: ch, BlockEntities: c.Col.BlockEntities,
+			Entities: c.Col.Entities, ScheduledBlocks: c.Col.ScheduledBlocks, Tick: int64(i),
+		}
+		if err := w.Store(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range int32(8) {
+		c := d.Columns[0]
+		c.X, c.Z = i, i%3
+		if err := w.Store(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.SetMeta(d.Settings, d.UserData, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func buildGoldenIndexed(t *testing.T, reg world.BlockRegistry) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "indexed.pile")
@@ -368,6 +447,47 @@ func TestGoldenFormatReadable(t *testing.T) {
 		if len(s.BlockEntities) != 1 || len(s.Entities) != 1 {
 			t.Fatalf("golden structure contents: %d block entities, %d entities",
 				len(s.BlockEntities), len(s.Entities))
+		}
+	})
+
+	t.Run("indexed_compact", func(t *testing.T) {
+		src := filepath.Join(goldenDir, "golden_indexed_compact.pile")
+		file, err := os.ReadFile(src)
+		if err != nil {
+			t.Skipf("no compacted golden yet: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "compact.pile")
+		if err := os.WriteFile(path, file, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w, err := OpenIndexed(path, reg, true)
+		if err != nil {
+			t.Fatalf("the current decoder cannot read the compacted golden: %v", err)
+		}
+		defer w.Close()
+		if w.Recovered() {
+			t.Fatal("compacted golden reports recovery")
+		}
+		if !w.HasDict() {
+			t.Fatal("compacted golden lost its shared dictionary")
+		}
+		if w.ChunkCount() != 24 {
+			t.Fatalf("compacted golden holds %d chunks, want 24", w.ChunkCount())
+		}
+		for _, k := range w.Positions() {
+			if _, err := w.Column(k[0], k[1]); err != nil {
+				t.Fatalf("compacted golden column (%d,%d): %v", k[0], k[1], err)
+			}
+		}
+	})
+
+	t.Run("structure_zstd", func(t *testing.T) {
+		file, err := os.ReadFile(filepath.Join(goldenDir, "golden_structure_zstd.pile"))
+		if err != nil {
+			t.Skipf("no compressed structure golden yet: %v", err)
+		}
+		if _, err := ReadStructure(file, reg); err != nil {
+			t.Fatalf("the current decoder cannot read the compressed structure golden: %v", err)
 		}
 	})
 

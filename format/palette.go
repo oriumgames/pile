@@ -1,6 +1,7 @@
 package format
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strconv"
@@ -30,11 +31,12 @@ type blockPaletteBuilder struct {
 }
 
 type blockPaletteEntry struct {
-	rid   uint32
-	name  string
-	props map[string]any
-	key   string // canonical state string, for deterministic ordering
-	count uint64
+	rid     uint32
+	name    string
+	props   map[string]any
+	key     string // canonical state string, for deterministic ordering
+	count   uint64
+	version int32 // 0 = the palette's own version
 }
 
 func newBlockPaletteBuilder(reg world.BlockRegistry) *blockPaletteBuilder {
@@ -68,14 +70,14 @@ func (b *blockPaletteBuilder) add(rid uint32) uint32 {
 // states never collide with registry-resolvable ones, so keying by canonical
 // state string is safe.
 func (b *blockPaletteBuilder) addState(bs BlockState) uint32 {
-	key := stateIdentity(bs.Name, bs.Properties)
+	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(bs.Version))
 	if i, ok := b.byKey[key]; ok {
 		b.ent[i].count++
 		return i
 	}
 	i := uint32(len(b.ent))
 	b.ent = append(b.ent, blockPaletteEntry{
-		name: bs.Name, props: bs.Properties, key: key, count: 1,
+		name: bs.Name, props: bs.Properties, key: key, count: 1, version: bs.Version,
 	})
 	b.byKey[key] = i
 	return i
@@ -110,6 +112,11 @@ func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err er
 	remap = make([]uint32, len(b.ent))
 	w := &writer{}
 	w.uvarint(uint64(len(order)))
+	type override struct {
+		index   uint64
+		version int32
+	}
+	var overrides []override
 	for final, build := range order {
 		remap[build] = uint32(final)
 		e := &b.ent[build]
@@ -118,6 +125,20 @@ func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err er
 		}
 		w.str(e.name)
 		encodeProps(w, e.props)
+		if e.version != 0 {
+			overrides = append(overrides, override{index: uint64(final), version: e.version})
+		}
+	}
+	// Sparse version overrides: entries whose states are expressed at a
+	// different block version than the palette's own. Empty (one byte) for
+	// every file that holds no preserved unknown states.
+	slices.SortFunc(overrides, func(x, y override) int { return cmp.Compare(x.index, y.index) })
+	w.uvarint(uint64(len(overrides)))
+	var prev uint64
+	for _, o := range overrides {
+		w.uvarint(o.index - prev)
+		w.i32(o.version)
+		prev = o.index
 	}
 	return w.bytes(), remap, nil
 }
@@ -282,15 +303,24 @@ func encodeProps(w *writer, props map[string]any) {
 type BlockState struct {
 	Name       string
 	Properties map[string]any
+	// Version is the Minecraft block version the name and properties are
+	// expressed at. Zero means "the version recorded for the palette that
+	// holds this entry". Preserved unknown states keep the version of the
+	// file they came from, so a later runtime that learns the state upgrades
+	// it from the right starting point instead of the writer's own version.
+	Version int32
 }
 
 // parsedState is a block state read from a palette, before resolution.
 type parsedState struct {
-	name  string
-	props map[string]any
+	name    string
+	props   map[string]any
+	version int32 // 0 = the palette's own version
 }
 
 // parseStatePalette reads a count-prefixed list of encoded block states.
+// parseStatePalette reads a count-prefixed list of encoded block states
+// followed by the sparse version-override table.
 func parseStatePalette(r *reader) ([]parsedState, error) {
 	n, err := r.count(maxPalette, "block palette")
 	if err != nil {
@@ -346,12 +376,42 @@ func parseStatePalette(r *reader) ([]parsedState, error) {
 		}
 		entries[i] = parsedState{name: name, props: props}
 	}
+	overrideN, err := r.count(uint64(len(entries)), "palette version override")
+	if err != nil {
+		return nil, err
+	}
+	var prev uint64
+	for i := range overrideN {
+		delta, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 && delta == 0 {
+			return nil, corruptf("palette version overrides must be strictly ascending")
+		}
+		idx := prev + delta
+		if idx >= uint64(len(entries)) {
+			return nil, corruptf("palette version override index %d out of range", idx)
+		}
+		v, err := r.u32()
+		if err != nil {
+			return nil, err
+		}
+		if int32(v) == 0 {
+			return nil, corruptf("palette version override must not be zero")
+		}
+		entries[idx].version = int32(v)
+		prev = idx
+	}
 	return entries, nil
 }
 
 // resolveState upgrades a parsed state to the current block version and looks
 // it up in the registry.
 func resolveState(e parsedState, reg world.BlockRegistry, blockVersion int32) (uint32, bool) {
+	if e.version != 0 {
+		blockVersion = e.version // preserved state: upgrade from its own version
+	}
 	up := blockupgrader.Upgrade(blockupgrader.BlockState{
 		Name: e.name, Properties: e.props, Version: blockVersion,
 	})
@@ -386,7 +446,11 @@ func decodeBlockPalette(r *reader, reg world.BlockRegistry, blockVersion int32) 
 		if !ok {
 			rid = placeholder
 			unknown[i] = int32(len(states))
-			states = append(states, BlockState{Name: e.name, Properties: e.props})
+			v := e.version
+			if v == 0 {
+				v = blockVersion // the file's version applies to this entry
+			}
+			states = append(states, BlockState{Name: e.name, Properties: e.props, Version: v})
 		}
 		rids[i] = rid
 	}

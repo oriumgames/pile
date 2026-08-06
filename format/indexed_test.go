@@ -515,3 +515,36 @@ func TestIndexedStoreValidatesColumn(t *testing.T) {
 		t.Fatal("rejected column was stored anyway")
 	}
 }
+
+// TestCompactSurvivesDictionaryFailure: dictionary training is best effort
+// and must never take down a compaction, whatever the samples look like.
+func TestCompactSurvivesDictionaryFailure(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "dictfail.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Highly repetitive records: the upstream dictionary builder has been
+	// observed to panic on sample sets like this.
+	for i := range int32(24) {
+		c := buildTestColumn(t, reg, i, 0)
+		if err := w.Store(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Compact(); err != nil {
+		t.Fatalf("compaction failed: %v", err)
+	}
+	if w.ChunkCount() != 24 {
+		t.Fatalf("chunks after compaction = %d, want 24", w.ChunkCount())
+	}
+	for _, k := range w.Positions() {
+		if _, err := w.Column(k[0], k[1]); err != nil {
+			t.Fatalf("column (%d,%d) unreadable after compaction: %v", k[0], k[1], err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

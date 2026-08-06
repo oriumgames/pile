@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -54,6 +55,11 @@ type IndexedWorld struct {
 	end        int64
 	generation uint64
 	compressed bool
+	// headerFlags and headerBlockVersion mirror the file header. Each
+	// checkpoint records them, so recovery can validate (and report) a
+	// header that no longer matches the checkpoints it belongs to.
+	headerFlags        uint32
+	headerBlockVersion int32
 	// prevFooterOff is the offset of the newest durable footer, chained into
 	// the next footer for recovery sanity checks.
 	prevFooterOff int64
@@ -78,15 +84,16 @@ type IndexedWorld struct {
 	metaDirty          bool
 
 	// Global block palette: segments on disk plus pending entries.
-	blockSegs    []frameRef
-	blockIdx     map[uint32]uint32
-	stateIdx     map[string]uint32 // canonical state string → index (unknown states)
-	rids         []uint32          // palette index → runtime ID
-	unknown      []int32           // palette index → UnknownStates index or -1
-	unkStates    []BlockState
-	identity     []uint32 // identity remap for canonicalBlob
-	pendingBlock writer
-	pendingBlkN  int
+	blockSegs       []frameRef
+	blockIdx        map[uint32]uint32
+	stateIdx        map[string]uint32 // canonical state string → index (unknown states)
+	rids            []uint32          // palette index → runtime ID
+	unknown         []int32           // palette index → UnknownStates index or -1
+	unkStates       []BlockState
+	identity        []uint32 // identity remap for canonicalBlob
+	pendingBlock    writer
+	pendingBlkN     int
+	pendingOverride []paletteOverride
 
 	// Global biome palette.
 	biomeSegs    []frameRef
@@ -115,6 +122,32 @@ type IndexedWorld struct {
 // directory references carries its own hash, so corruption in a palette
 // segment, the metadata or the dictionary is detected rather than silently
 // changing world content.
+// buildDictionary trains a shared compression dictionary. The upstream
+// builder panics rather than erroring on some sample sets (highly repetitive
+// input, for instance), and compaction must never take a server down, so the
+// panic is contained and treated as "no dictionary": the file is simply
+// compacted without one.
+func buildDictionary(samples [][]byte, level CompressionLevel) (d []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			d, err = nil, fmt.Errorf("pile: dictionary training failed: %v", r)
+		}
+	}()
+	return dict.BuildZstdDict(samples, dict.Options{
+		MaxDictSize: 16 << 10,
+		HashBytes:   6,
+		ZstdDictID:  0x504C4531, // fixed for reproducible compaction
+		ZstdLevel:   zstdLevel(level),
+	})
+}
+
+// paletteOverride records a pending palette entry whose block version
+// differs from the segment's own.
+type paletteOverride struct {
+	index   uint64
+	version int32
+}
+
 type frameRef struct {
 	off    int64
 	length uint32
@@ -160,6 +193,7 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 		return nil, fmt.Errorf("pile: write header: %w", err)
 	}
 	w.hdrBytes = append([]byte(nil), hdr.bytes()...)
+	w.headerFlags, w.headerBlockVersion = flags, chunk.CurrentBlockVersion
 	w.end = headerSize
 	w.recordsDirty = true // force the initial checkpoint
 	if err := w.checkpointLocked(); err != nil {
@@ -297,6 +331,7 @@ func (w *IndexedWorld) load() error {
 	if flags&(FlagDefaultBiome|FlagStats) != 0 || flags>>defaultBiomeShift != 0 {
 		return corruptf("flags 0x%08X are not valid for an indexed file", flags)
 	}
+	w.headerFlags, w.headerBlockVersion = flags, int32(binary.LittleEndian.Uint32(hdr[12:16]))
 	w.compressed = flags&FlagUncompressed == 0
 	w.opts.StoreLight = flags&FlagStoreLight != 0
 
@@ -489,13 +524,18 @@ func (w *IndexedWorld) tryFooter(off int64) (footerCand, bool) {
 
 // loadDirectory decodes the directory frame and all referenced segments.
 func (w *IndexedWorld) loadDirectory(ref frameRef) error {
-	body, err := w.readFrame(ref)
+	body, err := w.readDirFrame(ref)
 	if err != nil {
 		return fmt.Errorf("pile: read directory: %w", err)
 	}
 	r := &reader{b: body}
 	validRef := func(ref frameRef, what string) error {
 		if ref.length == 0 {
+			// Absent references are canonical: all three fields zero, so
+			// equivalent directories cannot differ in bytes or hash.
+			if ref.off != 0 || ref.hash != 0 {
+				return corruptf("absent %s reference must be all-zero, got off=%d hash=%d", what, ref.off, ref.hash)
+			}
 			return nil
 		}
 		if ref.off < headerSize || uint64(ref.length) > maxFrameLen || int64(ref.length) > w.end-ref.off {
@@ -623,7 +663,7 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		return err
 	}
 
-	chunkN, err := r.count(maxChunks, "chunk")
+	chunkN, err := r.count(maxDirEntries, "directory chunk")
 	if err != nil {
 		return err
 	}
@@ -687,9 +727,12 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 			w.identity = append(w.identity, idx)
 			if segUnknown[i] >= 0 {
 				st := segStates[segUnknown[i]]
+				if st.Version == 0 {
+					st.Version = int32(segVersion)
+				}
 				w.unknown = append(w.unknown, int32(len(w.unkStates)))
 				w.unkStates = append(w.unkStates, st)
-				w.stateIdx[stateIdentity(st.Name, st.Properties)] = idx
+				w.stateIdx[stateIdentity(st.Name, st.Properties)+"@"+strconv.Itoa(int(st.Version))] = idx
 			} else {
 				w.unknown = append(w.unknown, -1)
 				if _, ok := w.blockIdx[rid]; !ok {
@@ -737,6 +780,23 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		}
 	}
 	return nil
+}
+
+// readDirFrame reads the directory frame, which is bounded separately from
+// record frames because it describes the whole file.
+func (w *IndexedWorld) readDirFrame(ref frameRef) ([]byte, error) {
+	buf := make([]byte, ref.length)
+	if _, err := w.f.ReadAt(buf, ref.off); err != nil {
+		return nil, err
+	}
+	if !w.compressed {
+		return buf, nil
+	}
+	out, err := sharedDirectoryDecoder().DecodeAll(buf, nil)
+	if err != nil {
+		return nil, corruptf("decompress directory frame: %v", err)
+	}
+	return out, nil
 }
 
 // readFrame reads and decompresses a frame.
@@ -788,7 +848,7 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool) (frameRef, []byt
 // addState assigns (or returns) the palette index of a preserved unknown
 // state, queueing new entries for the next checkpoint's segment.
 func (w *IndexedWorld) addState(bs BlockState) uint32 {
-	key := stateIdentity(bs.Name, bs.Properties)
+	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(bs.Version))
 	if idx, ok := w.stateIdx[key]; ok {
 		return idx
 	}
@@ -800,6 +860,13 @@ func (w *IndexedWorld) addState(bs BlockState) uint32 {
 	w.identity = append(w.identity, idx)
 	w.pendingBlock.str(bs.Name)
 	encodeProps(&w.pendingBlock, bs.Properties)
+	if bs.Version != 0 {
+		// This state is expressed at a different version than the segment it
+		// lands in (a preserved unknown state carried through compaction).
+		w.pendingOverride = append(w.pendingOverride, paletteOverride{
+			index: uint64(w.pendingBlkN), version: bs.Version,
+		})
+	}
 	w.pendingBlkN++
 	return idx
 }
@@ -882,6 +949,9 @@ func (w *IndexedWorld) Store(c Column) error {
 		return err
 	}
 	key := [2]int32{c.X, c.Z}
+	if _, ok := w.dir[key]; !ok && len(w.dir) >= maxDirEntries {
+		return fmt.Errorf("pile: indexed world already holds %d chunks (limit %d)", len(w.dir), maxDirEntries)
+	}
 	if prev, ok := w.dir[key]; ok {
 		w.liveBytes -= int64(prev.length)
 	}
@@ -1095,6 +1165,13 @@ func (w *IndexedWorld) checkpointLocked() error {
 		seg.u32(uint32(chunk.CurrentBlockVersion)) // states below are at this version
 		seg.uvarint(uint64(w.pendingBlkN))
 		seg.raw(w.pendingBlock.bytes())
+		seg.uvarint(uint64(len(w.pendingOverride)))
+		var prevIdx uint64
+		for _, o := range w.pendingOverride {
+			seg.uvarint(o.index - prevIdx)
+			seg.i32(o.version)
+			prevIdx = o.index
+		}
 		ref, _, err := w.appendFrame(seg.bytes())
 		if err != nil {
 			return err
@@ -1102,6 +1179,7 @@ func (w *IndexedWorld) checkpointLocked() error {
 		w.blockSegs = append(w.blockSegs, ref)
 		w.pendingBlock = writer{}
 		w.pendingBlkN = 0
+		w.pendingOverride = nil
 	}
 	if w.pendingBioN > 0 {
 		seg := &writer{}
@@ -1262,12 +1340,7 @@ func (w *IndexedWorld) Compact() error {
 			total += len(body)
 		}
 		if len(samples) >= dictMinSamples && total >= dictMinBytes {
-			if d, err := dict.BuildZstdDict(samples, dict.Options{
-				MaxDictSize: 16 << 10,
-				HashBytes:   6,
-				ZstdDictID:  0x504C4531, // fixed for reproducible compaction
-				ZstdLevel:   zstdLevel(opts.Compression),
-			}); err == nil {
+			if d, err := buildDictionary(samples, opts.Compression); err == nil {
 				trained = d
 			}
 		}

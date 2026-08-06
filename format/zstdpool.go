@@ -17,8 +17,13 @@ import (
 // a solid body holds a whole (small-world) dimension, an indexed frame holds
 // one chunk record, palette segment, metadata blob or directory.
 const (
-	maxDecodedBody  = 512 << 20
+	maxDecodedBody = 512 << 20
+	// maxDecodedFrame covers record, palette and metadata frames, which each
+	// hold a single chunk's worth of data.
 	maxDecodedFrame = 64 << 20
+	// maxDecodedDirectory is larger: one directory describes every chunk in
+	// the file, and it bounds maxDirEntries.
+	maxDecodedDirectory = 512 << 20
 )
 
 var (
@@ -30,7 +35,25 @@ var (
 
 	frameDecOnce sync.Once
 	frameDec     *zstd.Decoder
+
+	dirDecOnce sync.Once
+	dirDec     *zstd.Decoder
 )
+
+// sharedDirectoryDecoder returns the process-wide decoder for indexed
+// directory frames, which are bounded separately from record frames.
+func sharedDirectoryDecoder() *zstd.Decoder {
+	dirDecOnce.Do(func() {
+		d, err := zstd.NewReader(nil,
+			zstd.WithDecoderConcurrency(runtime.GOMAXPROCS(0)),
+			zstd.WithDecoderMaxMemory(maxDecodedDirectory))
+		if err != nil {
+			panic("pile: create zstd directory decoder: " + err.Error())
+		}
+		dirDec = d
+	})
+	return dirDec
+}
 
 type encKey struct {
 	level zstd.EncoderLevel

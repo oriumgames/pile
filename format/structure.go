@@ -339,14 +339,23 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	if h.kind != KindStructure {
 		return nil, corruptf("file kind %d is not a structure", h.kind)
 	}
+	// A structure carries no light, stats, biomes or world metadata, so the
+	// corresponding flags would be meaningless: reject them rather than
+	// ignore them, or the same structure would have several valid encodings.
+	if h.flags&^FlagUncompressed != 0 {
+		return nil, corruptf("flags 0x%08X are not valid for a structure", h.flags)
+	}
 	body, err := decompressBody(h, stored)
 	if err != nil {
 		return nil, err
 	}
 	r := &reader{b: body}
-	_, userData, _, _, _, err := readMetaBlobs(r, h.flags)
+	settings, userData, markers, border, _, err := readMetaBlobs(r, h.flags)
 	if err != nil {
 		return nil, err
+	}
+	if len(settings) != 0 || len(markers) != 0 || len(border) != 0 {
+		return nil, corruptf("structure metadata must contain only user data")
 	}
 	rids, unknown, unkStates, err := decodeBlockPalette(r, reg, h.blockVersion)
 	if err != nil {

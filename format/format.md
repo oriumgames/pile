@@ -58,8 +58,11 @@ where `spread` distributes bit `i` of the input to bit `2i` of the output.
 
 **NBT.** All NBT blobs are little-endian Bedrock NBT (numbers little-endian,
 string lengths `u16`, array lengths `i32`), a single compound with an empty
-root name. Writers MUST emit compound keys in ascending bytewise order; this
-is what makes NBT-carrying files deterministic. Readers accept any key order.
+root name. Compound keys MUST be unique and in strictly ascending bytewise
+order, and the root compound MUST be unnamed: these are validity rules, not
+just writer conventions, because duplicate keys are ambiguous and a fixed
+order is what lets independent writers produce identical bytes for identical
+content. Decoders MUST reject blobs that violate them.
 
 Decoding NBT into a dynamically typed map cannot distinguish `TAG_List` of a
 numeric type from the corresponding array tag: both become the same host-language
@@ -174,6 +177,23 @@ entry[count]:
     value        u8 | i32 | string
 ```
 
+After the entries, a **sparse version-override table** records entries whose
+states are expressed at a different Minecraft block version than the palette
+itself:
+
+```
+overrideN        uvarint          (<= count; usually 0)
+override[overrideN]:             indices strictly ascending
+  indexDelta     uvarint          delta from the previous overridden index
+  version        i32              must be non-zero
+```
+
+Only preserved unresolved states (§9) can carry one: everything else is
+resolved against the live registry and is therefore at the palette's own
+version. Decoders MUST upgrade each entry from its own version when it has an
+override, and from the palette's version otherwise. Indexed palette segments
+carry the same table after their entries.
+
 Bedrock block state properties are exactly these three NBT types, making the
 encoding lossless. In solid mode the palette is sorted by descending reference count, where the
 **reference count is the number of section-local palettes the state appears
@@ -287,23 +307,23 @@ keys.
 dx, dz           svarint          chunk position delta from the previous
                                   record (the first record deltas from (0,0))
 minSection       svarint          lowest section index (blockY = section*16)
-sectionN         uvarint          section count (1 ≤ sectionN ≤ 512)
+sectionN         uvarint          section count (1 ≤ sectionN ≤ 4096)
 blockPresence    bitset(sectionN) bit i set = section i has block data
 present sections, ascending i:
-  layerN         uvarint          storage layers (1 ≤ layerN ≤ 4);
+  layerN         uvarint          storage layers (1 ≤ layerN ≤ 256);
                                   layer 1 is Bedrock's waterlogging layer
   blobRef[layerN] uvarint         blob table references
 biomePresence    bitset(sectionN)
 present biome sections, ascending i:
   blobRef        uvarint
 light            §4.6, present iff flag StoreLight
-beN              uvarint          (≤ 65 536)
+beN              uvarint          (≤ 1 048 576)
 be[beN]          §4.4
-entN             uvarint          (≤ 65 536)
+entN             uvarint          (≤ 1 048 576)
 ent[entN]:
   nbt            blob             §4.5
 tick             svarint          the column's current tick
-stN              uvarint          (≤ 65 536)
+stN              uvarint          (≤ 1 048 576)
 st[stN]:                          scheduled block updates
   packedXZ       u8               x = bits 0–3, z = bits 4–7 (chunk-local)
   y              svarint          absolute block Y
@@ -505,6 +525,19 @@ atomically renames it over the original.
 
 ---
 
+### 5.7 Canonical rules for indexed files
+
+- An absent frame reference MUST have offset, length and hash all zero; a
+  non-zero offset or hash with a zero length is invalid.
+- The directory repeats the semantic header fields (kind, mode, flags, block
+  version) so that a checkpoint remains self-describing: recovery validates
+  the header against the newest intact checkpoint instead of being defeated
+  by damage to the 16 header bytes it is hashed with.
+- The directory is a single frame, so the number of entries a conforming
+  implementation can address is bounded by its directory decode limit rather
+  than by the chunk ceiling of §8. The reference implementation accepts
+  4,194,304 directory entries.
+
 ## 6. Structure files (kind = 1, mode = 0)
 
 A structure is a free-standing box of blocks with a paste anchor. The body is
@@ -519,7 +552,7 @@ sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576)
 originX,Y,Z      svarint × 3      paste anchor offset
 cellPresence     bitset(cells)
 present cells:
-  layerN         uvarint  (≤ 4)
+  layerN         uvarint  (≤ 256)
   blobRef[layerN] uvarint
 beN              uvarint
 be[beN]:
@@ -529,6 +562,11 @@ entN             uvarint
 ent[entN]:
   nbt            blob             Pos is structure-local
 ```
+
+A structure header MUST set no flags other than `Uncompressed`, its settings,
+markers and border blobs MUST be empty, and its biome palette MUST have zero
+entries. Decoders MUST reject files that violate this, so one structure has
+exactly one valid envelope.
 
 The box is covered by 16³ **cells**: `cells{X,Y,Z} = ceil(size/16)`. The cell
 at cell-coordinates (cx, cy, cz) has index
