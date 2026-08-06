@@ -212,6 +212,12 @@ version. Decoders MUST upgrade each entry from its own version when it has an
 override, and from the palette's version otherwise. Indexed palette segments
 carry the same table after their entries.
 
+Property keys ascend bytewise and are unique, and decoders MUST reject a
+repeated or out-of-order key. The rule is the one NBT compounds already follow
+(§1) and exists for the same reason: without it one state has many encodings,
+and a repeated key is worse, since the later value silently wins and two
+different files decode to the same state.
+
 Bedrock block state properties are exactly these three NBT types, making the
 encoding lossless.
 
@@ -236,7 +242,9 @@ form, so an implementation in any language reproduces the order without first
 having to agree on a string representation. It is also the reason the order is
 total: two entries that compare equal at every step encode identical bytes at
 the same version and are therefore the same state, which writers MUST merge
-into one entry whose reference count is the sum.
+into one entry whose reference count is the sum. Decoders MUST reject a palette
+that carries both: a section could reference either, so the file would be a
+second encoding of one world.
 
 In indexed mode the palette is first-seen order across segments.
 
@@ -267,6 +275,9 @@ depends on the palette order, which would depend on the counts, which would
 depend on what elision removed. Counting first breaks the loop, and writers
 MUST count that way or two of them will disagree on the palette order, on
 `defaultBiomeRef` and therefore on every byte downstream.
+
+One entry per biome: decoders MUST reject a repeated name, for the reason §3.1
+gives for block states.
 
 Names, not numeric IDs, so entries stay stable across game versions. Names are
 **fully qualified**: every one MUST contain a namespace and a colon, and a bare
@@ -795,7 +806,10 @@ reader and a lenient one end up disagreeing about what is a valid file:
   Nothing here is required to be present.
 - **How a field is spelled is a rule.** When one of these fields *is* present
   it MUST carry the tag and shape stated below, and the marker list MUST be
-  ordered as stated. A writer that emits `time` as an int, or an unsorted
+  ordered as stated. Readers MUST enforce this exactly as writers do: an
+  unsorted marker list is a second encoding of one marker collection, so a
+  reader that accepts what a writer refuses to produce disagrees with it about
+  what a valid file is. A writer that emits `time` as an int, or an unsorted
   marker list, produces an invalid file even though the field itself was
   optional.
 

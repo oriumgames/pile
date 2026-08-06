@@ -2039,3 +2039,123 @@ func TestRejectedStoreRollsBackEveryPath(t *testing.T) {
 			refused-untouched, refused, untouched)
 	}
 }
+
+// Paired-path sweep. Each of these is a rule the writer already followed and
+// the reader did not, or a rule one member of a pair had and its twin lacked.
+
+// TestRejectsUnorderedStateProperties: writers sort property keys, so a reader
+// that takes any order accepts many encodings of one state. A repeated key is
+// worse: the later value silently wins, so two different files decode to the
+// same state.
+func TestRejectsUnorderedStateProperties(t *testing.T) {
+	reg := testRegistry(t)
+	// A palette with one entry carrying two properties, written by hand so
+	// the order can be chosen.
+	build := func(k1, k2 string) []byte {
+		w := &writer{}
+		w.uvarint(1) // one entry
+		w.str("audit:props")
+		w.uvarint(2)
+		for _, k := range []string{k1, k2} {
+			w.str(k)
+			w.u8(propInt)
+			w.u32(1)
+		}
+		w.uvarint(0) // no version overrides
+		return w.bytes()
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: build("a", "b")}, reg, chunk.CurrentBlockVersion); err != nil {
+		t.Fatalf("ascending keys were rejected: %v", err)
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: build("b", "a")}, reg, chunk.CurrentBlockVersion); err == nil {
+		t.Fatal("out-of-order property keys were accepted")
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: build("a", "a")}, reg, chunk.CurrentBlockVersion); err == nil {
+		t.Fatal("a repeated property key was accepted")
+	}
+}
+
+// TestRejectsDuplicatePaletteEntries: the writer merges entries that encode
+// identically at one version, so a file carrying both is a second encoding of
+// one palette and a section could reference either.
+func TestRejectsDuplicatePaletteEntries(t *testing.T) {
+	reg := testRegistry(t)
+	blocks := func(n int) []byte {
+		w := &writer{}
+		w.uvarint(uint64(n))
+		for range n {
+			w.str("minecraft:stone")
+			w.uvarint(0)
+		}
+		w.uvarint(0)
+		return w.bytes()
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: blocks(1)}, reg, chunk.CurrentBlockVersion); err != nil {
+		t.Fatalf("a single entry was rejected: %v", err)
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: blocks(2)}, reg, chunk.CurrentBlockVersion); err == nil {
+		t.Fatal("a duplicate block palette entry was accepted")
+	}
+
+	biomes := func(names ...string) []byte {
+		w := &writer{}
+		w.uvarint(uint64(len(names)))
+		for _, n := range names {
+			w.str(n)
+		}
+		return w.bytes()
+	}
+	if _, _, _, err := decodeBiomePalette(&reader{b: biomes("minecraft:plains", "minecraft:ocean")}); err != nil {
+		t.Fatalf("distinct biomes were rejected: %v", err)
+	}
+	if _, _, _, err := decodeBiomePalette(&reader{b: biomes("minecraft:plains", "minecraft:plains")}); err == nil {
+		t.Fatal("a duplicate biome palette entry was accepted")
+	}
+}
+
+// TestReaderEnforcesMetadataSchemas: the schemas were checked when a file was
+// written and not when one was read, so the two halves of this package
+// disagreed about what a valid file is.
+func TestReaderEnforcesMetadataSchemas(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+
+	// Splice an unsorted marker list into the meta block by rewriting the
+	// whole body: the blob lengths change, so patching in place will not do.
+	d, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsorted, err := marshalNBT(map[string]any{"markers": []map[string]any{
+		{"name": "b", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
+		{"name": "a", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The writer refuses it, which is why the file has to be assembled by
+	// hand to test the reader at all.
+	d.Markers = unsorted
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+		t.Fatal("the writer accepted an unsorted marker list")
+	}
+	// And the reader refuses the same bytes when they arrive from elsewhere.
+	if err := checkMarkersBlob(unsorted); err == nil {
+		t.Fatal("the shared schema check accepts an unsorted marker list")
+	}
+	if _, _, _, _, _, err := readMetaBlobs(&reader{b: metaBody(t, unsorted)}, 0); err == nil {
+		t.Fatal("the reader accepted an unsorted marker list")
+	}
+}
+
+// metaBody lays out a meta block carrying the given markers blob.
+func metaBody(t *testing.T, markers []byte) []byte {
+	t.Helper()
+	w := &writer{}
+	w.blob(nil) // settings
+	w.blob(nil) // user data
+	w.blob(markers)
+	w.blob(nil) // border
+	return w.bytes()
+}

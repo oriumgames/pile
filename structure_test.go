@@ -412,3 +412,52 @@ func TestExtractKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
 		t.Fatal("extraction dropped an unresolved block whose placeholder is air")
 	}
 }
+
+// TestPasteKeepsUnknownStatesAboveAllocatedLayers: extraction and paste are a
+// pair, and each has to reach every layer the sidecar names. A structure whose
+// preserved state lives in a layer no cell allocated would otherwise be pasted
+// without it, which is the extraction defect running the other way.
+func TestPasteKeepsUnknownStatesAboveAllocatedLayers(t *testing.T) {
+	base := testRegistry(t)
+	reg := airPlaceholderRegistry{base}
+
+	data, err := format.NewStructureData([3]int32{4, 1, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.UnknownStates = []format.BlockState{{Name: "audit:pasted", Version: 1}}
+	data.Unknown = []format.UnknownBlock{{
+		Section: 0, Layer: 1, Index: 0, State: 0,
+	}}
+	s := newStructure(data)
+	s.reg, s.air = reg, reg.AirRuntimeID()
+
+	dir := t.TempDir()
+	p, err := Open(dir, Registry(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PasteInto(p, world.Overworld, cube.Pos{0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	wf, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range wf.Dim(world.Overworld).Columns {
+		for _, st := range c.UnknownStates {
+			if st.Name == "audit:pasted" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("paste dropped a preserved state living above the allocated layers")
+	}
+}

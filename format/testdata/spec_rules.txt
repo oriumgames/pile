@@ -4,6 +4,7 @@
 13221d37 Writers MUST set the flag whenever the file holds at least one section whose biomes are uniform and the chosen reference fits the 16 bits available; they MUST leave it clear otherwise, including when the reference does not fit.
 1983135b The directory MUST list them in the order they were written, since entry indices are cumulative across segments and reordering the list renumbers every palette reference in the file.
 2062adb1 Decoders MUST upgrade each entry from its own version when it has an override, and from the palette's version otherwise.
+22ececda decoders MUST reject a repeated name, for the reason §3.1 gives for block states.
 232fe73e - In the **metadata compounds this document specifies** (§7), the tag of each field is fixed by that section and MUST be emitted exactly:
 249dada6 every one MUST contain a namespace and a colon, and a bare name such as `plains` is invalid rather than a second spelling of `minecraft:plains`.
 27ea7bc1 Counting first breaks the loop, and writers MUST count that way or two of them will disagree on the palette order, on `defaultBiomeRef` and therefore on every byte downstream.
@@ -23,6 +24,7 @@
 5ab4d3d6 refs sorted ascending; indices remapped accordingly; the palette contains only entries actually used by the indices; a storage whose used palette collapses to one entry MUST be written uniform (width 0).
 5bb2554d - **How a field is spelled is a rule.** When one of these fields *is* present it MUST carry the tag and shape stated below, and the marker list MUST be ordered as stated.
 5befe4df Because the prologue is the authority, a writer that has opened a file with a damaged physical header MUST hash **new** checkpoints against the canonical header image rebuilt from the semantic fields, never against the damaged bytes it found on disk.
+5ed7d87f Property keys ascend bytewise and are unique, and decoders MUST reject a repeated or out-of-order key.
 62b04284 a structure is always solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value of either field this table does not list.
 648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
 673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
@@ -47,12 +49,14 @@ b5904bd9 MUST be minimal:
 b970a5c4 MUST be minimal
 ba81d481 Decoders MUST enforce the palette limits **cumulatively** across segments and MUST reject duplicate segment references (both are allocation amplifiers).
 bcbf4d91 Decoders MUST enforce (reference values):
+bf4e7d6b Readers MUST enforce this exactly as writers do:
 c06f9652 In solid mode writers MUST sort the palette by:
 c176f73b The box need not be a multiple of 16, so edge cells have padding, and two structures that differ only in that padding are the same structure and MUST encode identically.
 cf48aa12 Readers MUST reject a directory whose prologue disagrees with the constraints of §5.7, and SHOULD report a mismatch against an otherwise intact physical header (the reference implementation exposes `HeaderDamaged`; rewriting the file repairs it).
 cf8e4eb4 Padding bits above `n` MUST be zero
 d2702006 Flags `Stats` and `DefaultBiome` MUST be clear in an indexed file, and readers MUST reject one that sets either:
 d3997566 It is a name rather than a palette reference because the palette may legitimately be empty (a file written with biomes skipped), so a reference would be out of range in exactly the files that need it; and a name rather than a numeric id because ids are a property of the running game version, and one file MUST NOT decode to different biomes on two of them.
+ddf5c7be Decoders MUST reject a palette that carries both:
 e01f257a Decoders MUST reject blobs that violate them.
 e6b20330 Writers MUST reject an unsorted list rather than copy it through, because the same marker collection would otherwise have as many encodings as it has permutations.
 e72263a7 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.

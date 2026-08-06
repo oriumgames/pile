@@ -148,6 +148,17 @@ func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border
 	}
 	if flags&FlagStats != 0 {
 		stats, err = nbtBlob("stats")
+		if err != nil {
+			return
+		}
+	}
+	// The §7 schemas are validity rules, not writer conventions, so the reader
+	// applies exactly what the writer refuses to produce. Without this a file
+	// whose border is a list, or whose marker list is unsorted, is rejected by
+	// one half of this package and accepted by the other, and an unsorted
+	// marker list is a second encoding of one marker collection.
+	if err = checkMetaSchemas(settings, markers, border); err != nil {
+		return
 	}
 	return
 }

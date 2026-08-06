@@ -430,11 +430,25 @@ func parseStatePalette(r *reader) ([]parsedState, error) {
 			return nil, err
 		}
 		props := make(map[string]any, propN)
+		prevKey, first := "", true
 		for range propN {
 			k, err := r.str()
 			if err != nil {
 				return nil, err
 			}
+			// Writers sort property keys, so a reader that accepts any order
+			// accepts many encodings of one state. Duplicates are worse: the
+			// later value silently wins, so two different files decode to the
+			// same state. Same rule as NBT compound keys, for the same reason.
+			if !first {
+				if k == prevKey {
+					return nil, corruptf("duplicate state property %q", k)
+				}
+				if k < prevKey {
+					return nil, corruptf("state properties must ascend, %q follows %q", k, prevKey)
+				}
+			}
+			prevKey, first = k, false
 			t, err := r.u8()
 			if err != nil {
 				return nil, err
@@ -490,6 +504,18 @@ func parseStatePalette(r *reader) ([]parsedState, error) {
 		}
 		entries[idx].version = int32(v)
 		prev = idx
+	}
+	// One entry per state. The writer merges entries that encode identically
+	// at the same version, so a file carrying both is a second encoding of one
+	// palette, and a section could reference either. Versions are checked
+	// after the override table because that is where they are decided.
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		key := preservedStateKey(e.name, e.props, e.version)
+		if _, dup := seen[key]; dup {
+			return nil, corruptf("duplicate block palette entry %q", e.name)
+		}
+		seen[key] = struct{}{}
 	}
 	return entries, nil
 }
@@ -634,6 +660,7 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 	}
 	ids = make([]uint32, n)
 	unknown = make([]int32, n)
+	seen := make(map[string]struct{}, n)
 	for i := range n {
 		name, err := r.str()
 		if err != nil {
@@ -644,6 +671,12 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 		if !strings.Contains(name, ":") {
 			return nil, nil, nil, corruptf("biome name %q is not namespaced", name)
 		}
+		// One entry per biome: a repeated name is a second reference for the
+		// same content, and a section could then point at either.
+		if _, dup := seen[name]; dup {
+			return nil, nil, nil, corruptf("duplicate biome palette entry %q", name)
+		}
+		seen[name] = struct{}{}
 		unknown[i] = -1
 		bio, ok := lookupBiome(name)
 		if !ok {

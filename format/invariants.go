@@ -91,7 +91,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "metadata field tags are exact", Category: Presence,
-		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "e6b20330", "5bb2554d"},
+		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "e6b20330", "5bb2554d", "bf4e7d6b"},
 		Test:  "TestRejectsMetaSchemaViolations",
 	},
 
@@ -143,8 +143,14 @@ var invariants = []Invariant{
 		Note:  "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob.",
 	},
 	{
+		Name: "state properties are ordered and unique", Category: Ordering,
+		Rules: []string{"5ed7d87f"},
+		Test:  "TestRejectsUnorderedStateProperties",
+		Note:  "A repeated key is worse than an out-of-order one: the later value silently wins, so two files decode to one state.",
+	},
+	{
 		Name: "palette entries are unique", Category: Normalisation,
-		Rules: []string{"afea490c"},
+		Rules: []string{"afea490c", "ddf5c7be", "22ececda"},
 		Test:  "TestPaletteMergesIdenticalEntries",
 		Note:  "Two entries that encode identically at one version have nothing to order them by.",
 	},

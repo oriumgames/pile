@@ -154,6 +154,15 @@ func (s *Structure) layerCount() uint8 {
 			n = uint8(min(l, format.MaxLayers))
 		}
 	}
+	// A preserved state can name a layer no cell allocated, the same way it
+	// can in a world section. Pasting only the allocated layers would leave
+	// those states behind, which is the extraction defect in the other
+	// direction.
+	for _, u := range s.data.Unknown {
+		if int(u.Layer)+1 > int(n) {
+			n = uint8(min(int(u.Layer)+1, format.MaxLayers))
+		}
+	}
 	return n
 }
 
@@ -414,6 +423,25 @@ func (s *Structure) PasteInto(p *Provider, dim world.Dimension, at cube.Pos) err
 
 	// wrote reports whether the paste owns a world position (and so must
 	// also clear stale content there).
+	// preserved reports whether a local position carries a preserved state in
+	// any layer. On a registry whose placeholder resolves to air the position
+	// reads as empty, so an air test alone would skip it and drop the state.
+	preserved := func(lx, ly, lz int) bool {
+		if len(s.data.Unknown) == 0 {
+			return false
+		}
+		cell := int32(format.CellIndex(sz, int32(lx>>4), int32(ly>>4), int32(lz>>4)))
+		idx := uint16(lx&15)<<8 | uint16(lz&15)<<4 | uint16(ly&15)
+		for layer := range layerN {
+			if _, ok := srcUnknown[cellKey{cell: cell, layer: layer, idx: idx}]; ok {
+				return true
+			}
+			if _, ok := uniform[cellKey{cell: cell, layer: layer}]; ok {
+				return true
+			}
+		}
+		return false
+	}
 	wrote := func(lx, ly, lz int) bool {
 		if !s.skipAir {
 			return true
@@ -423,7 +451,7 @@ func (s *Structure) PasteInto(p *Provider, dim world.Dimension, at cube.Pos) err
 				return true
 			}
 		}
-		return false
+		return preserved(lx, ly, lz)
 	}
 
 	for x := 0; x < int(sz[0]); x++ {
