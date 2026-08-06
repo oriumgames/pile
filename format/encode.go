@@ -756,7 +756,20 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 
 	for i, sub := range subs {
 		layers := sub.Layers()
+		sec := int32(r[0]>>4) + int32(i)
 		if len(layers) == 0 {
+			// An empty section still has to carry preserved states. On a
+			// registry whose placeholder resolves to air, a section holding
+			// nothing but unresolved blocks has no storages at all, and
+			// skipping it would drop the only record that they were ever
+			// there.
+			if entries := unknownBySec[secLayer{sec: sec, layer: 0}]; len(entries) > 0 {
+				rs := rawBlockSec{rids: []uint32{air}}
+				injectUnknown(&rs, entries, placeholder, len(c.UnknownStates))
+				if !airOnlyLayer(rs, air) {
+					cr.blockSecs[i] = []rawBlockSec{rs}
+				}
+			}
 			continue
 		}
 		if len(layers) > maxLayers {
@@ -769,7 +782,7 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 			// Inject preserved states first: with a registry where the
 			// placeholder resolves to air, an air-only test before injection
 			// would discard the layer and lose them.
-			if entries := unknownBySec[secLayer{sec: int32(r[0]>>4) + int32(i), layer: uint8(l)}]; len(entries) > 0 {
+			if entries := unknownBySec[secLayer{sec: sec, layer: uint8(l)}]; len(entries) > 0 {
 				injectUnknown(&rs, entries, placeholder, len(c.UnknownStates))
 			}
 			secs = append(secs, rs)

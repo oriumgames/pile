@@ -433,3 +433,70 @@ func TestMovePreservesUnknownBiomes(t *testing.T) {
 		t.Fatal("the move renamed an unresolved biome to the runtime fallback")
 	}
 }
+
+// airPlaceholderRegistry hides minecraft:info_update, so an unresolved block
+// state decodes as air with only its sidecar entry to mark it. Any code that
+// tests for air before consulting that sidecar loses the state, and this is the
+// registry where the two cases are indistinguishable.
+type airPlaceholderRegistry struct {
+	world.BlockRegistry
+}
+
+func (r airPlaceholderRegistry) StateToRuntimeID(name string, props map[string]any) (uint32, bool) {
+	if name == "minecraft:info_update" {
+		return 0, false
+	}
+	return r.BlockRegistry.StateToRuntimeID(name, props)
+}
+
+// TestMoveKeepsUnknownBlocksWithAirPlaceholder: the mover reads a position,
+// finds air, and would move on. The sidecar is the only record that the
+// position holds a preserved state, so it has to be consulted first.
+func TestMoveKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
+	base := testRegistry(t)
+	reg := airPlaceholderRegistry{base}
+	dir := t.TempDir()
+
+	b := NewBuilder(base, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{2, 0, 2}, block.Stone{})
+	p := b.Provider()
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	wf, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := wf.Dim(world.Overworld)
+	df.Columns[0].UnknownStates = []format.BlockState{{Name: "audit:unknown", Version: 1}}
+	df.Columns[0].Unknown = []format.UnknownBlock{{
+		Section: -4, Layer: 0,
+		Index: uint16(3)<<8 | uint16(3)<<4 | 0, State: 0,
+	}}
+	if err := wf.Write(dir, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MoveWorld(dir, MoveOptions{
+		Offset: cube.Pos{1, 0, 0}, Backup: false, Registry: reg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range after.Dim(world.Overworld).Columns {
+		for _, s := range c.UnknownStates {
+			if s.Name == "audit:unknown" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the move dropped an unresolved block whose placeholder is air")
+	}
+}

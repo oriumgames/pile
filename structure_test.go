@@ -361,3 +361,54 @@ func TestExtractCarriesEntityID(t *testing.T) {
 
 // TestSaveAsMetadataOnly: a world with metadata but no chunks must still be
 // written and reopenable.
+
+// TestExtractKeepsUnknownBlocksWithAirPlaceholder: extraction reads a position,
+// finds air, and would move on. When the registry resolves neither the state
+// nor minecraft:info_update, the sidecar is the only record that the position
+// holds a preserved state.
+func TestExtractKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
+	base := testRegistry(t)
+	reg := airPlaceholderRegistry{base}
+	dir := t.TempDir()
+
+	b := NewBuilder(base, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{4, 0, 4}, block.Stone{})
+	p := b.Provider()
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	wf, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := wf.Dim(world.Overworld)
+	df.Columns[0].UnknownStates = []format.BlockState{{Name: "audit:unknown", Version: 1}}
+	df.Columns[0].Unknown = []format.UnknownBlock{{
+		Section: 0, Layer: 0,
+		Index: uint16(6)<<8 | uint16(6)<<4 | 0, State: 0,
+	}}
+	if err := wf.Write(dir, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := Open(dir, ReadOnly(), Registry(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	s, err := ExtractStructure(q, world.Overworld, cube.Pos{0, 0, 0}, cube.Pos{8, 0, 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, st := range s.Data().UnknownStates {
+		if st.Name == "audit:unknown" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("extraction dropped an unresolved block whose placeholder is air")
+	}
+}

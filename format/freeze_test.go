@@ -1696,3 +1696,41 @@ func TestIndexedUnknownBiomeBeforeCheckpoint(t *testing.T) {
 		t.Fatalf("the preserved name did not come back: %v", got.UnknownBiomeNames)
 	}
 }
+
+// TestUnknownStateInEmptySection: on a registry whose placeholder resolves to
+// air, a section holding nothing but unresolved blocks has no storages at all.
+// Skipping empty sections would drop the only record that they were there.
+//
+// The sidecar only speaks for positions where the placeholder is still in
+// place, so this is specific to a registry that has none: with a real
+// placeholder, air at that position means the entry is stale and ignoring it
+// is correct.
+func TestUnknownStateInEmptySection(t *testing.T) {
+	reg := newNoPlaceholderRegistry(testRegistry(t))
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch.SetBlock(0, 100, 0, 0, stone) // content in a different section entirely
+
+	d := &WorldData{Columns: []Column{{
+		X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+		UnknownStates: []BlockState{{Name: "audit:lonely", Version: 1}},
+		Unknown: []UnknownBlock{{
+			Section: -4, Layer: 0,
+			Index: uint16(3)<<8 | uint16(3)<<4 | 0, State: 0,
+		}},
+	}}}
+	file := encode(t, d, reg, CompressionNone)
+	if !bytes.Contains(file[headerSize:len(file)-footerSize], []byte("audit:lonely")) {
+		t.Fatal("a preserved state in a section with no storages was dropped")
+	}
+	back, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Columns[0].Unknown) != 1 {
+		t.Fatalf("recovered %d entries, want 1", len(back.Columns[0].Unknown))
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(file, second) {
+		t.Fatal("a preserved state in an empty section does not survive a round trip")
+	}
+}

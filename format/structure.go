@@ -135,6 +135,33 @@ func validateStructureData(s *StructureData) error {
 	return nil
 }
 
+// clipToStructure narrows a preserved-state entry to the part of it that lies
+// inside the declared box: nothing for an entry wholly in the padding, the
+// entry itself when it is wholly inside, and one positional entry per
+// in-bounds cell position when a whole-storage entry covers both.
+func clipToStructure(s *StructureData, u UnknownBlock) []UnknownBlock {
+	if insideStructure(s, u) {
+		return []UnknownBlock{u}
+	}
+	if u.Index != WholeStorage || !cellExists(s, u.Section) {
+		return nil
+	}
+	var out []UnknownBlock
+	for idx := range uint16(4096) {
+		e := UnknownBlock{Section: u.Section, Layer: u.Layer, Index: idx, State: u.State}
+		if insideStructure(s, e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// cellExists reports whether a cell index names a cell of this structure.
+func cellExists(s *StructureData, sec int32) bool {
+	nx, ny, nz := CellDims(s.Size)
+	return sec >= 0 && int64(sec) < int64(nx)*int64(ny)*int64(nz)
+}
+
 // insideStructure reports whether a preserved-state entry names a position
 // within the declared box. Whole-storage entries cover the cell, so they are
 // inside only when the cell holds no padding at all.
@@ -199,11 +226,14 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		// there. Clearing cannot prevent that on a registry whose placeholder
 		// resolves to air, which is exactly the registry where the two are
 		// indistinguishable, so the entries are dropped by position instead.
-		if !insideStructure(s, u) {
-			continue
+		//
+		// A whole-storage entry on an edge cell straddles the line: it covers
+		// real content and padding at once. Dropping it would lose the
+		// content, so it is expanded into the positions that are inside.
+		for _, e := range clipToStructure(s, u) {
+			k := secLayer{sec: e.Section, layer: e.Layer}
+			unknownBySec[k] = append(unknownBySec[k], e)
 		}
-		k := secLayer{sec: u.Section, layer: u.Layer}
-		unknownBySec[k] = append(unknownBySec[k], u)
 	}
 
 	// Pass 1: extract cells.
@@ -248,12 +278,20 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		cd := cellData{layers: make([]secData, 0, len(raws))}
 		for _, raw := range raws {
 			pal := make([]uint32, len(raw.rids))
+			seen := make(map[uint32]struct{}, len(raw.rids))
 			for j, rid := range raw.rids {
 				if raw.states != nil && raw.states[j] >= 0 {
 					pal[j] = blockPal.addState(s.UnknownStates[raw.states[j]])
-					continue
+				} else {
+					pal[j] = addBlock(rid)
 				}
-				pal[j] = addBlock(rid)
+				// As in a world record: the reference count is appearances in
+				// local palettes, so a palette holding two aliases of one
+				// state contains it once.
+				if _, dup := seen[pal[j]]; dup {
+					blockPal.uncount(pal[j])
+				}
+				seen[pal[j]] = struct{}{}
 			}
 			cd.layers = append(cd.layers, secData{pal: pal, idx: raw.idx})
 		}

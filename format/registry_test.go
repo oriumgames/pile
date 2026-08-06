@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 )
 
 // shuffledRegistry is the default registry with its runtime ID space reversed.
@@ -143,5 +144,103 @@ func TestCrossRegistryPortability(t *testing.T) {
 	if !bytes.Equal(file, round.Bytes()) {
 		t.Fatalf("re-encoding under a different registry changed the bytes: %d vs %d",
 			len(file), round.Len())
+	}
+}
+
+// noPlaceholderRegistry hides minecraft:info_update, so an unresolved state
+// falls all the way back to air. That is the registry where a preserved state
+// and an empty position are indistinguishable by runtime ID alone, which is
+// exactly when the sidecar is the only thing keeping the state alive. Any code
+// that tests for air before consulting the sidecar loses the state there.
+type noPlaceholderRegistry struct {
+	world.BlockRegistry
+}
+
+func newNoPlaceholderRegistry(base world.BlockRegistry) *noPlaceholderRegistry {
+	return &noPlaceholderRegistry{BlockRegistry: base}
+}
+
+func (r *noPlaceholderRegistry) StateToRuntimeID(name string, props map[string]any) (uint32, bool) {
+	if name == "minecraft:info_update" {
+		return 0, false
+	}
+	return r.BlockRegistry.StateToRuntimeID(name, props)
+}
+
+// TestPlaceholderFallsBackToAir documents the premise the tests above rely on.
+func TestPlaceholderFallsBackToAir(t *testing.T) {
+	reg := newNoPlaceholderRegistry(testRegistry(t))
+	if got := placeholderRid(reg); got != reg.AirRuntimeID() {
+		t.Fatalf("placeholder = %d, want air %d", got, reg.AirRuntimeID())
+	}
+}
+
+// TestStructureAliasCountsOneAppearance: structures share the palette builder
+// with worlds and need the same rule. Two runtime IDs for one state in a cell
+// are one appearance, so which alias a caller happens to hold must not reorder
+// the global palette.
+func TestStructureAliasCountsOneAppearance(t *testing.T) {
+	reg := newAliasRegistry(testRegistry(t))
+	twin := reg.alias - 1
+	other, _ := reg.StateToRuntimeID("minecraft:dirt", map[string]any{})
+	air := reg.AirRuntimeID()
+
+	build := func(second uint32) []byte {
+		data, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub := chunk.NewSubChunk(air)
+		sub.SetBlock(0, 0, 0, 0, twin)
+		sub.SetBlock(1, 0, 0, 0, second)
+		sub.SetBlock(2, 0, 0, 0, other)
+		data.Cells[0] = sub
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	if a, b := build(reg.alias), build(twin); !bytes.Equal(a, b) {
+		t.Fatalf("the choice of alias changed the structure: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestEdgeCellWholeStorageKeepsContent: a whole-storage sidecar on an edge cell
+// covers real content and padding at once. Dropping it wholesale to canonicalise
+// the padding throws away the content with it.
+func TestEdgeCellWholeStorageKeepsContent(t *testing.T) {
+	reg := testRegistry(t)
+	data, err := NewStructureData([3]int32{1, 1, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := chunk.NewSubChunk(reg.AirRuntimeID())
+	sub.SetBlock(0, 0, 0, 0, placeholderRid(reg))
+	data.Cells[0] = sub
+	data.UnknownStates = []BlockState{{Name: "audit:unknown", Version: 1}}
+	data.Unknown = []UnknownBlock{{Section: 0, Layer: 0, Index: WholeStorage, State: 0}}
+
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("audit:unknown")) {
+		t.Fatal("the in-bounds part of a whole-storage sidecar was discarded with the padding")
+	}
+	got, err := ReadStructure(buf.Bytes(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Unknown) != 1 || got.Unknown[0].Index != 0 {
+		t.Fatalf("recovered %d entries at %v, want one at index 0", len(got.Unknown), got.Unknown)
+	}
+	// And the padding is still air: only position (0,0,0) is in the box.
+	var second bytes.Buffer
+	if err := WriteStructure(&second, got, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), second.Bytes()) {
+		t.Fatal("an edge-cell whole-storage sidecar does not survive a round trip")
 	}
 }

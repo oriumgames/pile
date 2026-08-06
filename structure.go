@@ -241,19 +241,27 @@ func extractChunkRegion(s *Structure, col *chunk.Column, cx, cz int32, lo, hi cu
 			for wy := y0; wy <= y1; wy++ {
 				for layer := range layerN {
 					rid := ch.Block(uint8(wx&15), int16(wy), uint8(wz&15), layer)
-					if rid == s.air {
+					srcSec := int32(wy >> 4)
+					srcIdx := uint16(wx&15)<<8 | uint16(wz&15)<<4 | uint16(wy&15)
+					var state uint32
+					var ok bool
+					if len(unknown) > 0 {
+						state, ok = srcUnknown[srcKey{sec: srcSec, layer: layer, idx: srcIdx}]
+						if !ok {
+							state, ok = uniform[srcKey{sec: srcSec, layer: layer}]
+						}
+					}
+					// The sidecar is consulted before the air test: on a
+					// registry that resolves neither the state nor the
+					// placeholder, an unresolved block reads as air, and
+					// skipping air first would drop the very positions the
+					// sidecar exists to preserve.
+					if !ok && rid == s.air {
 						continue
 					}
 					lx, ly, lz := wx-lo.X(), wy-lo.Y(), wz-lo.Z()
-					s.setLocal(lx, ly, lz, layer, rid)
-					if len(unknown) == 0 {
-						continue
-					}
-					srcSec := int32(wy >> 4)
-					srcIdx := uint16(wx&15)<<8 | uint16(wz&15)<<4 | uint16(wy&15)
-					state, ok := srcUnknown[srcKey{sec: srcSec, layer: layer, idx: srcIdx}]
-					if !ok {
-						state, ok = uniform[srcKey{sec: srcSec, layer: layer}]
+					if rid != s.air {
+						s.setLocal(lx, ly, lz, layer, rid)
 					}
 					if ok {
 						s.data.Unknown = append(s.data.Unknown, format.UnknownBlock{

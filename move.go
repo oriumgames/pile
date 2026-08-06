@@ -271,13 +271,20 @@ func translateColumns(cols []format.Column, reg world.BlockRegistry, off cube.Po
 					dstIdx := uint16(tx)<<8 | uint16(tz)<<4 | uint16(uint16(wy)&15)
 					for layer := range layerN {
 						rid := ch.Block(lx, y, lz, layer)
-						if rid == air {
-							continue
-						}
-						tch.SetBlock(tx, int16(wy), tz, layer, rid)
 						state, ok := srcUnknown[srcKey{sec: srcSec, layer: layer, idx: srcIdx}]
 						if !ok {
 							state, ok = uniform[srcKey{sec: srcSec, layer: layer}]
+						}
+						// The sidecar is consulted before the air test, not
+						// after: on a registry that resolves neither the state
+						// nor the placeholder, an unresolved block reads as
+						// air, and skipping air first would drop exactly the
+						// positions the sidecar exists to preserve.
+						if !ok && rid == air {
+							continue
+						}
+						if rid != air {
+							tch.SetBlock(tx, int16(wy), tz, layer, rid)
 						}
 						if ok {
 							tcol.Unknown = append(tcol.Unknown, format.UnknownBlock{
