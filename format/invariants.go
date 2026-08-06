@@ -137,6 +137,12 @@ var invariants = []Invariant{
 
 	// -- Palettes and blobs (§3) -----------------------------------------
 	{
+		Name: "the palette order is defined on encoded bytes", Category: Ordering,
+		Rules: []string{"c06f9652"},
+		Test:  "TestPaletteOrderFollowsEncodedBytes",
+		Note:  "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob.",
+	},
+	{
 		Name: "palette entries are unique", Category: Normalisation,
 		Rules: []string{"afea490c"},
 		Test:  "TestPaletteMergesIdenticalEntries",
@@ -156,7 +162,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "section blobs are canonical", Category: Ordering,
-		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7"},
+		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7", "9c7d6645", "34f2544c"},
 		Test:  "TestRejectsNonCanonicalBlob",
 	},
 	{
@@ -166,6 +172,12 @@ var invariants = []Invariant{
 	},
 
 	// -- Chunk records (§4) ----------------------------------------------
+	{
+		Name: "biome names are fully qualified", Category: Normalisation,
+		Rules: []string{"249dada6"},
+		Test:  "TestBiomeNamesAreNamespaced",
+		Note:  "A bare name is not a stable identifier outside the registry that coined it.",
+	},
 	{
 		Name: "chunk positions are unique and ascending", Category: Ordering,
 		Rules: []string{"4e0f8a1e"},
@@ -184,7 +196,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission,
-		Rules: []string{"a9ee3ac1", "673fb00d"},
+		Rules: []string{"a9ee3ac1", "673fb00d", "12bc11b2", "90e4364e"},
 		Test:  "TestInternalAirLayerSurvives",
 		Note:  "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block.",
 	},
@@ -201,7 +213,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "the default biome flag is not optional", Category: Omission,
-		Rules: []string{"13221d37"},
+		Rules: []string{"13221d37", "7984f33b"},
 		Test:  "TestUnknownDefaultBiomePreserved",
 		Note:  "Declining the flag is a second encoding of the same world.",
 	},
@@ -256,7 +268,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "palette limits are cumulative", Category: Bound,
-		Rules: []string{"ba81d481"},
+		Rules: []string{"ba81d481", "1983135b"},
 		Test:  "TestIndexedSegmentVersioning",
 	},
 

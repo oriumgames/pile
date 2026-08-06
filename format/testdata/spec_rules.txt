@@ -1,13 +1,17 @@
 0036db64 Nothing can read that layer back and any write to the section hangs, so the ceiling is 255 and decoders MUST reject a larger `layerN`.
 10bba397 Decoders MUST keep them apart, and encoders MUST re-emit each value with the tag it was decoded from:
 126cf2d4 Writers MUST additionally refuse content that their own readers would reject.
+12bc11b2 A section MUST be absent when **every** one of its layers is uniform air, and MUST be present otherwise.
 13221d37 Writers MUST set the flag whenever the file holds at least one section whose biomes are uniform and the chosen reference fits the 16 bits available; they MUST leave it clear otherwise, including when the reference does not fit.
+1983135b The directory MUST list them in the order they were written, since entry indices are cumulative across segments and reordering the list renumbers every palette reference in the file.
 2062adb1 Decoders MUST upgrade each entry from its own version when it has an override, and from the palette's version otherwise.
 232fe73e - In the **metadata compounds this document specifies** (§7), the tag of each field is fixed by that section and MUST be emitted exactly:
+249dada6 every one MUST contain a namespace and a colon, and a bare name such as `plains` is invalid rather than a second spelling of `minecraft:plains`.
 2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
 2b1d7218 MUST be zero (indexed dictionary presence is signalled by the directory, §5.5)
 2fcb9dbf Values 3–7 are reserved and MUST be rejected.
 2ffce926 Structures MUST leave these bits zero
+34f2544c - Each index selects a local palette entry; decoders MUST reject an index greater than or equal to `paletteN`.
 398afbcf These are the values a conforming decoder MUST enforce.
 3a870a30 Identical bytes MUST share one entry.
 43ff86c5 Decoders MUST NOT panic on any input; every violation is a clean error.
@@ -23,13 +27,16 @@
 648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
 673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
 6dd8dd9c only meaningful when bit 3 is set, and MUST be zero when it is clear
+7984f33b Sections whose biomes are uniformly that biome MUST be omitted from `biomePresence`, and decoders MUST fill absent sections with the default.
 7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
 7c4f5f2c record frames, palette segment frames and meta frames are compressed with the dictionary; the **directory frame and the dictionary frame itself MUST be compressed without it** (they are read before the dictionary can be loaded).
 8578b8c5 Readers MUST ignore unknown keys.
 8e623ce0 Writers MUST store `UniqueID` as a long and readers MUST take it verbatim.
+90e4364e A layer holding a preserved unresolved state MUST NOT be treated as all air, whatever its placeholder resolves to:
 920faee4 Writers targeting deterministic output MUST:
 929864f4 `flags` MUST NOT be zero for a present section, since an entry with no arrays is a second encoding of an absent one.
 999897c0 Writers MUST count occurrences rather than distinct blobs, since the two disagree whenever deduplication succeeds; 2.
+9c7d6645 The narrowest sufficient width is the only valid one, so writers MUST select it and decoders MUST reject any other.
 a4590032 Readers MUST reject unknown versions and unknown flag bits (they may change payload meaning).
 a9ee3ac1 Writers MUST drop **trailing** all-air layers, since a layer past the last stored one already reads as air, and MUST keep internal ones, encoded as an ordinary uniform section blob referencing air.
 ab5dc87f Decoders MUST reject lengths > 65 536 (64 KiB), and MUST reject bytes that are not valid UTF-8:
@@ -39,6 +46,7 @@ b5904bd9 MUST be minimal:
 b970a5c4 MUST be minimal
 ba81d481 Decoders MUST enforce the palette limits **cumulatively** across segments and MUST reject duplicate segment references (both are allocation amplifiers).
 bcbf4d91 Decoders MUST enforce (reference values):
+c06f9652 In solid mode writers MUST sort the palette by:
 c176f73b The box need not be a multiple of 16, so edge cells have padding, and two structures that differ only in that padding are the same structure and MUST encode identically.
 cf48aa12 Readers MUST reject a directory whose prologue disagrees with the constraints of §5.7, and SHOULD report a mismatch against an otherwise intact physical header (the reference implementation exposes `HeaderDamaged`; rewriting the file repairs it).
 cf8e4eb4 Padding bits above `n` MUST be zero

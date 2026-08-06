@@ -22,6 +22,15 @@ import (
 // edit, and every extracted rule must be claimed by an entry in the invariant
 // table (invariants.go) that names the test enforcing it. A rule with no test,
 // or a test naming a rule that no longer exists, fails here.
+//
+// Scope, stated plainly so the coverage is not mistaken for more than it is:
+// extraction keys on MUST, so a rule has to be phrased that way to be pinned.
+// What is deliberately left out is sub-clauses of a sentence that is already
+// pinned (the numbered steps under "writers MUST sort the palette by:" are the
+// parent rule's body), rationale explaining why a rule exists, and the
+// implementation guidance in the last section, which is advice rather than a
+// property of the bytes. Anything that constrains what a conforming file may
+// contain belongs in a MUST sentence, and therefore in the table.
 
 const specPath = "format.md"
 const specRulesPath = goldenDir + "/spec_rules.txt"

@@ -215,7 +215,7 @@ carry the same table after their entries.
 Bedrock block state properties are exactly these three NBT types, making the
 encoding lossless.
 
-In solid mode the palette is sorted by:
+In solid mode writers MUST sort the palette by:
 
 1. **descending reference count**, where the reference count is the number of
    section-local palettes the state appears in, plus one per scheduled block
@@ -263,7 +263,7 @@ and they select different palette orders, section references and default-biome
 references.
 
 Names, not numeric IDs, so entries stay stable across game versions. Names are
-**fully qualified**: every one contains a namespace and a colon, and a bare
+**fully qualified**: every one MUST contain a namespace and a colon, and a bare
 name such as `plains` is invalid rather than a second spelling of
 `minecraft:plains`. Servers whose own registries name vanilla biomes without a
 namespace qualify them at the boundary. Unknown biomes decode as
@@ -285,11 +285,13 @@ indices          4096 * width bytes   absent when width = 0
 Rules:
 
 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
-- `width = 1` requires `paletteN ≤ 256`; `width = 2` requires `paletteN > 256`
-  (the narrowest sufficient width is the only valid one).
+- `width = 1` requires `paletteN ≤ 256`; `width = 2` requires `paletteN > 256`.
+  The narrowest sufficient width is the only valid one, so writers MUST select
+  it and decoders MUST reject any other.
 - References MUST ascend strictly, so a section has exactly one encoding and
   cannot carry duplicate or unused entries.
-- Each index selects a local palette entry; indices ≥ `paletteN` are invalid.
+- Each index selects a local palette entry; decoders MUST reject an index
+  greater than or equal to `paletteN`.
 - **Canonical form** (required from writers *and enforced by decoders*, which
   reject non-canonical blobs; this enables dedup and determinism):
   refs sorted ascending; indices remapped accordingly; the palette contains
@@ -363,7 +365,8 @@ internal one renumbers the layers above it and turns waterlogging into a solid
 liquid. Writers MUST drop **trailing** all-air layers, since a layer past the
 last stored one already reads as air, and MUST keep internal ones, encoded as
 an ordinary uniform section blob referencing air. A layer holding a preserved
-unresolved state is never all air, whatever its placeholder resolves to.
+unresolved state MUST NOT be treated as all air, whatever its placeholder
+resolves to: dropping it discards the state it was preserving.
 
 ### 4.1 Meta block
 
@@ -420,7 +423,8 @@ An air-only section is absent (one presence bit); a fully empty chunk record
 (all bits clear, zero counts) costs ~10 bytes and means "exists, is air", which is
 distinct from a chunk that was never stored.
 
-A section is absent when **every** one of its layers is uniform air. A section
+A section MUST be absent when **every** one of its layers is uniform air, and
+MUST be present otherwise. A section
 that has any non-air content is present, and the uniform-air layers below that
 content are stored, for the reason the layer numbering rule below gives. A
 decoder MUST NOT treat a uniform-air layer 0 as an absent section: in a
@@ -482,8 +486,9 @@ consumer.
 ### 4.7 Default biome
 
 When flag `DefaultBiome` is set, `defaultBiomeRef` (flags bits 16–31) names a
-global biome palette entry. Sections whose biomes are uniformly that biome are
-omitted from `biomePresence`; decoders fill absent sections with the default.
+global biome palette entry. Sections whose biomes are uniformly that biome MUST be
+omitted from `biomePresence`, and decoders MUST fill absent sections with the
+default.
 Writers MUST set the flag whenever the file holds at least one section whose
 biomes are uniform and the chosen reference fits the 16 bits available; they
 MUST leave it clear otherwise, including when the reference does not fit. The
@@ -580,9 +585,10 @@ compaction.
 The global palettes grow append-only as **delta segments**. A block segment
 frame is an `i32` Minecraft block version followed by a §3.1-encoded palette;
 a biome segment frame is a §3.2-encoded palette. Segments hold only the
-entries new since the previous checkpoint, and the directory lists them in
-order; entry indices are cumulative across segments. Palette order is
-first-seen; no frequency sorting.
+entries new since the previous checkpoint. The directory MUST list them in the
+order they were written, since entry indices are cumulative across segments and
+reordering the list renumbers every palette reference in the file. Palette
+order is first-seen; no frequency sorting.
 
 Each block segment carries its own version because a file outlives game
 upgrades: states written before an upgrade must still be upgraded from the
