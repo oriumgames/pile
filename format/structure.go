@@ -374,6 +374,8 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	// corresponding flags would be meaningless: reject them rather than
 	// ignore them, or the same structure would have several valid encodings.
 	if h.flags&^FlagUncompressed != 0 {
+		// A structure is not a dimension, so the dimension bits are part of
+		// what must be clear here.
 		return nil, corruptf("flags 0x%08X are not valid for a structure", h.flags)
 	}
 	body, err := decompressBody(h, stored)

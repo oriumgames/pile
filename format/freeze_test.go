@@ -1021,3 +1021,250 @@ func TestRejectsUnaddressableLayerCount(t *testing.T) {
 		t.Fatal("empty body")
 	}
 }
+
+// Consolidation pass rules.
+
+// TestRejectsReservedDimension: the dimension field has three defined values
+// and five reserved ones. Reserved values are rejected rather than ignored, so
+// they stay available to a later version.
+func TestRejectsReservedDimension(t *testing.T) {
+	reg := testRegistry(t)
+	d := testWorld(t, reg)
+	d.Dimension = Dimension(5)
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+		t.Fatal("a reserved dimension was written")
+	}
+
+	// And on the way in: set the bits directly in a valid file's header.
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	for _, v := range []uint32{3, 5, 7} {
+		bad := bytes.Clone(file)
+		flags := binary.LittleEndian.Uint32(bad[8:12])
+		binary.LittleEndian.PutUint32(bad[8:12], flags|v<<dimensionShift)
+		rehashSolid(bad)
+		if _, err := ReadWorld(bad, reg); err == nil {
+			t.Fatalf("reserved dimension %d was accepted", v)
+		}
+	}
+
+	// The defined ones round trip.
+	for _, dim := range []Dimension{Overworld, Nether, End} {
+		w := testWorld(t, reg)
+		w.Dimension = dim
+		got, err := ReadWorld(encode(t, w, reg, CompressionNone), reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Dimension != dim {
+			t.Fatalf("dimension %v came back as %v", dim, got.Dimension)
+		}
+	}
+}
+
+// TestStructureLeavesDimensionBitsZero: a structure is not a dimension, so the
+// field is meaningless there and must be clear, or one structure would have
+// eight encodings.
+func TestStructureLeavesDimensionBitsZero(t *testing.T) {
+	reg := testRegistry(t)
+	data, err := NewStructureData([3]int32{16, 16, 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	file := buf.Bytes()
+	if flags := binary.LittleEndian.Uint32(file[8:12]); flags&dimensionMask != 0 {
+		t.Fatalf("structure header flags 0x%08X set dimension bits", flags)
+	}
+	bad := bytes.Clone(file)
+	binary.LittleEndian.PutUint32(bad[8:12], binary.LittleEndian.Uint32(bad[8:12])|1<<dimensionShift)
+	rehashSolid(bad)
+	if _, err := ReadStructure(bad, reg); err == nil {
+		t.Fatal("a structure carrying a dimension was accepted")
+	}
+}
+
+// TestRejectsIndexedStructureKind: a structure is always solid, so the
+// kind/mode pair naming an indexed structure has no layout and must be refused
+// rather than half-interpreted.
+func TestRejectsIndexedStructureKind(t *testing.T) {
+	reg := testRegistry(t)
+	data, err := NewStructureData([3]int32{16, 16, 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	bad := buf.Bytes()
+	bad[7] = ModeIndexed
+	rehashSolid(bad)
+	if _, err := ReadStructure(bad, reg); err == nil {
+		t.Fatal("an indexed structure was accepted")
+	}
+	if _, err := ReadWorld(bad, reg); err == nil {
+		t.Fatal("an indexed structure was accepted as a world")
+	}
+}
+
+// TestPaletteCountsOccurrencesNotBlobs: the palette's reference count is taken
+// before the blob table deduplicates, so a section blob shared by many
+// sections counts once per section. Counting distinct blobs instead would
+// reorder the palette as soon as deduplication succeeded, which is exactly when
+// two writers are most likely to disagree.
+func TestPaletteCountsOccurrencesNotBlobs(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	dirt, _ := reg.StateToRuntimeID("minecraft:dirt", map[string]any{})
+
+	// Dirt appears in one section, in two distinct blobs. Stone appears in
+	// four sections that all share one blob. Counting blobs would put dirt
+	// first; counting occurrences puts stone first.
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	for sec := range int16(4) {
+		y := -64 + sec*16
+		for x := range uint8(16) {
+			for z := range uint8(16) {
+				ch.SetBlock(x, y, z, 0, stone)
+			}
+		}
+	}
+	ch.SetBlock(0, 100, 0, 0, dirt)
+	ch.SetBlock(1, 116, 1, 0, dirt)
+
+	file := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
+	body := file[headerSize : len(file)-footerSize]
+	si, di := bytes.Index(body, []byte("minecraft:stone")), bytes.Index(body, []byte("minecraft:dirt"))
+	if si < 0 || di < 0 {
+		t.Fatal("palette lost an entry")
+	}
+	if si > di {
+		t.Fatal("the palette is ordered by distinct blobs rather than by occurrences")
+	}
+}
+
+// TestIndexedRejectsSolidOnlyFlags: indexed mode has nowhere to put a stats
+// compound and no section to elide a default biome from, so a file claiming
+// either makes a promise its layout cannot keep.
+func TestIndexedRejectsSolidOnlyFlags(t *testing.T) {
+	reg := testRegistry(t)
+	for _, flag := range []uint32{FlagStats, FlagDefaultBiome} {
+		path := filepath.Join(t.TempDir(), "w.pile")
+		w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// The directory prologue is authoritative, so the flag has to be set
+		// there for the file to claim it at all.
+		if !patchDirectoryFlags(t, path, flag) {
+			t.Skip("could not locate the directory prologue")
+		}
+		// A file always has an earlier checkpoint to fall back to, so the
+		// claim is refused either by failing to open or by rejecting that
+		// checkpoint and recovering to the one before it.
+		v, err := OpenIndexed(path, reg, true)
+		if err != nil {
+			continue
+		}
+		recovered := v.Recovered()
+		v.Close()
+		if !recovered {
+			t.Fatalf("an indexed file claiming flag 0x%X was accepted", flag)
+		}
+	}
+}
+
+// TestIndexedRejectsDictionaryWhenUncompressed: a dictionary means nothing to a
+// file stored raw, so carrying one is a second way to say the same thing, and
+// the second one cannot be read.
+func TestIndexedRejectsDictionaryWhenUncompressed(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !patchDirectoryDict(t, path) {
+		t.Skip("could not locate the directory prologue")
+	}
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		return // refused outright
+	}
+	recovered := v.Recovered()
+	v.Close()
+	if !recovered {
+		t.Fatal("an uncompressed indexed file referencing a dictionary was accepted")
+	}
+}
+
+// patchDirectoryFlags rewrites the flags word in an uncompressed indexed
+// file's directory prologue and refreshes the checkpoint hash, so the file
+// makes the claim rather than merely having a damaged header.
+func patchDirectoryFlags(t *testing.T, path string, set uint32) bool {
+	t.Helper()
+	return patchDirectory(t, path, func(dir []byte) bool {
+		flags := binary.LittleEndian.Uint32(dir[2:6])
+		binary.LittleEndian.PutUint32(dir[2:6], flags|set)
+		return true
+	})
+}
+
+// patchDirectoryDict points the directory's dictionary reference at a frame,
+// keeping every varint one byte wide so no offset moves.
+func patchDirectoryDict(t *testing.T, path string) bool {
+	t.Helper()
+	return patchDirectory(t, path, func(dir []byte) bool {
+		// prologue: kind, mode, flags, blockVersion = 10 bytes, then the meta
+		// reference. Both references are absent in a freshly written file, so
+		// each is two zero varints and an eight-byte hash.
+		const prologue, refLen = 10, 2 + 8
+		dict := prologue + refLen
+		if len(dir) < dict+refLen || dir[dict] != 0 || dir[dict+1] != 0 {
+			return false
+		}
+		dir[dict] = headerSize // offset
+		dir[dict+1] = 1        // length
+		return true
+	})
+}
+
+func patchDirectory(t *testing.T, path string, edit func(dir []byte) bool) bool {
+	t.Helper()
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	footer := file[len(file)-footerSize:]
+	off := binary.LittleEndian.Uint64(footer[8:16])
+	length := binary.LittleEndian.Uint64(footer[16:24])
+	if off == 0 || length == 0 || off+length > uint64(len(file)) {
+		return false
+	}
+	dir := file[off : off+length]
+	if !edit(dir) {
+		return false
+	}
+	binary.LittleEndian.PutUint64(footer[0:8], checkpointHash(file[:headerSize], dir, footer[8:]))
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return true
+}

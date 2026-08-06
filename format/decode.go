@@ -65,6 +65,11 @@ func parseFrame(file []byte) (header, []byte, error) {
 	if h.flags&FlagDefaultBiome == 0 && h.flags>>defaultBiomeShift != 0 {
 		return h, nil, corruptf("default biome reference set without its flag")
 	}
+	// Reserved dimension values are rejected rather than ignored, so the
+	// encoding stays available to a later version.
+	if d := Dimension((h.flags & dimensionMask) >> dimensionShift); d > maxDimension {
+		return h, nil, corruptf("dimension %d is reserved", uint8(d))
+	}
 	if h.mode != ModeSolid {
 		return h, nil, ErrUnsupportedMode
 	}
@@ -184,7 +189,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	}
 
 	r := &reader{b: body}
-	d := &WorldData{}
+	d := &WorldData{Dimension: Dimension((h.flags & dimensionMask) >> dimensionShift)}
 	var stats []byte
 	if d.Settings, d.UserData, d.Markers, d.Border, stats, err = readMetaBlobs(r, h.flags); err != nil {
 		return nil, err

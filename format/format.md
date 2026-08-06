@@ -6,7 +6,7 @@ implementation. The Go implementation in this package is the reference; where
 this document and the implementation disagree, the implementation wins and the
 document has a bug.
 
-A pile file stores one Minecraft (Bedrock) dimension (or one structure) in a
+A pile file stores one Minecraft (Bedrock) dimension (named in the header, §2.3) or one structure in a
 single file. Design goals: minimal size for small worlds, deterministic output
 (identical content ⇒ identical bytes), integrity checking, crash safety, and
 an optional append-oriented mode for large worlds.
@@ -118,7 +118,9 @@ long_array(12).
 | 12 | i32 | blockVersion | the Minecraft block-state version the writer encoded against |
 
 Readers MUST reject unknown versions and unknown flag bits (they may change
-payload meaning).
+payload meaning). Not every `kind`/`mode` pair exists: a structure is always
+solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value
+of either field this table does not list.
 
 ### 2.2 Footer (44 bytes, at end of file)
 
@@ -166,7 +168,8 @@ authenticated too.
 | 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
 | 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
 | 4 | Uncompressed | the body is stored without compression |
-| 5–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
+| 5–7 | dimension | which dimension a world file holds: 0 overworld, 1 nether, 2 end. Values 3–7 are reserved and MUST be rejected. Structures MUST leave these bits zero |
+| 8–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
 | 16–31 | defaultBiomeRef | only meaningful when bit 3 is set, and MUST be zero when it is clear |
 
 ---
@@ -197,7 +200,9 @@ itself:
 ```
 overrideN        uvarint          (<= count; usually 0)
 override[overrideN]:             indices strictly ascending
-  indexDelta     uvarint          delta from the previous overridden index
+  indexDelta     uvarint          delta from the previous overridden index;
+                                  the first entry deltas from 0, so a first
+                                  delta of 0 means index 0
   version        i32              must be non-zero
 ```
 
@@ -214,7 +219,11 @@ In solid mode the palette is sorted by:
 
 1. **descending reference count**, where the reference count is the number of
    section-local palettes the state appears in, plus one per scheduled block
-   update referencing it (not the number of blocks holding it);
+   update referencing it (not the number of blocks holding it). Counting
+   happens before the blob table deduplicates anything, so a section blob
+   shared by a hundred sections contributes a hundred, not one. Writers MUST
+   count occurrences rather than distinct blobs, since the two disagree
+   whenever deduplication succeeds;
 2. then **ascending bytewise comparison of the entry's own encoded bytes**,
    that is the length-prefixed `name` followed by the encoded property block
    exactly as written above (so the name's length prefix leads, and a shorter
@@ -547,7 +556,10 @@ When a shared dictionary is present (§5.5): record frames, palette segment
 frames and meta frames are compressed with the dictionary; the **directory
 frame and the dictionary frame itself MUST be compressed without it** (they
 are read before the dictionary can be loaded). A dictionary-aware decoder
-handles both (zstd frames carry the dictionary id).
+handles both (zstd frames carry the dictionary id). A dictionary means nothing
+to a file whose frames are stored raw, so when flag `Uncompressed` is set the
+directory's dictionary reference MUST be absent, and a reader MUST reject a
+file that carries both.
 
 ### 5.2 Record frames
 
@@ -584,6 +596,11 @@ MUST reject duplicate segment references (both are allocation amplifiers).
 stats field. A new meta frame is appended when metadata changes; the directory
 points at the latest.
 
+Indexed mode therefore has nowhere to put a stats compound, and no section to
+elide a default biome from. Flags `Stats` and `DefaultBiome` MUST be clear in
+an indexed file, and readers MUST reject one that sets either: a flag whose
+payload the layout cannot hold is a claim the file cannot keep.
+
 ### 5.5 Directory frame
 
 Written at every checkpoint (always compressed without the dictionary):
@@ -606,8 +623,10 @@ biomeSegN        uvarint
 biomeSeg[biomeSegN]: frameRef
 chunkN           uvarint          (≤ 4 194 304, §8)
 chunk[chunkN]:                    sorted by Morton key of (x, z)
-  dx, dz         svarint          delta from previous entry
-  offDelta       svarint          frame offset delta from previous entry
+  dx, dz         svarint          delta from previous entry; the first
+                                  entry deltas from (0,0)
+  offDelta       svarint          frame offset delta from previous entry;
+                                  the first entry deltas from 0
   len            uvarint          stored frame length
   hash           u64              xxHash64 of the stored frame bytes
 ```
@@ -744,8 +763,21 @@ inside a cell use the standard section index (§1). Absent cells are all air.
 
 ## 7. Metadata compounds
 
-These NBT schemas are conventions of the reference implementation; readers
-should treat all fields as optional.
+Two different things live in this section, and conflating them is how a strict
+reader and a lenient one end up disagreeing about what is a valid file:
+
+- **Which fields exist is a convention.** Every field is optional, readers
+  ignore ones they do not know, and a compound carrying none of them is valid.
+  Nothing here is required to be present.
+- **How a field is spelled is a rule.** When one of these fields *is* present
+  it MUST carry the tag and shape stated below, and the marker list MUST be
+  ordered as stated. A writer that emits `time` as an int, or an unsorted
+  marker list, produces an invalid file even though the field itself was
+  optional.
+
+The reason for the split is that a decoder into a dynamically typed map cannot
+recover which tag a value came from, so a wrong tag is not a difference a later
+reader can detect or repair. Presence, by contrast, is always detectable.
 
 ### 7.1 Settings
 

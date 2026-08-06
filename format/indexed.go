@@ -195,6 +195,10 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 	if opts.StoreLight {
 		flags |= FlagStoreLight
 	}
+	if opts.Dimension > maxDimension {
+		return nil, fmt.Errorf("pile: dimension %d is reserved", uint8(opts.Dimension))
+	}
+	flags |= uint32(opts.Dimension) << dimensionShift
 	hdr.u32(flags)
 	hdr.i32(chunk.CurrentBlockVersion)
 	if _, err := f.Write(hdr.bytes()); err != nil {
@@ -648,6 +652,9 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 	if dirFlags&(FlagDefaultBiome|FlagStats) != 0 || dirFlags>>defaultBiomeShift != 0 {
 		return corruptf("directory flags 0x%08X are not valid for an indexed file", dirFlags)
 	}
+	if d := Dimension((dirFlags & dimensionMask) >> dimensionShift); d > maxDimension {
+		return corruptf("dimension %d is reserved", uint8(d))
+	}
 	// The directory is authoritative: it is covered by the checkpoint hash,
 	// so it survives damage to the 16 physical header bytes.
 	w.headerFlags, w.headerBlockVersion = dirFlags, int32(dirVersion)
@@ -702,6 +709,12 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 	w.dictRef = dictRef
 	if err := validRef(w.dictRef, "dictionary"); err != nil {
 		return err
+	}
+	// A dictionary only means anything to a compressed file, so an
+	// uncompressed one carrying a reference has two ways to say the same
+	// thing, and the second one is unreadable.
+	if !w.compressed && w.dictRef.length != 0 {
+		return corruptf("uncompressed indexed file references a dictionary")
 	}
 	if w.dictRef.length > 0 {
 		// The dictionary frame itself is compressed without the dictionary.
@@ -1324,6 +1337,13 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error
 	w.markers, w.border = cloneBytes(markers), cloneBytes(border)
 	w.metaDirty = true
 	return nil
+}
+
+// Dimension reports which dimension this file describes.
+func (w *IndexedWorld) Dimension() Dimension {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return Dimension((w.headerFlags & dimensionMask) >> dimensionShift)
 }
 
 // Recovered reports whether opening the file had to fall back to an older

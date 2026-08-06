@@ -249,7 +249,7 @@ func (p *Provider) SaveAs(dir string) error {
 		wrote = true
 		d := &format.WorldData{
 			Settings: settings, UserData: userData, Markers: markers, Border: border,
-			Columns: cols,
+			Columns: cols, Dimension: formatDimension(dim),
 		}
 		id, _ := world.DimensionID(dim)
 		name := fmt.Sprintf("dim%d.pile", id)

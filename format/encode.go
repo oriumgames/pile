@@ -77,6 +77,10 @@ type WorldData struct {
 	Markers  []byte
 	Border   []byte
 	Columns  []Column
+	// Dimension names which dimension this file holds. Zero is the overworld,
+	// so a caller that never sets it gets the answer such a file has always
+	// had.
+	Dimension Dimension
 }
 
 // rawBlockSec is one extracted block storage before global palette
@@ -318,6 +322,7 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	if opts.Stats {
 		flags |= FlagStats
 	}
+	flags |= uint32(d.Dimension) << dimensionShift
 
 	// The decoder caps a decompressed body at maxDecodedBody, so a writer that
 	// sails past it produces a file it cannot read back.
@@ -385,6 +390,9 @@ func validateWorldData(d *WorldData) error {
 				return fmt.Errorf("pile: %s: %w", b.what, err)
 			}
 		}
+	}
+	if d.Dimension > maxDimension {
+		return fmt.Errorf("pile: dimension %d is reserved", uint8(d.Dimension))
 	}
 	if err := checkMetaSchemas(d.Settings, d.Markers, d.Border); err != nil {
 		return err

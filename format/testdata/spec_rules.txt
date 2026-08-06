@@ -1,0 +1,53 @@
+0036db64 Nothing can read that layer back and any write to the section hangs, so the ceiling is 255 and decoders MUST reject a larger `layerN`.
+10bba397 Decoders MUST keep them apart, and encoders MUST re-emit each value with the tag it was decoded from:
+126cf2d4 Writers MUST additionally refuse content that their own readers would reject.
+13221d37 Writers MUST set the flag whenever the file holds at least one section whose biomes are uniform and the chosen reference fits the 16 bits available; they MUST leave it clear otherwise, including when the reference does not fit.
+2062adb1 Decoders MUST upgrade each entry from its own version when it has an override, and from the palette's version otherwise.
+232fe73e - In the **metadata compounds this document specifies** (§7), the tag of each field is fixed by that section and MUST be emitted exactly:
+2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
+2b1d7218 MUST be zero (indexed dictionary presence is signalled by the directory, §5.5)
+2fcb9dbf Values 3–7 are reserved and MUST be rejected.
+2ffce926 Structures MUST leave these bits zero
+398afbcf These are the values a conforming decoder MUST enforce.
+3a870a30 Identical bytes MUST share one entry.
+43ff86c5 Decoders MUST NOT panic on any input; every violation is a clean error.
+4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
+4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
+5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
+5789390a A structure header MUST set no flags other than `Uncompressed`, its settings, markers and border blobs MUST be empty, and its biome palette MUST have zero entries.
+58866f01 - An absent frame reference MUST have offset, length and hash all zero; a non-zero offset or hash with a zero length is invalid.
+5ab4d3d6 refs sorted ascending; indices remapped accordingly; the palette contains only entries actually used by the indices; a storage whose used palette collapses to one entry MUST be written uniform (width 0).
+5bb2554d - **How a field is spelled is a rule.** When one of these fields *is* present it MUST carry the tag and shape stated below, and the marker list MUST be ordered as stated.
+5befe4df Because the prologue is the authority, a writer that has opened a file with a damaged physical header MUST hash **new** checkpoints against the canonical header image rebuilt from the semantic fields, never against the damaged bytes it found on disk.
+62b04284 a structure is always solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value of either field this table does not list.
+648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
+673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
+6dd8dd9c only meaningful when bit 3 is set, and MUST be zero when it is clear
+7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
+7c4f5f2c record frames, palette segment frames and meta frames are compressed with the dictionary; the **directory frame and the dictionary frame itself MUST be compressed without it** (they are read before the dictionary can be loaded).
+8578b8c5 Readers MUST ignore unknown keys.
+8e623ce0 Writers MUST store `UniqueID` as a long and readers MUST take it verbatim.
+920faee4 Writers targeting deterministic output MUST:
+929864f4 `flags` MUST NOT be zero for a present section, since an entry with no arrays is a second encoding of an absent one.
+999897c0 Writers MUST count occurrences rather than distinct blobs, since the two disagree whenever deduplication succeeds; 2.
+a4590032 Readers MUST reject unknown versions and unknown flag bits (they may change payload meaning).
+a9ee3ac1 Writers MUST drop **trailing** all-air layers, since a layer past the last stored one already reads as air, and MUST keep internal ones, encoded as an ordinary uniform section blob referencing air.
+ab5dc87f Decoders MUST reject lengths > 65 536 (64 KiB), and MUST reject bytes that are not valid UTF-8:
+af37ce22 In a **solid** file the directory, generation and previous-footer words carry no information and MUST be zero; readers MUST reject a non-zero value.
+afea490c two entries that compare equal at every step encode identical bytes at the same version and are therefore the same state, which writers MUST merge into one entry whose reference count is the sum.
+b5904bd9 MUST be minimal:
+b970a5c4 MUST be minimal
+ba81d481 Decoders MUST enforce the palette limits **cumulatively** across segments and MUST reject duplicate segment references (both are allocation amplifiers).
+bcbf4d91 Decoders MUST enforce (reference values):
+c176f73b The box need not be a multiple of 16, so edge cells have padding, and two structures that differ only in that padding are the same structure and MUST encode identically.
+cf48aa12 Readers MUST reject a directory whose prologue disagrees with the constraints of §5.7, and SHOULD report a mismatch against an otherwise intact physical header (the reference implementation exposes `HeaderDamaged`; rewriting the file repairs it).
+cf8e4eb4 Padding bits above `n` MUST be zero
+d2702006 Flags `Stats` and `DefaultBiome` MUST be clear in an indexed file, and readers MUST reject one that sets either:
+e01f257a Decoders MUST reject blobs that violate them.
+e6b20330 Writers MUST reject an unsorted list rather than copy it through, because the same marker collection would otherwise have as many encodings as it has permutations.
+e72263a7 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
+f1047fc4 The tag of each listed field is fixed and writers MUST reject a blob carrying the wrong one:
+f930c4ef Decoders MUST reject lengths > 16 777 216 (16 MiB)
+fcf0a219 Writers MUST NOT trim leading or trailing empty sections, and an empty chunk carries its dimension's full span with every presence bit clear.
+fd0cd567 A dictionary means nothing to a file whose frames are stored raw, so when flag `Uncompressed` is set the directory's dictionary reference MUST be absent, and a reader MUST reject a file that carries both.
+ff694fe9 Readers that preserve unresolved biomes MUST report the elided sections through the same mechanism they use for stored ones, or a read and rewrite renames the biome to the reader's fallback.
