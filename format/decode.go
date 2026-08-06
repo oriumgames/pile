@@ -56,6 +56,9 @@ func parseFrame(file []byte) (header, []byte, error) {
 	bv, _ := r.u32()
 	h.blockVersion = int32(bv)
 
+	if h.kind > KindStructure {
+		return h, nil, corruptf("file kind %d is not defined", h.kind)
+	}
 	if h.flags&^knownFlags != 0 {
 		return h, nil, ErrUnknownFlags
 	}

@@ -60,11 +60,22 @@ func (b *blockPaletteBuilder) add(rid uint32) uint32 {
 		// This cannot occur for chunks produced by the same registry.
 		name, props = "minecraft:air", nil
 	}
+	// A registry may number one state twice. Merging the aliases here rather
+	// than in finalize keeps the reference count honest: the count is the
+	// number of local palettes the state appears in, and two aliases in one
+	// local palette are one appearance.
+	key := preservedStateKey(name, props, 0)
+	if i, ok := b.byKey[key]; ok {
+		b.idx[rid] = i
+		b.ent[i].count++
+		return i
+	}
 	i := uint32(len(b.ent))
 	b.ent = append(b.ent, blockPaletteEntry{
 		rid: rid, name: name, props: props, key: stateKey(name, props), count: 1,
 	})
 	b.idx[rid] = i
+	b.byKey[key] = i
 	return i
 }
 
@@ -88,6 +99,15 @@ func normaliseStateVersion(v int32) int32 {
 		return 0
 	}
 	return v
+}
+
+// uncount undoes one reference, for a caller that resolved the same state
+// twice within a single local palette: two aliases of one state are one
+// appearance, not two.
+func (b *blockPaletteBuilder) uncount(i uint32) {
+	if b.ent[i].count > 1 {
+		b.ent[i].count--
+	}
 }
 
 // addState records one reference to an explicit block state that has no

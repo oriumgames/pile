@@ -224,7 +224,7 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	addBiome := func(name string) uint32 { return biomePal.add(name, 1) }
 	inter := make([]colIntermediate, len(raws))
 	for i := range raws {
-		inter[i] = resolveColumn(&raws[i], blockPal.add, addBiome, blockPal.addState)
+		inter[i] = resolveColumn(&raws[i], blockPal.add, addBiome, blockPal.addState, blockPal.uncount)
 		for _, sd := range inter[i].biomeSecs {
 			if build, ok := sd.uniform(); ok {
 				uniformBiomes[build]++
@@ -790,10 +790,6 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 
 	if !skipBiomes {
 		// Preserved biome names, keyed by absolute section and index.
-		type bioKey struct {
-			sec int32
-			idx uint16
-		}
 		bioUnknown := make(map[bioKey]uint32, len(c.UnknownBiomes))
 		bioUniform := make(map[int32]uint32, len(c.UnknownBiomes))
 		for _, u := range c.UnknownBiomes {
@@ -804,6 +800,14 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 			bioUnknown[bioKey{sec: u.Section, idx: u.Index}] = u.State
 		}
 		plains := plainsBiomeName()
+		name := func(state uint32) (string, bool) {
+			// A sidecar entry naming a state the column does not carry is
+			// malformed input, not a reason to panic.
+			if int(state) >= len(c.UnknownBiomeNames) {
+				return "", false
+			}
+			return c.UnknownBiomeNames[state], true
+		}
 		for i := range subs {
 			rs := extractBiomeRaw(ch, i)
 			sec := int32(r[0]>>4) + int32(i)
@@ -811,21 +815,18 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 				// Re-emit the original name wherever the fallback biome is
 				// still in place.
 				if state, ok := bioUniform[sec]; ok && len(rs.names) == 1 && rs.names[0] == plains {
-					rs.names[0] = c.UnknownBiomeNames[state]
-				} else if len(bioUnknown) > 0 && rs.idx != nil {
-					for j, name := range rs.names {
-						if name != plains {
-							continue
-						}
-						for idx, li := range rs.idx {
-							if int(li) != j {
-								continue
-							}
-							if state, ok := bioUnknown[bioKey{sec: sec, idx: uint16(idx)}]; ok {
-								rs.names[j] = c.UnknownBiomeNames[state]
-								break
-							}
-						}
+					n, ok := name(state)
+					if !ok {
+						cr.err = fmt.Errorf("unknown biome state %d in section %d has no name", state, sec)
+						return cr
+					}
+					rs.names[0] = n
+				} else if len(bioUnknown) > 0 {
+					var err error
+					rs, err = splitUnknownBiomes(rs, sec, plains, bioUnknown, name)
+					if err != nil {
+						cr.err = err
+						return cr
 					}
 				}
 			}
@@ -975,6 +976,66 @@ func extractBlockRaw(storage *chunk.PalettedStorage) rawBlockSec {
 // plainsBiomeName is the fallback unresolved biomes decode to.
 func plainsBiomeName() string { return "minecraft:plains" }
 
+// bioKey identifies one preserved biome position: absolute section index plus
+// section-local index.
+type bioKey struct {
+	sec int32
+	idx uint16
+}
+
+// splitUnknownBiomes re-emits preserved biome names at the exact positions
+// they were read from. Renaming a palette entry in place cannot do this: a
+// fallback slot is shared by every position that resolved to it, so renaming
+// it would give one preserved name to all of them, and a uniform section has
+// no indices to consult at all. The section is rebuilt per position instead,
+// which is also what makes a uniform section able to carry them.
+func splitUnknownBiomes(rs rawBiomeSec, sec int32, plains string,
+	unknown map[bioKey]uint32, name func(uint32) (string, bool),
+) (rawBiomeSec, error) {
+	want := make([]string, 4096)
+	changed := false
+	for pos := range want {
+		li := uint16(0)
+		if rs.idx != nil {
+			li = rs.idx[pos]
+		}
+		if int(li) >= len(rs.names) {
+			return rs, fmt.Errorf("biome index %d out of range in section %d", li, sec)
+		}
+		want[pos] = rs.names[li]
+		if want[pos] != plains {
+			continue
+		}
+		state, ok := unknown[bioKey{sec: sec, idx: uint16(pos)}]
+		if !ok {
+			continue
+		}
+		n, ok := name(state)
+		if !ok {
+			return rs, fmt.Errorf("unknown biome state %d in section %d has no name", state, sec)
+		}
+		want[pos], changed = n, true
+	}
+	if !changed {
+		return rs, nil
+	}
+	out := rawBiomeSec{idx: make([]uint16, 4096)}
+	seen := map[string]uint16{}
+	for pos, n := range want {
+		li, ok := seen[n]
+		if !ok {
+			li = uint16(len(out.names))
+			seen[n] = li
+			out.names = append(out.names, n)
+		}
+		out.idx[pos] = li
+	}
+	if len(out.names) == 1 {
+		out.idx = nil // uniform again
+	}
+	return out, nil
+}
+
 // extractBiomeRaw reads one section's biome storage into a local biome name
 // palette + indices.
 func extractBiomeRaw(ch *chunk.Chunk, secIdx int) rawBiomeSec {
@@ -996,7 +1057,7 @@ func airOnlyLayer(rs rawBlockSec, air uint32) bool {
 // resolveColumn maps a raw column's local palettes into the global palette
 // builders. The call order matches the historical serial encoder, keeping
 // palette build order (and therefore output) identical.
-func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(name string) uint32, addState func(bs BlockState) uint32) colIntermediate {
+func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(name string) uint32, addState func(bs BlockState) uint32, uncount func(i uint32)) colIntermediate {
 	ci := colIntermediate{
 		x: cr.x, z: cr.z,
 		minSection: cr.minSection,
@@ -1016,12 +1077,20 @@ func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(n
 		out := make([]secData, len(secs))
 		for l, rs := range secs {
 			pal := make([]uint32, len(rs.rids))
+			seen := make(map[uint32]struct{}, len(rs.rids))
 			for j, rid := range rs.rids {
 				if rs.states != nil && rs.states[j] >= 0 {
 					pal[j] = addState(cr.unkStates[rs.states[j]])
-					continue
+				} else {
+					pal[j] = addBlock(rid)
 				}
-				pal[j] = addBlock(rid)
+				// The reference count is appearances in local palettes, not
+				// slots: a local palette holding two aliases of one state
+				// contains it once.
+				if _, dup := seen[pal[j]]; dup {
+					uncount(pal[j])
+				}
+				seen[pal[j]] = struct{}{}
 			}
 			out[l] = secData{pal: pal, idx: rs.idx}
 		}

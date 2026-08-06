@@ -237,6 +237,10 @@ const (
 	// from a file would hand a hostile world a way to wedge the server, so the
 	// limit is what can actually be addressed.
 	maxLayers = 255
+	// MaxLayers is maxLayers for callers outside this package: a mover or an
+	// extractor that walks layers has to walk all of them, and a lower cap of
+	// its own would silently drop everything above it.
+	MaxLayers = maxLayers
 	// maxDirEntries bounds an indexed directory. The directory is one frame
 	// and every entry costs at least a few bytes, so the ceiling that the
 	// design can actually reach is set by the directory decode limit, not by

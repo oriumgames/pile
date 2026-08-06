@@ -900,6 +900,16 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 				if _, ok := w.blockIdx[rid]; !ok {
 					w.blockIdx[rid] = idx
 				}
+				// Index the entry by its state as well as by the runtime ID
+				// that produced it. A registry may number one state twice, and
+				// after a reopen the other alias would otherwise look new and
+				// be appended a second time.
+				if name, props, ok := w.reg.RuntimeIDToState(rid); ok {
+					key := preservedStateKey(name, props, 0)
+					if _, seen := w.stateIdx[key]; !seen {
+						w.stateIdx[key] = idx
+					}
+				}
 			}
 		}
 	}
@@ -959,13 +969,41 @@ func (w *IndexedWorld) readDirFrame(ref frameRef) ([]byte, error) {
 	if w.compressed {
 		first, second = false, true
 	}
-	if body, ok := decodeDirBody(buf, first); ok {
-		return body, nil
-	}
-	if body, ok := decodeDirBody(buf, second); ok {
+	for _, compressed := range [2]bool{first, second} {
+		body, ok := decodeDirBody(buf, compressed)
+		if !ok {
+			continue
+		}
+		// The prologue inside the frame says how the frame is stored, and it
+		// is the authority. Accepting a form it contradicts would let one
+		// directory be written two ways, and a reader that trusted the flag
+		// instead of guessing would reject what this one accepted.
+		flags, ok := prologueFlags(body)
+		if !ok {
+			continue
+		}
+		if (flags&FlagUncompressed == 0) != compressed {
+			return nil, corruptf("directory frame is stored %s but its prologue says %s",
+				storageWord(compressed), storageWord(flags&FlagUncompressed == 0))
+		}
 		return body, nil
 	}
 	return nil, corruptf("directory frame is neither valid raw nor valid compressed data")
+}
+
+func storageWord(compressed bool) string {
+	if compressed {
+		return "compressed"
+	}
+	return "raw"
+}
+
+// prologueFlags reads the flags word out of a decoded directory frame.
+func prologueFlags(body []byte) (uint32, bool) {
+	if len(body) < 10 {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(body[2:6]), true
 }
 
 // readFrame reads and decompresses a frame.
@@ -1130,12 +1168,20 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 	w.biomeIdx[name] = idx
 	w.biomeNames = append(w.biomeNames, name)
 	w.biomeIdent = append(w.biomeIdent, idx)
-	id := uint32(1)
+	// A name the runtime cannot resolve decodes as the fallback, and the entry
+	// records the original so a read before the next checkpoint sees it too.
+	// Appending -1 unconditionally left the mapping empty until the segment had
+	// been written and loaded back, so a read-and-rewrite in between replaced
+	// the biome with the fallback.
+	id, unknown := fallbackBiomeID(), int32(-1)
 	if b, ok := lookupBiome(name); ok {
 		id = uint32(b.EncodeBiome())
+	} else {
+		unknown = int32(len(w.biomeUnkName))
+		w.biomeUnkName = append(w.biomeUnkName, name)
 	}
 	w.biomeIDs = append(w.biomeIDs, id)
-	w.biomeUnknown = append(w.biomeUnknown, -1)
+	w.biomeUnknown = append(w.biomeUnknown, unknown)
 	w.pendingBiome.str(name)
 	w.pendingBioN++
 	return idx
@@ -1239,7 +1285,9 @@ func (w *IndexedWorld) Store(c Column) error {
 	// checkpoint, so an empty world that refused a column would not encode
 	// like an empty world that never saw one.
 	snap := w.snapshotPalettes()
-	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState)
+	// Indexed palettes are first-seen order with no frequency sorting, so
+	// nothing there consumes a reference count.
+	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState, func(uint32) {})
 	if w.paletteErr != nil {
 		err := w.paletteErr
 		w.paletteErr = nil

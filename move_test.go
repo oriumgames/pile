@@ -321,3 +321,115 @@ func buildSidecarColumn(t *testing.T, reg world.BlockRegistry) format.Column {
 		UnknownBiomes:     []format.UnknownBlock{{Section: -4, Index: format.WholeStorage, State: 0}},
 	}
 }
+
+// TestMovePreservesDeepLayers: the format carries 255 layers and a move reads
+// them one at a time, so a cap below that silently drops everything above it.
+func TestMovePreservesDeepLayers(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	stone := reg.BlockRuntimeID(block.Stone{})
+	dirt := reg.BlockRuntimeID(block.Dirt{})
+
+	b := NewBuilder(reg, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{2, 0, 2}, block.Stone{})
+	p := b.Provider()
+	col, err := p.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.Chunk.SetBlock(1, 0, 1, 7, dirt) // layer 7, well past the old cap of 4
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	// An unaligned offset forces the slow path, which walks layers explicitly.
+	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{1, 0, 0}, Backup: false}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	moved, err := q.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rid := moved.Chunk.Block(2, 0, 1, 0); rid != stone {
+		t.Fatalf("layer 0 lost in the move, rid %d", rid)
+	}
+	if rid := moved.Chunk.Block(2, 0, 1, 7); rid != dirt {
+		t.Fatalf("layer 7 lost in the move, rid %d: deep layers are being dropped", rid)
+	}
+}
+
+// TestMovePreservesUnknownBiomes: a move translates content, it does not
+// rename it. Without re-anchoring the biome sidecar, an unresolved biome came
+// out the other side as the runtime's fallback.
+func TestMovePreservesUnknownBiomes(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	b := NewBuilder(reg, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{2, 0, 2}, block.Stone{})
+	p := b.Provider()
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	// Put a preserved biome into the file directly: the provider has no API
+	// for minting one, since it only ever arrives from a file it cannot
+	// resolve.
+	wf, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df := wf.Dim(world.Overworld)
+	if df == nil || len(df.Columns) == 0 {
+		t.Fatal("no columns loaded")
+	}
+	// Preservation only re-emits where the runtime fallback is still in
+	// place, so the section has to hold it.
+	plains := uint32(1)
+	if b, ok := world.BiomeByName("plains"); ok {
+		plains = uint32(b.EncodeBiome())
+	}
+	pr := df.Columns[0].Col.Chunk.Range()
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(pr[0]); y <= int16(pr[1]); y++ {
+				df.Columns[0].Col.Chunk.SetBiome(x, y, z, plains)
+			}
+		}
+	}
+	df.Columns[0].UnknownBiomeNames = []string{"audit:unknown"}
+	df.Columns[0].UnknownBiomes = []format.UnknownBlock{
+		{Section: -4, Index: format.WholeStorage, State: 0},
+	}
+	if err := wf.Write(dir, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{1, 0, 0}, Backup: false}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range after.Dim(world.Overworld).Columns {
+		for _, n := range c.UnknownBiomeNames {
+			if n == "audit:unknown" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the move renamed an unresolved biome to the runtime fallback")
+	}
+}

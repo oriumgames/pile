@@ -150,8 +150,8 @@ func (s *Structure) layerCount() uint8 {
 		if c == nil {
 			continue
 		}
-		if l := uint8(len(c.Layers())); l > n {
-			n = min(l, 4)
+		if l := len(c.Layers()); l > int(n) {
+			n = uint8(min(l, format.MaxLayers))
 		}
 	}
 	return n
@@ -317,10 +317,7 @@ func chunkLayers(ch *chunk.Chunk) uint8 {
 			n = l
 		}
 	}
-	if n > 4 {
-		n = 4
-	}
-	return uint8(n)
+	return uint8(min(n, format.MaxLayers))
 }
 
 // setLocal writes a runtime ID at a structure-local position, allocating the

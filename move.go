@@ -110,16 +110,23 @@ func maxSourceLayers(ch *chunk.Chunk) uint8 {
 			n = l
 		}
 	}
-	if n > 4 {
-		n = 4
-	}
-	return uint8(n)
+	// The format carries 255 layers, and dragonfly cannot address a 256th.
+	// Capping lower here would silently drop everything above the cap during a
+	// move: the blocks are read layer by layer, so a layer never visited is a
+	// layer never written.
+	return uint8(min(n, format.MaxLayers))
 }
 
 // isFastOffset reports whether the offset allows chunk re-keying without
 // rewriting block data.
 func isFastOffset(off cube.Pos) bool {
 	return off.Y() == 0 && off.X()%16 == 0 && off.Z()%16 == 0
+}
+
+// bioSrcKey identifies a preserved biome at its source position.
+type bioSrcKey struct {
+	sec int32
+	idx uint16
 }
 
 // translateColumns translates one dimension's columns, accumulating clip
@@ -198,6 +205,29 @@ func translateColumns(cols []format.Column, reg world.BlockRegistry, off cube.Po
 			return base
 		}
 
+		// The same treatment for preserved biome names. Without it a move
+		// rewrites an unresolved biome as the runtime's fallback, which is a
+		// rename the mover was never asked for.
+		srcBiome := make(map[bioSrcKey]uint32, len(c.UnknownBiomes))
+		uniformBiome := make(map[int32]uint32, len(c.UnknownBiomes))
+		for _, u := range c.UnknownBiomes {
+			if u.Index == format.WholeStorage {
+				uniformBiome[u.Section] = u.State
+				continue
+			}
+			srcBiome[bioSrcKey{sec: u.Section, idx: u.Index}] = u.State
+		}
+		bioBases := map[*format.Column]uint32{}
+		biomeBase := func(t *format.Column) uint32 {
+			if base, ok := bioBases[t]; ok {
+				return base
+			}
+			base := uint32(len(t.UnknownBiomeNames))
+			t.UnknownBiomeNames = append(t.UnknownBiomeNames, c.UnknownBiomeNames...)
+			bioBases[t] = base
+			return base
+		}
+
 		for lx := range uint8(16) {
 			for lz := range uint8(16) {
 				wx := int(c.X)*16 + int(lx) + off.X()
@@ -222,6 +252,20 @@ func translateColumns(cols []format.Column, reg world.BlockRegistry, off cube.Po
 					tch := tcol.Col.Chunk
 					tch.SetBiome(tx, int16(wy), tz, ch.Biome(lx, y, lz))
 					srcSec := int32(int(y) >> 4)
+					if len(c.UnknownBiomes) > 0 {
+						bsrc := uint16(lx)<<8 | uint16(lz)<<4 | uint16(uint16(y)&15)
+						bdst := uint16(tx)<<8 | uint16(tz)<<4 | uint16(uint16(wy)&15)
+						state, ok := srcBiome[bioSrcKey{sec: srcSec, idx: bsrc}]
+						if !ok {
+							state, ok = uniformBiome[srcSec]
+						}
+						if ok {
+							tcol.UnknownBiomes = append(tcol.UnknownBiomes, format.UnknownBlock{
+								Section: int32(wy >> 4), Index: bdst,
+								State: biomeBase(tcol) + state,
+							})
+						}
+					}
 					srcIdx := uint16(lx)<<8 | uint16(lz)<<4 | uint16(uint16(y)&15)
 					dstSec := int32(wy >> 4)
 					dstIdx := uint16(tx)<<8 | uint16(tz)<<4 | uint16(uint16(wy)&15)

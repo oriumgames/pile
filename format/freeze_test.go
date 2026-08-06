@@ -1488,3 +1488,211 @@ func TestStructurePaddingSidecarDropped(t *testing.T) {
 		t.Fatal("the out-of-box state is in the palette")
 	}
 }
+
+// Round 17 rules.
+
+// TestRejectsDirectoryStorageMismatch: the prologue inside a directory frame
+// says how the frame is stored and is the authority. Guessing the form and
+// accepting whichever decodes would let one directory be written two ways, and
+// a reader that trusted the flag would reject what this one accepted.
+func TestRejectsDirectoryStorageMismatch(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Claim compression in the physical header and in the raw prologue, while
+	// leaving every frame stored raw.
+	if !patchDirectoryFlags(t, path, 0) { // rewrites the hash
+		t.Skip("could not reach the directory")
+	}
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	footer := file[len(file)-footerSize:]
+	off := binary.LittleEndian.Uint64(footer[8:16])
+	length := binary.LittleEndian.Uint64(footer[16:24])
+	dir := file[off : off+length]
+	binary.LittleEndian.PutUint32(file[8:12],
+		binary.LittleEndian.Uint32(file[8:12])&^FlagUncompressed)
+	binary.LittleEndian.PutUint32(dir[2:6],
+		binary.LittleEndian.Uint32(dir[2:6])&^FlagUncompressed)
+	binary.LittleEndian.PutUint64(footer[0:8], checkpointHash(file[:headerSize], dir, footer[8:]))
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The file always has an earlier checkpoint to fall back to, so the
+	// contradiction is refused either by failing to open or by rejecting that
+	// checkpoint and recovering to the one before it.
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		return
+	}
+	recovered := v.Recovered()
+	v.Close()
+	if !recovered {
+		t.Fatal("a raw directory claiming compression was accepted")
+	}
+}
+
+// TestRejectsUndefinedKind: kind names a layout, and only two exist. A reader
+// that passes an unknown one through reports a file type nothing defines.
+func TestRejectsUndefinedKind(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	for _, kind := range []byte{2, 3, 255} {
+		bad := bytes.Clone(file)
+		bad[6] = kind
+		rehashSolid(bad)
+		if _, err := ReadMeta(bad); err == nil {
+			t.Errorf("kind %d was accepted", kind)
+		}
+	}
+}
+
+// TestAliasCountsOneAppearance: the reference count is the number of local
+// palettes a state appears in. A local palette holding two runtime IDs for one
+// state contains it once, so counting slots would let the choice of alias
+// reorder the global palette.
+func TestAliasCountsOneAppearance(t *testing.T) {
+	reg := newAliasRegistry(testRegistry(t))
+	twin := reg.alias - 1
+	other, _ := reg.StateToRuntimeID("minecraft:dirt", map[string]any{})
+
+	build := func(second uint32) []byte {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, twin)
+		ch.SetBlock(1, -64, 0, 0, second)
+		ch.SetBlock(2, -64, 0, 0, other)
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, &WorldData{Columns: []Column{{X: 0, Z: 0,
+			Col: &chunk.Column{Chunk: ch}}}}, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	// Replacing one alias with the other leaves the block states unchanged.
+	if a, b := build(reg.alias), build(twin); !bytes.Equal(a, b) {
+		t.Fatalf("the choice of alias changed the file: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestPositionalUnknownBiomes: a preserved biome names a position, not a
+// palette slot. Renaming the slot gives one name to every position sharing it,
+// and a uniform section has no indices to consult at all.
+func TestPositionalUnknownBiomes(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	plains := fallbackBiomeID()
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(-64); y < -48; y++ {
+				ch.SetBiome(x, y, z, plains)
+			}
+		}
+	}
+	d := &WorldData{Columns: []Column{{
+		X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+		UnknownBiomeNames: []string{"audit:a", "audit:b"},
+		UnknownBiomes: []UnknownBlock{
+			{Section: -4, Index: 0, State: 0},
+			{Section: -4, Index: 1, State: 1},
+		},
+	}}}
+	file := encode(t, d, reg, CompressionNone)
+	body := file[headerSize : len(file)-footerSize]
+	for _, name := range []string{"audit:a", "audit:b", "minecraft:plains"} {
+		if !bytes.Contains(body, []byte(name)) {
+			t.Fatalf("the biome palette lost %q: a uniform section cannot carry positional names", name)
+		}
+	}
+	back, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(back.Columns[0].UnknownBiomes); n != 2 {
+		t.Fatalf("recovered %d positional biomes, want 2", n)
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(file, second) {
+		t.Fatal("positional preserved biomes do not survive a round trip")
+	}
+}
+
+// TestMalformedBiomeSidecarErrors: a sidecar naming a state the column does
+// not carry is malformed input. Writers report it; they do not panic.
+func TestMalformedBiomeSidecarErrors(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	plains := fallbackBiomeID()
+	for _, idx := range []uint16{WholeStorage, 0} {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, stone)
+		for x := range uint8(16) {
+			for z := range uint8(16) {
+				for y := int16(-64); y < -48; y++ {
+					ch.SetBiome(x, y, z, plains)
+				}
+			}
+		}
+		d := &WorldData{Columns: []Column{{
+			X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+			UnknownBiomes: []UnknownBlock{{Section: -4, Index: idx, State: 0}},
+		}}}
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+			t.Errorf("index %d: a sidecar with no names was accepted", idx)
+		}
+	}
+}
+
+// TestIndexedUnknownBiomeBeforeCheckpoint: an unresolved biome has to be
+// readable as itself the moment it is stored. Establishing the mapping only
+// once the segment had been written and loaded back meant a read and rewrite
+// in between replaced it with the fallback.
+func TestIndexedUnknownBiomeBeforeCheckpoint(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	plains := fallbackBiomeID()
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(-64); y < -48; y++ {
+				ch.SetBiome(x, y, z, plains)
+			}
+		}
+	}
+	if err := w.Store(Column{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+		UnknownBiomeNames: []string{"audit:unknown"},
+		UnknownBiomes:     []UnknownBlock{{Section: -4, Index: WholeStorage, State: 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Column(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.UnknownBiomes) == 0 {
+		t.Fatal("a preserved biome read back before checkpointing lost its sidecar")
+	}
+	if len(got.UnknownBiomeNames) == 0 || got.UnknownBiomeNames[got.UnknownBiomes[0].State] != "audit:unknown" {
+		t.Fatalf("the preserved name did not come back: %v", got.UnknownBiomeNames)
+	}
+}

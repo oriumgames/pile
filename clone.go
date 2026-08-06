@@ -30,6 +30,43 @@ func cloneColumn(c *chunk.Column) *chunk.Column {
 	return out
 }
 
+// safeCompact reduces a chunk's palettes the way dragonfly's Compact does,
+// but only when doing so cannot renumber a layer.
+//
+// Compact drops every all-air storage and closes the gap, which is exactly
+// what the format forbids: layer numbers are semantic, so an all-air layer 0
+// beneath a populated layer 1 is a waterlogged section, and removing it turns
+// the water into a liquid block. Vanilla content never has that shape, which
+// is why the operation looks harmless, so the check is cheap and the common
+// case still gets compacted.
+func safeCompact(ch *chunk.Chunk, air uint32) {
+	for _, sub := range ch.Sub() {
+		if renumbersLayers(sub, air) {
+			return
+		}
+	}
+	ch.Compact()
+}
+
+// renumbersLayers reports whether dropping this sub chunk's all-air storages
+// would move any surviving layer to a different index.
+func renumbersLayers(sub *chunk.SubChunk, air uint32) bool {
+	layers := sub.Layers()
+	seenAir := false
+	for _, st := range layers {
+		if st.Palette().Len() == 1 && st.At(0, 0, 0) == air {
+			seenAir = true
+			continue
+		}
+		if seenAir {
+			// A populated layer above an all-air one: compaction would pull it
+			// down into the empty slot.
+			return true
+		}
+	}
+	return false
+}
+
 // deepCopyCompound copies an NBT-shaped map, recursing into nested maps and
 // slices so no mutable state is shared.
 func deepCopyCompound(m map[string]any) map[string]any {

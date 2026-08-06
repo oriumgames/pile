@@ -348,7 +348,7 @@ func (p *Provider) storeColumn(pos world.ChunkPos, dim world.Dimension, col *chu
 		return nil
 	}
 	c := cloneColumn(col)
-	c.Chunk.Compact()
+	safeCompact(c.Chunk, p.conf.registry.AirRuntimeID())
 	if p.conf.skip&SkipEntities != 0 {
 		c.Entities = nil
 	} else if p.conf.filterEnt != nil {
