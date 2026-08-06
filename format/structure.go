@@ -113,7 +113,7 @@ func validateStructureData(s *StructureData) error {
 		return fmt.Errorf("pile: structure has %d block entities, limit %d", n, maxPerChunk)
 	}
 	for i := range 3 {
-		if s.Size[i] <= 0 || int64(s.Size[i]) > maxChunks {
+		if s.Size[i] <= 0 || int64(s.Size[i]) > maxStructureSize {
 			// The decoder rejects any component above this ceiling, so the
 			// writer must too.
 			return fmt.Errorf("pile: invalid structure size %v", s.Size)
@@ -375,7 +375,7 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		if err != nil {
 			return nil, err
 		}
-		if v == 0 || v > 1<<20 {
+		if v == 0 || v > maxStructureSize {
 			return nil, corruptf("invalid structure size component %d", v)
 		}
 		size[i] = int32(v)

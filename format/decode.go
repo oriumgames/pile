@@ -2,6 +2,7 @@ package format
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 
 	"github.com/cespare/xxhash/v2"
@@ -102,22 +103,36 @@ func decompressBody(h header, stored []byte) ([]byte, error) {
 	return body, nil
 }
 
-// readMetaBlobs reads the meta block from the start of the body.
+// readMetaBlobs reads the meta block from the start of the body. Blobs the
+// format designates as NBT are validated here: accepting a non-canonical one
+// would admit two encodings of the same metadata.
 func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border, stats []byte, err error) {
-	if settings, err = r.blob(); err != nil {
+	nbtBlob := func(what string) ([]byte, error) {
+		b, err := r.blob()
+		if err != nil {
+			return nil, err
+		}
+		if len(b) > 0 {
+			if err := validateNBT(b); err != nil {
+				return nil, fmt.Errorf("%s: %w", what, err)
+			}
+		}
+		return b, nil
+	}
+	if settings, err = nbtBlob("settings"); err != nil {
 		return
 	}
 	if userData, err = r.blob(); err != nil {
 		return
 	}
-	if markers, err = r.blob(); err != nil {
+	if markers, err = nbtBlob("markers"); err != nil {
 		return
 	}
-	if border, err = r.blob(); err != nil {
+	if border, err = nbtBlob("border"); err != nil {
 		return
 	}
 	if flags&FlagStats != 0 {
-		stats, err = r.blob()
+		stats, err = nbtBlob("stats")
 	}
 	return
 }

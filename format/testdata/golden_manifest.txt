@@ -1,11 +1,11 @@
 version 2
-indexed 741c433e043b0e18
+indexed 4c0ad6b6789ccee6
 structure 1ab47bab782121f2
 structure_zstd 90d5cdd3d4e1dec3
-world_all 0118aac111d071a0
+world_all 8c8a4e2c760f24e9
 world_light 34dd91bb9d6e49c9
 world_nobiomes ac85b86cce4f7fa3
 world_plain fa114eb7d6f2f1af
-world_stats 272cfb629a0fd313
+world_stats 5684a85123f1287a
 world_zstd d23be908b8bf833c
 world_zstd_fast 23ad4ea6e8e8f164

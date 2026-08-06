@@ -167,6 +167,10 @@ const (
 	// design can actually reach is set by the directory decode limit, not by
 	// maxChunks: advertising more would be a promise the layout cannot keep.
 	maxDirEntries = 1 << 22
+	// maxStructureSize bounds one dimension of a structure in blocks. The
+	// decoder enforces it per component, so the writer must use the same
+	// value or it can emit files it cannot read back.
+	maxStructureSize = 1 << 20
 	// maxStructureCells bounds a structure's 16-cube cell grid. Unlike a
 	// world, a structure is a single in-memory object, so this is both a
 	// wire validity rule and an allocation bound: 2^20 cells spans a

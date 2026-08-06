@@ -65,15 +65,23 @@ order is what lets independent writers produce identical bytes for identical
 content. Decoders MUST reject blobs that violate them.
 
 Decoding NBT into a dynamically typed map cannot distinguish `TAG_List` of a
-numeric type from the corresponding array tag: both become the same host-language
-value. The reference implementation therefore adopts exactly the mapping used
-by the ecosystem's NBT library (gophertunnel), which is what dragonfly's own
-leveldb provider writes: dynamically sized sequences re-encode as `TAG_List`
-of their element type, fixed-size ones as the array tags. A blob that
-originally used `TAG_Byte_Array`/`TAG_Int_Array`/`TAG_Long_Array` therefore
-re-encodes as the equivalent list, and is stable from then on. Implementations
-that can retain the original tag kind are free to do so; they MUST NOT depend
-on the distinction being preserved by others.
+numeric type from the corresponding array tag: both become the same
+host-language value. Because two writers must produce identical bytes for
+identical content, the normalisation is normative rather than optional:
+
+- In **opaque** NBT (entity and block-entity blobs, chunk and world user
+  data), `TAG_Byte_Array`, `TAG_Int_Array` and `TAG_Long_Array` are valid on
+  input, but a value obtained by decoding one MUST re-encode as `TAG_List` of
+  the element type. The array tag therefore does not survive a round trip,
+  and implementations MUST NOT rely on it doing so. Since every conforming
+  implementation normalises identically, re-encoding a given file yields the
+  same bytes everywhere.
+- In the **metadata compounds this document specifies** (§7), the tag of each
+  field is fixed by that section and MUST be emitted exactly: the world
+  border's `min` and `max` are `TAG_Int_Array`, not lists.
+
+This keeps byte identity achievable across implementations without requiring
+a decoder that retains tag kinds.
 Tag types used: byte(1), short(2), int(3), long(4), float(5), double(6),
 byte_array(7), string(8), list(9), compound(10), int_array(11),
 long_array(12).
@@ -269,7 +277,9 @@ against the block or biome palette according to the use site.
 ## 4. Solid mode (mode = 0, kind = world)
 
 The body is a single unit: compressed as one Zstandard frame unless flag
-`Uncompressed` is set. `footer.bodyHash` covers the stored (compressed) bytes.
+`Uncompressed` is set. The footer carries the checkpoint hash of §2.4, which
+covers the header, the stored (compressed) body and the footer's own control
+words.
 
 Body content, in order:
 
@@ -278,7 +288,7 @@ meta block       §4.1–4.2
 block palette    §3.1
 biome palette    §3.2
 blob table       §3.4
-chunkN           uvarint          (≤ 1 048 576)
+chunkN           uvarint          (≤ 4 294 967 296, §8)
 record[chunkN]   §4.3, sorted by Morton key of (x, z)
 ```
 
@@ -397,8 +407,8 @@ Two caveats on file identity:
 - The **compressed** bytes are not specified. Zstandard admits many valid
   encodings of the same content, so a different compressor implementation,
   version or level produces a different file for identical content. The
-  footer's `bodyHash` covers the stored bytes and is an integrity check, not
-  a content identity.
+  footer's checkpoint hash (§2.4) covers the stored bytes and is an integrity
+  check, not a content identity.
 - For content identity, hash the **uncompressed body** instead (the reference
   implementation exposes this as `format.ContentHash`). That value depends
   only on the world's content and this specification, so it is stable across
@@ -471,6 +481,10 @@ in a palette segment, the metadata or the dictionary is detected instead of
 silently changing world content.
 
 ```
+kind             u8               1 = structure, 0 = world; MUST be 0
+mode             u8               MUST be 1 (indexed)
+flags            u32              as in the header (§2.3)
+blockVersion     i32              as in the header
 frameRef         = off uvarint, len uvarint, hash u64   (len 0 = absent)
 meta             frameRef
 dict             frameRef
@@ -478,13 +492,23 @@ blockSegN        uvarint
 blockSeg[blockSegN]: frameRef
 biomeSegN        uvarint
 biomeSeg[biomeSegN]: frameRef
-chunkN           uvarint          (≤ 1 048 576)
+chunkN           uvarint          (≤ 4 194 304, §8)
 chunk[chunkN]:                    sorted by Morton key of (x, z)
   dx, dz         svarint          delta from previous entry
   offDelta       svarint          frame offset delta from previous entry
   len            uvarint          stored frame length
   hash           u64              xxHash64 of the stored frame bytes
 ```
+
+The four prologue fields repeat the header's semantic content. They are the
+authority: a reader takes `flags` and `blockVersion` from the directory, and
+they are also the header preimage of the checkpoint hash (§2.4), so a
+checkpoint stays verifiable when the 16 physical header bytes are damaged.
+Readers MUST reject a directory whose prologue disagrees with the constraints
+of §5.7, and SHOULD report a mismatch against an otherwise intact physical
+header (the reference implementation exposes `HeaderDamaged`; rewriting the
+file repairs it). Only the magic and version in the physical header are
+required to be intact for a file to be recognised at all.
 
 Per-record hashes localise corruption to single chunks. The dictionary frame
 contains raw Zstandard dictionary bytes (with an embedded dictionary id); the
@@ -496,9 +520,11 @@ reference implementation trains one during compaction when there are at least
 A **checkpoint** appends, in order: pending palette segment frames, a meta
 frame (if metadata changed) and the directory frame; the file is then
 **fsynced before the footer is written**, so a footer can never refer to
-frames that are not durable. The footer (§2.2) carries `bodyHash` = xxHash64
-of the directory frame's stored bytes, an incremented `generation` and the
-previous footer's offset, and is followed by a second fsync.
+frames that are not durable. The footer (§2.2) carries the checkpoint hash of
+§2.4 (whose payload is the directory frame's stored bytes), an incremented
+`generation` and the previous footer's offset, and is followed by a second
+fsync. There is exactly one hash formula in this format; earlier drafts
+described a payload-only hash and are superseded by §2.4.
 
 Adopting a checkpoint means validating everything it references: the
 directory's hash, then each referenced frame's hash. A checkpoint whose
@@ -529,7 +555,7 @@ atomically renames it over the original.
 
 - An absent frame reference MUST have offset, length and hash all zero; a
   non-zero offset or hash with a zero length is invalid.
-- The directory repeats the semantic header fields (kind, mode, flags, block
+- The directory begins with the semantic header fields (kind, mode, flags, block
   version) so that a checkpoint remains self-describing: recovery validates
   the header against the newest intact checkpoint instead of being defeated
   by damage to the 16 header bytes it is hashed with.
@@ -608,6 +634,11 @@ bounds of the playable area. Advisory.
 
 ## 8. Limits
 
+These are the values a conforming decoder MUST enforce. The count limits are
+allocation guards: the decompressed-payload ceilings bind first in practice,
+so a legal file cannot approach the largest counts. Where a layout table and
+this table disagree, this table is normative.
+
 Decoders MUST enforce (reference values):
 
 These are **validity rules**: a file exceeding them is invalid, so raising one
@@ -620,8 +651,12 @@ remain, not from these ceilings.
 |------|-------|
 | string length | 64 KiB |
 | blob length | 16 MiB |
-| chunk records per world / directory entries | 4 294 967 296 |
+| chunk records in a solid body | 4 294 967 296 |
+| entries in an indexed directory | 4 194 304 |
+| decompressed size of a solid body | 512 MiB |
+| decompressed size of any indexed frame | 64 MiB |
 | structure cells | 1 048 576 |
+| structure size per axis, in blocks | 1 048 576 |
 | global palette entries | 1 048 576 |
 | blob table entries | 16 777 216 |
 | section blob local palette entries | 65 536 (the u16 index width) |
@@ -643,8 +678,8 @@ derived from untrusted counts must be validated before allocation.
 
 ## 9. Implementation guidance
 
-- **Reading a solid file**: validate header and footer, verify `bodyHash`,
-  decompress, then parse the body sequentially. Trailing bytes after the last
+- **Reading a solid file**: validate header and footer, verify the checkpoint
+  hash (§2.4), decompress, then parse the body sequentially. Trailing bytes after the last
   record are an error.
 - **Metadata-only access** needs only the meta block at the start of the body
   (stream-decompress and stop).

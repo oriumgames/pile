@@ -1,6 +1,7 @@
 package format
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -55,6 +56,9 @@ type IndexedWorld struct {
 	end        int64
 	generation uint64
 	compressed bool
+	// headerDamaged records that the physical header disagreed with the
+	// directory prologue, so the file was opened from the directory's copy.
+	headerDamaged bool
 	// headerFlags and headerBlockVersion mirror the file header. Each
 	// checkpoint records them, so recovery can validate (and report) a
 	// header that no longer matches the checkpoints it belongs to.
@@ -310,32 +314,95 @@ func (w *IndexedWorld) load() error {
 	if v := binary.LittleEndian.Uint16(hdr[4:6]); v != Version {
 		return ErrUnsupportedVersion
 	}
-	if hdr[6] != KindWorld {
-		return corruptf("file kind %d is not a world", hdr[6])
+	// Magic and version identify the file; the remaining header fields are
+	// validated against the directory prologue, which the checkpoint hash
+	// authenticates and which therefore survives damage to these 16 bytes.
+	if hdr[6] != KindWorld && hdr[6] != 0xFF {
+		// Kind is checked again from the directory; reject only an explicit
+		// structure header, which is never an indexed world.
+		if hdr[6] == KindStructure {
+			return corruptf("file kind %d is not a world", hdr[6])
+		}
 	}
-	if hdr[7] != ModeIndexed {
+	if hdr[7] == ModeSolid {
 		return ErrUnsupportedMode
 	}
-	flags := binary.LittleEndian.Uint32(hdr[8:12])
-	if flags&^knownFlags != 0 {
-		return ErrUnknownFlags
-	}
-	if flags&FlagDefaultBiome != 0 || flags>>defaultBiomeShift != 0 {
-		// Indexed records never elide biome sections, so the default-biome
-		// flag and its reference must be unset: one encoding per header.
-		return corruptf("indexed header must not set a default biome")
-	}
 	w.hdrBytes = append([]byte(nil), hdr...)
-	// Indexed files elide no biomes and carry no stats block, so those
-	// flags would be meaningless here: reject rather than ignore them.
-	if flags&(FlagDefaultBiome|FlagStats) != 0 || flags>>defaultBiomeShift != 0 {
-		return corruptf("flags 0x%08X are not valid for an indexed file", flags)
-	}
-	w.headerFlags, w.headerBlockVersion = flags, int32(binary.LittleEndian.Uint32(hdr[12:16]))
-	w.compressed = flags&FlagUncompressed == 0
-	w.opts.StoreLight = flags&FlagStoreLight != 0
+	w.headerFlags = binary.LittleEndian.Uint32(hdr[8:12])
+	w.headerBlockVersion = int32(binary.LittleEndian.Uint32(hdr[12:16]))
+	w.compressed = w.headerFlags&FlagUncompressed == 0
 
-	return w.adoptCheckpoint()
+	if err := w.adoptCheckpoint(); err != nil {
+		return err
+	}
+	// The directory prologue is authoritative and has now been applied; make
+	// sure the physical header agrees, and record it when it does not.
+	if !bytes.Equal(w.hdrBytes, headerImage(KindWorld, ModeIndexed, w.headerFlags, w.headerBlockVersion)) {
+		w.headerDamaged = true
+	}
+	w.opts.StoreLight = w.headerFlags&FlagStoreLight != 0
+	return nil
+}
+
+// headerImage builds the canonical 16-byte header for a set of semantic
+// fields. It is the checkpoint hash's header preimage, so a checkpoint can be
+// verified from the directory alone.
+func headerImage(kind, mode uint8, flags uint32, blockVersion int32) []byte {
+	h := &writer{}
+	h.raw(headerMagic[:])
+	h.u16(Version)
+	h.u8(kind)
+	h.u8(mode)
+	h.u32(flags)
+	h.i32(blockVersion)
+	return h.bytes()
+}
+
+// prologueHeaderImage rebuilds a header image from a stored directory frame's
+// prologue, trying the frame both raw and decompressed because the physical
+// header (which records whether frames are compressed) may be the damaged
+// part.
+func prologueHeaderImage(stored []byte) ([]byte, bool) {
+	parse := func(b []byte) ([]byte, bool) {
+		r := &reader{b: b}
+		kind, err := r.u8()
+		if err != nil {
+			return nil, false
+		}
+		mode, err := r.u8()
+		if err != nil {
+			return nil, false
+		}
+		flags, err := r.u32()
+		if err != nil {
+			return nil, false
+		}
+		version, err := r.u32()
+		if err != nil {
+			return nil, false
+		}
+		if kind != KindWorld || mode != ModeIndexed {
+			return nil, false
+		}
+		return headerImage(kind, mode, flags, int32(version)), true
+	}
+	if img, ok := parse(stored); ok {
+		return img, true
+	}
+	body, err := sharedFrameDecoder().DecodeAll(stored, nil)
+	if err != nil {
+		return nil, false
+	}
+	return parse(body)
+}
+
+// HeaderDamaged reports that the file's physical header did not match the
+// semantic fields the directory carries, so the world was opened from the
+// directory's authoritative copy. Rewriting the file (Compact) repairs it.
+func (w *IndexedWorld) HeaderDamaged() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.headerDamaged
 }
 
 // verifyRecords checks the stored hash of every live record frame.
@@ -403,7 +470,7 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 		}
 	}
 	err := error(corruptf("no valid checkpoint footer found"))
-	for i, c := range cands {
+	for _, c := range cands {
 		w.resetLoadedState()
 		if lerr := w.loadDirectory(c.dirRef); lerr != nil {
 			err = lerr
@@ -419,7 +486,11 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 		w.generation = c.gen
 		w.dirRef = c.dirRef
 		w.prevFooterOff = c.off
-		w.recovered = i > 0
+		// Recovery means the checkpoint at the end of the file was not the
+		// one adopted, whatever the reason: a torn tail, a footer that fails
+		// its hash, or a checkpoint whose frames are damaged. Anything else
+		// under-reports the loss to the caller.
+		w.recovered = c.off != w.end-footerSize
 		return nil
 	}
 	w.resetLoadedState()
@@ -512,7 +583,13 @@ func (w *IndexedWorld) tryFooter(off int64) (footerCand, bool) {
 		return footerCand{}, false
 	}
 	if checkpointHash(w.hdrBytes, frame, buf[8:]) != wantHash {
-		return footerCand{}, false
+		// The physical header may be the damaged part: the directory carries
+		// its own copy of the semantic fields, so rebuild the preimage from
+		// there and retry before rejecting the checkpoint.
+		img, ok := prologueHeaderImage(frame)
+		if !ok || checkpointHash(img, frame, buf[8:]) != wantHash {
+			return footerCand{}, false
+		}
 	}
 	return footerCand{
 		off:    off,
@@ -529,6 +606,37 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		return fmt.Errorf("pile: read directory: %w", err)
 	}
 	r := &reader{b: body}
+	kind, err := r.u8()
+	if err != nil {
+		return err
+	}
+	mode, err := r.u8()
+	if err != nil {
+		return err
+	}
+	dirFlags, err := r.u32()
+	if err != nil {
+		return err
+	}
+	dirVersion, err := r.u32()
+	if err != nil {
+		return err
+	}
+	if kind != KindWorld || mode != ModeIndexed {
+		return corruptf("directory describes kind %d mode %d, want world/indexed", kind, mode)
+	}
+	if dirFlags&^knownFlags != 0 {
+		return ErrUnknownFlags
+	}
+	if dirFlags&(FlagDefaultBiome|FlagStats) != 0 || dirFlags>>defaultBiomeShift != 0 {
+		return corruptf("directory flags 0x%08X are not valid for an indexed file", dirFlags)
+	}
+	// The directory is authoritative: it is covered by the checkpoint hash,
+	// so it survives damage to the 16 physical header bytes.
+	w.headerFlags, w.headerBlockVersion = dirFlags, int32(dirVersion)
+	w.compressed = dirFlags&FlagUncompressed == 0
+	w.opts.StoreLight = dirFlags&FlagStoreLight != 0
+
 	validRef := func(ref frameRef, what string) error {
 		if ref.length == 0 {
 			// Absent references are canonical: all three fields zero, so
@@ -1207,9 +1315,14 @@ func (w *IndexedWorld) checkpointLocked() error {
 		w.metaDirty = false
 	}
 
-	// Directory: entries sorted by Morton key, positions and offsets
-	// delta-coded.
+	// Directory: a self-describing prologue (the semantic header fields, so a
+	// checkpoint does not depend on the physical header surviving), then
+	// entries sorted by Morton key with positions and offsets delta-coded.
 	d := &writer{}
+	d.u8(KindWorld)
+	d.u8(ModeIndexed)
+	d.u32(w.headerFlags)
+	d.i32(w.headerBlockVersion)
 	writeRef := func(ref frameRef) {
 		d.uvarint(uint64(ref.off))
 		d.uvarint(uint64(ref.length))

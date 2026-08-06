@@ -548,3 +548,98 @@ func TestCompactSurvivesDictionaryFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIndexedSurvivesHeaderDamage: the directory carries the semantic header
+// fields, so damage confined to the 16 physical header bytes must not
+// invalidate every checkpoint.
+func TestIndexedSurvivesHeaderDamage(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "hdr.pile")
+	want := buildTestColumn(t, reg, 3, -2)
+	createIndexedWorld(t, path, want)
+
+	// Corrupt the block version inside the header only.
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := []byte{0}
+	if _, err := f.ReadAt(b, 12); err != nil {
+		t.Fatal(err)
+	}
+	b[0] ^= 0xFF
+	if _, err := f.WriteAt(b, 12); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	w, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatalf("header damage made the world unopenable: %v", err)
+	}
+	defer w.Close()
+	if !w.HeaderDamaged() {
+		t.Fatal("header damage was not reported")
+	}
+	if w.ChunkCount() != 1 {
+		t.Fatalf("chunk count = %d, want 1", w.ChunkCount())
+	}
+	got, err := w.Column(3, -2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compareColumns(t, want, got)
+}
+
+// TestIndexedDirectoryPrologueAuthoritative: a directory whose prologue does
+// not describe an indexed world is rejected, and a damaged newest directory
+// falls back to the previous checkpoint rather than being trusted.
+func TestIndexedDirectoryPrologueAuthoritative(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "prologue.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	probe, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirOff := probe.dirRef.off
+	_ = probe.Close()
+
+	// Rewrite the newest directory's prologue to claim it is a structure.
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{KindStructure}, dirOff); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	rw, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatalf("recovery to the previous checkpoint failed: %v", err)
+	}
+	defer rw.Close()
+	if !rw.Recovered() {
+		t.Fatal("falling back past the damaged checkpoint was not reported")
+	}
+	if rw.ChunkCount() != 1 {
+		t.Fatalf("chunk count = %d, want 1 (the pre-damage checkpoint)", rw.ChunkCount())
+	}
+}

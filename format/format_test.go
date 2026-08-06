@@ -391,8 +391,8 @@ func TestStatsFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats["chunks"] != int32(3) {
-		t.Fatalf("stats chunks = %v, want 3", stats["chunks"])
+	if stats["chunks"] != int64(3) {
+		t.Fatalf("stats chunks = %v (%T), want int64(3)", stats["chunks"], stats["chunks"])
 	}
 	// The full world still decodes with the stats blob present.
 	if _, err := ReadWorld(buf.Bytes(), reg); err != nil {

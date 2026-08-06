@@ -128,5 +128,5 @@ Binary specification for other implementations:
 - For an enormous constantly-mutating survival world, dragonfly's own mcdb
   remains the better fit; providers are per-world and coexist.
 
-Based on ideas from [hollow-cube/go-polar](https://github.com/hollow-cube/go-polar).
+Based on ideas from [hollow-cube/polar](https://github.com/hollow-cube/polar).
 MIT licensed; see [license.md](license.md).

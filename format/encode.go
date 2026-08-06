@@ -276,12 +276,14 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 				}
 			}
 		}
+		// Counters are longs: the format's ceilings exceed int32, so an int
+		// tag could not represent a legal world.
 		stats, err := marshalNBT(map[string]any{
-			"chunks":         int32(len(inter)),
-			"filledSections": int32(filled),
-			"uniqueBlobs":    int32(len(table.blobs)),
-			"blockStates":    int32(len(blockRemap)),
-			"biomes":         int32(len(biomeRemap)),
+			"chunks":         int64(len(inter)),
+			"filledSections": int64(filled),
+			"uniqueBlobs":    int64(len(table.blobs)),
+			"blockStates":    int64(len(blockRemap)),
+			"biomes":         int64(len(biomeRemap)),
 		})
 		if err != nil {
 			return fmt.Errorf("pile: encode stats: %w", err)
@@ -346,14 +348,24 @@ func validateWorldData(d *WorldData) error {
 	for _, b := range []struct {
 		p    []byte
 		what string
+		nbt  bool
 	}{
-		{d.Settings, "world settings blob"},
-		{d.UserData, "world user data"},
-		{d.Markers, "markers blob"},
-		{d.Border, "border blob"},
+		{d.Settings, "world settings blob", true},
+		{d.UserData, "world user data", false},
+		{d.Markers, "markers blob", true},
+		{d.Border, "border blob", true},
 	} {
 		if err := checkBlob(b.p, b.what); err != nil {
 			return err
+		}
+		// The format designates these blobs as NBT, so they must satisfy the
+		// canonical NBT rules: a writer that emits a malformed or
+		// non-canonical one produces a file conforming readers must reject.
+		// User data stays opaque.
+		if b.nbt && len(b.p) > 0 {
+			if err := validateNBT(b.p); err != nil {
+				return fmt.Errorf("pile: %s: %w", b.what, err)
+			}
 		}
 	}
 	if len(d.Columns) > maxChunks {
