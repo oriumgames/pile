@@ -139,6 +139,12 @@ func arrayTagType(v any) (byte, bool) {
 
 // nbtPayload writes the payload of a value (no tag type, no name).
 func nbtPayload(w *writer, v any, depth int) error {
+	// The check lives here rather than only in nbtCompound: a chain of nested
+	// lists never reaches a compound, so it slipped past the limit and
+	// produced a file this same release refuses to read.
+	if depth > maxNBTDepth {
+		return fmt.Errorf("pile: nbt nested deeper than %d", maxNBTDepth)
+	}
 	switch x := v.(type) {
 	case byte:
 		w.u8(x)

@@ -428,8 +428,18 @@ func TestIndexedSetMetaRejectsNonCanonical(t *testing.T) {
 	if err := w.SetMeta(bad, nil, nil, nil); err == nil {
 		t.Fatal("SetMeta accepted a settings blob the reader rejects")
 	}
-	if err := w.SetMeta(nil, nil, nil, []byte{0x0a, 0, 0, 0x00}); err == nil {
-		t.Fatal("SetMeta accepted a border with no min or max")
+	// An empty compound is valid: §7 makes every metadata field optional and
+	// fixes only the spelling of the ones that are present.
+	if err := w.SetMeta(nil, nil, nil, []byte{0x0a, 0, 0, 0x00}); err != nil {
+		t.Fatalf("SetMeta rejected an empty border compound: %v", err)
+	}
+	// A present field with the wrong tag is not.
+	badBorder, err := marshalNBT(map[string]any{"min": []int32{0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetMeta(nil, nil, nil, badBorder); err == nil {
+		t.Fatal("SetMeta accepted a border whose min is a list")
 	}
 }
 
@@ -1732,5 +1742,173 @@ func TestUnknownStateInEmptySection(t *testing.T) {
 	}
 	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(file, second) {
 		t.Fatal("a preserved state in an empty section does not survive a round trip")
+	}
+}
+
+// Round 19 rules.
+
+// TestMetadataFieldsAreOptional: §7 makes presence a convention and spelling a
+// rule. A writer that demanded a field made the two halves contradict each
+// other, and rejected a compound the specification calls valid.
+func TestMetadataFieldsAreOptional(t *testing.T) {
+	reg := testRegistry(t)
+	empty := []byte{0x0a, 0, 0, 0x00} // an empty canonical compound
+	for _, blob := range []struct {
+		name string
+		set  func(*WorldData)
+	}{
+		{"settings", func(d *WorldData) { d.Settings = empty }},
+		{"markers", func(d *WorldData) { d.Markers = empty }},
+		{"border", func(d *WorldData) { d.Border = empty }},
+	} {
+		d := testWorld(t, reg)
+		blob.set(d)
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Errorf("an empty %s compound was rejected: %v", blob.name, err)
+		}
+	}
+
+	// Spelling is still a rule: a present field with the wrong tag is invalid.
+	d := testWorld(t, reg)
+	bad, err := marshalNBT(map[string]any{"max": []int32{1, 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Border = bad
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+		t.Fatal("a border whose max is a list was accepted")
+	}
+}
+
+// TestWriterRejectsDeepNBTLists: the depth limit was checked only when the
+// encoder reached a compound, so a chain of nested lists slipped past it and
+// produced a file this same release refuses to read.
+func TestWriterRejectsDeepNBTLists(t *testing.T) {
+	var deep any = byte(1)
+	for range maxNBTDepth + 2 {
+		deep = []any{deep}
+	}
+	if _, err := marshalNBT(map[string]any{"deep": deep}); err == nil {
+		t.Fatal("a list nested past the depth limit was written")
+	}
+
+	// A chain just inside the limit still encodes and reads back.
+	var ok any = byte(1)
+	for range maxNBTDepth - 4 {
+		ok = []any{ok}
+	}
+	b, err := marshalNBT(map[string]any{"deep": ok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNBT(b); err != nil {
+		t.Fatalf("a list within the limit does not read back: %v", err)
+	}
+}
+
+// TestBiomeAliasCountsOneAppearance: a registry may number one biome twice.
+// Counting slots rather than appearances lets the choice of alias reorder the
+// biome palette and change which biome the header names as the default.
+func TestBiomeAliasCountsOneAppearance(t *testing.T) {
+	reg := testRegistry(t)
+	// Two ids that resolve to the same name: an id the registry does not know
+	// falls back to plains, so any two unknown ids are aliases of each other.
+	unknownA, unknownB := uint32(60000), uint32(60001)
+	if biomeName(unknownA) != biomeName(unknownB) {
+		t.Skip("the registry resolves these ids differently")
+	}
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+
+	build := func(second uint32) []byte {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, stone)
+		for x := range uint8(16) {
+			for z := range uint8(16) {
+				for y := int16(-64); y < -48; y++ {
+					id := unknownA
+					if (x+z)%2 == 0 {
+						id = second
+					}
+					ch.SetBiome(x, y, z, id)
+				}
+			}
+		}
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, &WorldData{Columns: []Column{{X: 0, Z: 0,
+			Col: &chunk.Column{Chunk: ch}}}}, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	if a, b := build(unknownB), build(unknownA); !bytes.Equal(a, b) {
+		t.Fatalf("the choice of biome alias changed the file: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestStructureUnknownStateInEmptyCell: whether a caller left a cell nil or
+// handed over an empty sub chunk must not decide whether its preserved states
+// survive.
+func TestStructureUnknownStateInEmptyCell(t *testing.T) {
+	reg := newNoPlaceholderRegistry(testRegistry(t))
+	build := func(explicit bool) []byte {
+		data, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit {
+			data.Cells[0] = chunk.NewSubChunk(reg.AirRuntimeID())
+			data.Cells[0].SetBlock(0, 0, 0, 0, reg.AirRuntimeID())
+		}
+		data.UnknownStates = []BlockState{{Name: "audit:lost", Version: 1}}
+		data.Unknown = []UnknownBlock{{Section: 0, Layer: 0, Index: 0, State: 0}}
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	nilForm, explicitForm := build(false), build(true)
+	if !bytes.Contains(nilForm, []byte("audit:lost")) {
+		t.Fatal("a preserved state in a nil cell was dropped")
+	}
+	if !bytes.Equal(nilForm, explicitForm) {
+		t.Fatalf("a nil cell and an empty one encode differently: %d vs %d bytes",
+			len(nilForm), len(explicitForm))
+	}
+}
+
+// TestRejectsOversizedFrameLength: a directory's frame length is carried in a
+// 32-bit field, and a larger value would wrap into a small one. Checking after
+// the narrowing would accept a file a conforming reader rejects, and read it as
+// a different file.
+func TestRejectsOversizedFrameLength(t *testing.T) {
+	ref := func(off, length uint64) []byte {
+		w := &writer{}
+		w.uvarint(off)
+		w.uvarint(length)
+		w.u64(0)
+		return w.bytes()
+	}
+	for _, c := range []struct {
+		name        string
+		off, length uint64
+		ok          bool
+	}{
+		{"ordinary", 16, 64, true},
+		{"largest representable", 16, maxFrameLen, true},
+		{"one past the field", 16, maxFrameLen + 1, false},
+		{"wraps to a plausible length", 16, 1<<32 + 4, false},
+		{"offset past int64", 1 << 63, 4, false},
+	} {
+		got, err := parseFrameRef(&reader{b: ref(c.off, c.length)})
+		if (err == nil) != c.ok {
+			t.Errorf("%s: err = %v, want ok = %v", c.name, err, c.ok)
+			continue
+		}
+		if c.ok && uint64(got.length) != c.length {
+			t.Errorf("%s: length came back as %d, want %d", c.name, got.length, c.length)
+		}
 	}
 }

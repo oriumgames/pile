@@ -686,21 +686,7 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		return nil
 	}
 
-	readRef := func() (frameRef, error) {
-		off, err := r.uvarint()
-		if err != nil {
-			return frameRef{}, err
-		}
-		length, err := r.uvarint()
-		if err != nil {
-			return frameRef{}, err
-		}
-		hb, err := r.take(8)
-		if err != nil {
-			return frameRef{}, err
-		}
-		return frameRef{off: int64(off), length: uint32(length), hash: binary.LittleEndian.Uint64(hb)}, nil
-	}
+	readRef := func() (frameRef, error) { return parseFrameRef(r) }
 	metaRef, err := readRef()
 	if err != nil {
 		return err
@@ -952,6 +938,34 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		}
 	}
 	return nil
+}
+
+// parseFrameRef reads one frame reference from a directory.
+//
+// The length is checked before it is narrowed to the 32-bit field that carries
+// it. A value past that field would otherwise wrap into a small one and be
+// accepted, so a file a conforming reader rejects would read here as a
+// different file, which is the one failure a bounds check exists to prevent.
+func parseFrameRef(r *reader) (frameRef, error) {
+	off, err := r.uvarint()
+	if err != nil {
+		return frameRef{}, err
+	}
+	length, err := r.uvarint()
+	if err != nil {
+		return frameRef{}, err
+	}
+	hb, err := r.take(8)
+	if err != nil {
+		return frameRef{}, err
+	}
+	if length > maxFrameLen {
+		return frameRef{}, corruptf("frame length %d exceeds limit %d", length, uint64(maxFrameLen))
+	}
+	if off > uint64(math.MaxInt64) {
+		return frameRef{}, corruptf("frame offset %d is out of range", off)
+	}
+	return frameRef{off: int64(off), length: uint32(length), hash: binary.LittleEndian.Uint64(hb)}, nil
 }
 
 // readDirFrame reads the directory frame, which is bounded separately from
@@ -1287,7 +1301,7 @@ func (w *IndexedWorld) Store(c Column) error {
 	snap := w.snapshotPalettes()
 	// Indexed palettes are first-seen order with no frequency sorting, so
 	// nothing there consumes a reference count.
-	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState, func(uint32) {})
+	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState, func(uint32) {}, func(uint32) {})
 	if w.paletteErr != nil {
 		err := w.paletteErr
 		w.paletteErr = nil

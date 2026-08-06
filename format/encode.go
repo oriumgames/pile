@@ -224,7 +224,7 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	addBiome := func(name string) uint32 { return biomePal.add(name, 1) }
 	inter := make([]colIntermediate, len(raws))
 	for i := range raws {
-		inter[i] = resolveColumn(&raws[i], blockPal.add, addBiome, blockPal.addState, blockPal.uncount)
+		inter[i] = resolveColumn(&raws[i], blockPal.add, addBiome, blockPal.addState, blockPal.uncount, biomePal.uncount)
 		for _, sd := range inter[i].biomeSecs {
 			if build, ok := sd.uniform(); ok {
 				uniformBiomes[build]++
@@ -560,10 +560,12 @@ func checkBorderBlob(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("pile: border blob: %w", err)
 	}
+	// Presence is a convention and spelling is a rule (§7): a field that is
+	// absent is fine, one that is present has to carry the stated tag.
 	for _, k := range []string{"min", "max"} {
 		v, ok := m[k]
 		if !ok {
-			return fmt.Errorf("pile: border blob: missing %q", k)
+			continue
 		}
 		if _, ok := v.([2]int32); !ok {
 			return fmt.Errorf("pile: border blob: %q is %T, want a two-element int array", k, v)
@@ -989,6 +991,41 @@ func extractBlockRaw(storage *chunk.PalettedStorage) rawBlockSec {
 // plainsBiomeName is the fallback unresolved biomes decode to.
 func plainsBiomeName() string { return "minecraft:plains" }
 
+// foldDuplicates collapses local palette slots that resolved to one global
+// entry. Aliases are merged globally, so a section using two of them is
+// uniform even though its local palette has two slots, and the uniform test
+// that drives default-biome elision runs before the blob encoder would have
+// folded them.
+func foldDuplicates(sd secData) secData {
+	if len(sd.pal) < 2 || sd.idx == nil {
+		return sd
+	}
+	remap := make([]uint16, len(sd.pal))
+	out := make([]uint32, 0, len(sd.pal))
+	seen := make(map[uint32]uint16, len(sd.pal))
+	for i, g := range sd.pal {
+		if at, ok := seen[g]; ok {
+			remap[i] = at
+			continue
+		}
+		at := uint16(len(out))
+		seen[g] = at
+		out = append(out, g)
+		remap[i] = at
+	}
+	if len(out) == len(sd.pal) {
+		return sd
+	}
+	idx := make([]uint16, len(sd.idx))
+	for i, li := range sd.idx {
+		idx[i] = remap[li]
+	}
+	if len(out) == 1 {
+		idx = nil
+	}
+	return secData{pal: out, idx: idx}
+}
+
 // bioKey identifies one preserved biome position: absolute section index plus
 // section-local index.
 type bioKey struct {
@@ -1070,7 +1107,7 @@ func airOnlyLayer(rs rawBlockSec, air uint32) bool {
 // resolveColumn maps a raw column's local palettes into the global palette
 // builders. The call order matches the historical serial encoder, keeping
 // palette build order (and therefore output) identical.
-func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(name string) uint32, addState func(bs BlockState) uint32, uncount func(i uint32)) colIntermediate {
+func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(name string) uint32, addState func(bs BlockState) uint32, uncount, uncountBiome func(i uint32)) colIntermediate {
 	ci := colIntermediate{
 		x: cr.x, z: cr.z,
 		minSection: cr.minSection,
@@ -1114,10 +1151,17 @@ func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(n
 			continue
 		}
 		pal := make([]uint32, len(bs.names))
+		bseen := make(map[uint32]struct{}, len(bs.names))
 		for j, name := range bs.names {
 			pal[j] = addBiome(name)
+			// As for block states: a registry may number one biome twice, and
+			// a local palette naming it twice contains it once.
+			if _, dup := bseen[pal[j]]; dup {
+				uncountBiome(pal[j])
+			}
+			bseen[pal[j]] = struct{}{}
 		}
-		ci.biomeSecs[i] = secData{pal: pal, idx: bs.idx}
+		ci.biomeSecs[i] = foldDuplicates(secData{pal: pal, idx: bs.idx})
 	}
 	ci.ticks = make([]tickIntermediate, len(cr.ticks))
 	for i, t := range cr.ticks {

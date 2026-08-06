@@ -576,6 +576,15 @@ func (b *biomePaletteBuilder) add(name string, weight uint64) uint32 {
 	return i
 }
 
+// uncount undoes one reference, for a local palette that resolved the same
+// name twice. A registry may number one biome twice, and two slots naming one
+// biome are one appearance.
+func (b *biomePaletteBuilder) uncount(i uint32) {
+	if b.ent[i].count > 1 {
+		b.ent[i].count--
+	}
+}
+
 func (b *biomePaletteBuilder) finalize() (encoded []byte, remap []uint32, err error) {
 	order := make([]uint32, len(b.ent))
 	for i := range order {

@@ -241,10 +241,37 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	cells := make([]cellData, len(s.Cells))
 	addBlock := func(rid uint32) uint32 { return blockPal.add(rid) }
 	for i, sub := range s.Cells {
-		if sub == nil {
+		var layers []*chunk.PalettedStorage
+		if sub != nil {
+			layers = sub.Layers()
+		}
+		if len(layers) == 0 {
+			// A cell with no storages still has to carry preserved states, the
+			// same way an empty world section does. On a registry whose
+			// placeholder resolves to air, a cell holding nothing but
+			// unresolved blocks has none, and skipping it would drop the only
+			// record they existed. Whether the caller left the cell nil or
+			// handed over an empty sub chunk must not decide that.
+			entries := unknownBySec[secLayer{sec: int32(i), layer: 0}]
+			if len(entries) == 0 {
+				continue
+			}
+			raw := rawBlockSec{rids: []uint32{air}}
+			injectUnknown(&raw, entries, placeholder, len(s.UnknownStates))
+			if airOnlyLayer(raw, air) {
+				continue
+			}
+			pal := make([]uint32, len(raw.rids))
+			for j, rid := range raw.rids {
+				if raw.states != nil && raw.states[j] >= 0 {
+					pal[j] = blockPal.addState(s.UnknownStates[raw.states[j]])
+					continue
+				}
+				pal[j] = addBlock(rid)
+			}
+			cells[i] = cellData{layers: []secData{{pal: pal, idx: raw.idx}}}
 			continue
 		}
-		layers := sub.Layers()
 		if len(layers) > maxLayers {
 			return fmt.Errorf("pile: cell %d has %d layers (limit %d)", i, len(layers), maxLayers)
 		}
