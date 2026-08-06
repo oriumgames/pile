@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -1267,4 +1268,44 @@ func patchDirectory(t *testing.T, path string, edit func(dir []byte) bool) bool 
 		t.Fatal(err)
 	}
 	return true
+}
+
+// TestRejectsUnaddressableSectionSpan: sectionN bounds how tall a chunk is,
+// not where it sits. A one-section chunk based far outside the int16 block Y
+// domain is small and still describes blocks nothing can address, and its
+// section index would be narrowed silently everywhere it is used. The writer
+// already refuses such a range; the reader has to as well, or the two disagree
+// on what a valid file is.
+func TestRejectsUnaddressableSectionSpan(t *testing.T) {
+	// Feed the record parser a span directly: the placement is the first thing
+	// it reads, so a rejected one never reaches the fields after it.
+	parse := func(min, sections int64) error {
+		w := &writer{}
+		w.svarint(min)
+		w.uvarint(uint64(sections))
+		w.b = append(w.b, make([]byte, 1024)...) // presence bits and beyond
+		_, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource(nil), false, 0, 0)
+		return err
+	}
+	for _, c := range []struct {
+		name          string
+		min, sections int64
+		want          bool // true = must be rejected
+	}{
+		{"lowest legal", minSectionIdx, 1, false},
+		{"highest legal", maxSectionIdx, 1, false},
+		{"full domain", minSectionIdx, maxSectionIdx - minSectionIdx + 1, false},
+		{"one below the floor", minSectionIdx - 1, 1, true},
+		{"one above the ceiling", maxSectionIdx + 1, 1, true},
+		{"spans past the top", maxSectionIdx, 2, true},
+		{"astronomically high", 1 << 40, 1, true},
+		{"astronomically low", -(1 << 40), 1, true},
+	} {
+		err := parse(c.min, c.sections)
+		rejected := err != nil && strings.Contains(err.Error(), "addressable")
+		if rejected != c.want {
+			t.Errorf("%s (minSection=%d, sectionN=%d): rejected=%v, want %v (err %v)",
+				c.name, c.min, c.sections, rejected, c.want, err)
+		}
+	}
 }

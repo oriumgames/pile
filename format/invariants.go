@@ -173,6 +173,18 @@ var invariants = []Invariant{
 
 	// -- Chunk records (§4) ----------------------------------------------
 	{
+		Name: "biome counts predate elision", Category: Ordering,
+		Rules: []string{"27ea7bc1"},
+		Test:  "TestUnknownDefaultBiomePreserved",
+		Note:  "Elision depends on the palette order, which depends on the counts: counting before elision is what stops that being circular.",
+	},
+	{
+		Name: "the section span is addressable", Category: Bound,
+		Rules: []string{},
+		Test:  "TestRejectsUnaddressableSectionSpan",
+		Note:  "sectionN bounds how tall a chunk is, not where it sits.",
+	},
+	{
 		Name: "biome names are fully qualified", Category: Normalisation,
 		Rules: []string{"249dada6"},
 		Test:  "TestBiomeNamesAreNamespaced",
@@ -190,7 +202,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "layer counts are addressable", Category: Bound,
-		Rules: []string{"0036db64"},
+		Rules: []string{"af4b369f"},
 		Test:  "TestRejectsUnaddressableLayerCount",
 		Note:  "A 256th layer wedges any implementation that indexes layers with a byte.",
 	},

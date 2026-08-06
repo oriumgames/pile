@@ -188,9 +188,11 @@ const (
 	maxStringLen = 64 << 10
 	maxBlobLen   = 16 << 20
 	// maxChunks bounds chunk records in a solid body and entries in an
-	// indexed directory. 2^32 chunks is 2^36 blocks square: far beyond any
-	// reachable world, and not a limit a growing server can hit.
-	maxChunks  = 1 << 32
+	// indexed directory. It is the largest value a u32 holds, so a reader that
+	// keeps the count in one cannot be handed a legal file it must truncate.
+	// 2^32-1 chunks is 2^36 blocks square: far beyond any reachable world, and
+	// not a limit a growing server can hit.
+	maxChunks  = 1<<32 - 1
 	maxPalette = 1 << 20
 	maxBlobs   = 1 << 24
 	// maxPerChunk bounds entities, block entities and scheduled ticks per
@@ -199,6 +201,13 @@ const (
 	// maxSectionCnt covers the full int16 block-Y domain dragonfly can
 	// address (-32768..32767), which is 4096 sections.
 	maxSectionCnt = 4096
+	// minSectionIdx and maxSectionIdx bound a chunk's vertical placement.
+	// Block Y is an int16 everywhere in the chunk API, so section indices run
+	// -2048..2047 and a record naming anything outside that describes blocks
+	// no implementation can address. The count limit alone does not catch it:
+	// a one-section chunk based at 2^40 is small and still unrepresentable.
+	minSectionIdx = -2048
+	maxSectionIdx = 2047
 	// maxLayers is one below Bedrock's byte-encoded sub chunk storage count.
 	// Dragonfly addresses a layer with a uint8 and grows its storage slice
 	// with `for uint8(len(storages)) <= layer`, so a sub chunk holding 256

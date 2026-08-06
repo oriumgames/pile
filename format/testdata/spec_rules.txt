@@ -1,4 +1,3 @@
-0036db64 Nothing can read that layer back and any write to the section hangs, so the ceiling is 255 and decoders MUST reject a larger `layerN`.
 10bba397 Decoders MUST keep them apart, and encoders MUST re-emit each value with the tag it was decoded from:
 126cf2d4 Writers MUST additionally refuse content that their own readers would reject.
 12bc11b2 A section MUST be absent when **every** one of its layers is uniform air, and MUST be present otherwise.
@@ -7,6 +6,7 @@
 2062adb1 Decoders MUST upgrade each entry from its own version when it has an override, and from the palette's version otherwise.
 232fe73e - In the **metadata compounds this document specifies** (§7), the tag of each field is fixed by that section and MUST be emitted exactly:
 249dada6 every one MUST contain a namespace and a colon, and a bare name such as `plains` is invalid rather than a second spelling of `minecraft:plains`.
+27ea7bc1 Counting first breaks the loop, and writers MUST count that way or two of them will disagree on the palette order, on `defaultBiomeRef` and therefore on every byte downstream.
 2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
 2b1d7218 MUST be zero (indexed dictionary presence is signalled by the directory, §5.5)
 2fcb9dbf Values 3–7 are reserved and MUST be rejected.
@@ -41,6 +41,7 @@ a4590032 Readers MUST reject unknown versions and unknown flag bits (they may ch
 a9ee3ac1 Writers MUST drop **trailing** all-air layers, since a layer past the last stored one already reads as air, and MUST keep internal ones, encoded as an ordinary uniform section blob referencing air.
 ab5dc87f Decoders MUST reject lengths > 65 536 (64 KiB), and MUST reject bytes that are not valid UTF-8:
 af37ce22 In a **solid** file the directory, generation and previous-footer words carry no information and MUST be zero; readers MUST reject a non-zero value.
+af4b369f The ceiling is therefore 255, and decoders MUST reject a larger `layerN`.
 afea490c two entries that compare equal at every step encode identical bytes at the same version and are therefore the same state, which writers MUST merge into one entry whose reference count is the sum.
 b5904bd9 MUST be minimal:
 b970a5c4 MUST be minimal

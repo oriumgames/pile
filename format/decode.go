@@ -359,6 +359,15 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 	if rr.sectionN == 0 {
 		return rr, corruptf("chunk (%d,%d) has no sections", x, z)
 	}
+	// The span has to describe addressable blocks. sectionN alone does not
+	// bound it: a one-section chunk based far outside the int16 block Y domain
+	// is small and still unrepresentable, and its section index would be
+	// silently narrowed everywhere it is used.
+	if rr.minSection < minSectionIdx || rr.minSection > maxSectionIdx ||
+		rr.minSection+int64(rr.sectionN) > maxSectionIdx+1 {
+		return rr, corruptf("chunk (%d,%d) spans sections %d..%d, outside the addressable range %d..%d",
+			x, z, rr.minSection, rr.minSection+int64(rr.sectionN)-1, minSectionIdx, maxSectionIdx)
+	}
 
 	var err2 error
 	if rr.presence, err2 = r.take((rr.sectionN + 7) / 8); err2 != nil {

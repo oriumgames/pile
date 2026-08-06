@@ -140,6 +140,19 @@ In a **solid** file the directory, generation and previous-footer words carry
 no information and MUST be zero; readers MUST reject a non-zero value. This
 keeps one valid encoding per file.
 
+### 2.3 Flags
+
+| bit | name | meaning |
+|-----|------|---------|
+| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness |
+| 1 | Stats | the meta block contains a stats compound (§4.2) |
+| 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
+| 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
+| 4 | Uncompressed | the body is stored without compression |
+| 5–7 | dimension | which dimension a world file holds: 0 overworld, 1 nether, 2 end. Values 3–7 are reserved and MUST be rejected. Structures MUST leave these bits zero |
+| 8–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
+| 16–31 | defaultBiomeRef | only meaningful when bit 3 is set, and MUST be zero when it is clear |
+
 ### 2.4 Checkpoint hash
 
 The footer's hash authenticates the file's semantic header as well as its
@@ -158,19 +171,6 @@ hash     = xxHash64(preimage)
 Everything but the hash field itself is therefore covered. Indexed files
 recompute this per checkpoint, so `generation` and `prevFooter` are
 authenticated too.
-
-### 2.3 Flags
-
-| bit | name | meaning |
-|-----|------|---------|
-| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness |
-| 1 | Stats | the meta block contains a stats compound (§4.2) |
-| 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
-| 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
-| 4 | Uncompressed | the body is stored without compression |
-| 5–7 | dimension | which dimension a world file holds: 0 overworld, 1 nether, 2 end. Values 3–7 are reserved and MUST be rejected. Structures MUST leave these bits zero |
-| 8–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
-| 16–31 | defaultBiomeRef | only meaningful when bit 3 is set, and MUST be zero when it is clear |
 
 ---
 
@@ -258,7 +258,13 @@ name[count]      string           e.g. "minecraft:plains"
 
 The **reference count is the number of section-local biome palettes the name
 appears in**, exactly as for block states in §3.1, not the number of voxels
-holding it. The two disagree whenever a rare biome appears in many sections,
+holding it. Counts are taken over **every** section of every chunk, before the
+default-biome elision of §4.7 removes any of them from the file. That ordering
+is not a detail: elision picks the biome with the most uniform sections, which
+depends on the palette order, which would depend on the counts, which would
+depend on what elision removed. Counting first breaks the loop, and writers
+MUST count that way or two of them will disagree on the palette order, on
+`defaultBiomeRef` and therefore on every byte downstream. The two disagree whenever a rare biome appears in many sections,
 and they select different palette orders, section references and default-biome
 references.
 
@@ -330,7 +336,7 @@ meta block       §4.1–4.2
 block palette    §3.1
 biome palette    §3.2
 blob table       §3.4
-chunkN           uvarint          (≤ 4 294 967 296, §8)
+chunkN           uvarint          (≤ 4 294 967 295, §8)
 record[chunkN]   §4.3, sorted by Morton key of (x, z)
 ```
 
@@ -339,24 +345,29 @@ Writers MUST reject a world holding two columns at one position, and readers
 MUST reject a file whose record keys do not strictly ascend: a duplicate has no
 defined meaning, since nothing tells a reader which of the two records wins,
 and a non-ascending file is a second encoding of a world that already has one.
-The same rule applies to indexed directory entries (§5.4).
+The same rule applies to indexed directory entries (§5.5).
 
 Nothing may follow the last record.
 
 **Section span.** `minSection` and `sectionN` describe the chunk's whole
-vertical range, section-aligned per §4.4. Writers MUST NOT trim leading or
+vertical range, section-aligned per §1. Writers MUST NOT trim leading or
 trailing empty sections, and an empty chunk carries its dimension's full span
 with every presence bit clear. Trimming would give one chunk several encodings
 and leave the content outside the span undefined; the span costs two varints.
 
-**Layer count.** Bedrock encodes the storage count in a byte, so 256 layers are
-expressible, but a 256th layer cannot be addressed: an implementation that
-selects a layer with an 8-bit index (dragonfly does, and grows its storage
-slice with `for uint8(len(storages)) <= layer`) wraps its comparison to zero at
-256 and appends without end. Nothing can read that layer back and any write to
-the section hangs, so the ceiling is 255 and decoders MUST reject a larger
-`layerN`. A file claiming 256 layers is not merely unusual, it is a way to
-wedge a server that opens it.
+**Layer count.** A layer is selected by an 8-bit index, so 255 is the last one
+that can be addressed: with 256 layers present, no index names the last, and
+any length-versus-index comparison done in that same 8-bit type wraps to zero.
+The ceiling is therefore 255, and decoders MUST reject a larger `layerN`.
+Bedrock encodes the storage count in a byte, so 256 is expressible on the wire
+and a file may well claim it; that claim describes a layer nothing can read.
+
+> Concretely, dragonfly grows a sub chunk's storage slice with
+> `for uint8(len(storages)) <= layer`, which at 256 storages compares zero
+> against every index and appends without end. A file claiming 256 layers is
+> not merely unusual there, it wedges the process that opens it. Other
+> implementations will fail differently; the rule holds regardless, because
+> the 256th layer is unaddressable by construction.
 
 **Layer numbering.** Layer numbers are semantic: layer 0 is the block and layer
 1 is Bedrock's waterlogging layer. A layer therefore cannot be dropped for
@@ -391,7 +402,9 @@ keys.
 ```
 dx, dz           svarint          chunk position delta from the previous
                                   record (the first record deltas from (0,0))
-minSection       svarint          lowest section index (blockY = section*16)
+minSection       svarint          lowest section index (blockY = section*16);
+                                  -2048 ≤ minSection and minSection+sectionN ≤ 2048,
+                                  so every block Y is an addressable int16
 sectionN         uvarint          section count (1 ≤ sectionN ≤ 4096);
                                   the chunk's full vertical range, never trimmed
 blockPresence    bitset(sectionN) bit i set = section i has block data
@@ -499,7 +512,10 @@ Writers pick the biome with the most uniform sections, breaking ties by the
 **lowest global biome palette reference**. Without a tie-break two conforming
 writers could set a different `defaultBiomeRef` and clear a different presence
 bit for the same world. Without the flag, absent biome sections decode as
-biome id 0.
+numeric biome id 0, consulting **no palette entry**: the biome palette may
+legitimately be empty (a file written with biomes skipped), so a fallback
+naming a palette reference would be out of range in exactly the files that
+need it.
 
 A default biome may itself be a name no registry resolves. Readers that
 preserve unresolved biomes MUST report the elided sections through the same
@@ -694,8 +710,6 @@ Treat files from untrusted sources as untrusted content.
 Compaction rewrites the live records (Morton order) into a fresh file and
 atomically renames it over the original.
 
----
-
 ### 5.7 Canonical rules for indexed files
 
 - An absent frame reference MUST have offset, length and hash all zero; a
@@ -708,6 +722,8 @@ atomically renames it over the original.
   implementation can address is bounded by its directory decode limit rather
   than by the chunk ceiling of §8. The reference implementation accepts
   4,194,304 directory entries.
+
+---
 
 ## 6. Structure files (kind = 1, mode = 0)
 
@@ -834,7 +850,7 @@ remain, not from these ceilings.
 |------|-------|
 | string length | 64 KiB |
 | blob length | 16 MiB |
-| chunk records in a solid body | 4 294 967 296 |
+| chunk records in a solid body | 4 294 967 295 (the largest value a u32 holds) |
 | entries in an indexed directory | 4 194 304 |
 | decompressed size of a solid body | 512 MiB |
 | decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
@@ -845,7 +861,7 @@ remain, not from these ceilings.
 | blob table entries | 16 777 216 |
 | section blob local palette entries | 65 536 (the u16 index width) |
 | state properties per palette entry | 64 |
-| sections per chunk | 4 096 (the full int16 block-Y domain) |
+| sections per chunk | 4 096 (the full int16 block-Y domain), placed within section indices -2048..2047 |
 | layers per section | 255 (Bedrock encodes the storage count in a byte, but the 256th layer is not addressable, see §4.3) |
 | entities / block entities / ticks per chunk | 1 048 576 each |
 | stored frame length (indexed) | 4 294 967 295 |
