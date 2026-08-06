@@ -1248,9 +1248,10 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 // applyRecordBody decodes a fetched record body into a Column.
 func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, storeLight bool, x, z int32) (Column, error) {
 	r := &reader{b: body}
-	// Indexed mode never elides a biome section, so it has no default and no
-	// default-biome sidecar.
-	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), 0, false, storeLight, -1, unknown, unkStates,
+	// Indexed mode never elides a biome section, so it names no default; a
+	// section absent because biomes were skipped still takes the version-stable
+	// fallback rather than a numeric id.
+	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), fallbackBiomeID(), false, storeLight, -1, unknown, unkStates,
 		w.biomeUnknown, w.biomeUnkName,
 		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z)
 	if err != nil {

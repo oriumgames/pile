@@ -230,6 +230,12 @@ var invariants = []Invariant{
 		Note:  "Declining the flag is a second encoding of the same world.",
 	},
 	{
+		Name: "the biome fallback is version stable", Category: Normalisation,
+		Rules: []string{"d3997566"},
+		Test:  "TestAbsentBiomeFallbackIsVersionStable",
+		Note:  "A numeric id is a property of the running game version, so naming one would let a single file decode to different biomes on two runtimes.",
+	},
+	{
 		Name: "elided biome sections keep their names", Category: Omission,
 		Rules: []string{"ff694fe9"},
 		Test:  "TestUnknownDefaultBiomePreserved",

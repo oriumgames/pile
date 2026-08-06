@@ -1309,3 +1309,43 @@ func TestRejectsUnaddressableSectionSpan(t *testing.T) {
 		}
 	}
 }
+
+// TestAbsentBiomeFallbackIsVersionStable: a file that names no default biome
+// still has to decode the same way on every game version, so the fallback for
+// an absent section is a name resolved at run time, not a numeric id. Id 0 is
+// a registry index whose meaning is a version property; today it is ocean.
+func TestAbsentBiomeFallbackIsVersionStable(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+
+	// Biomes skipped: every section is absent and no default is named, which
+	// is the case the fallback exists for.
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch}}}}, reg, Options{
+		Compression: CompressionNone, SkipBiomes: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, err := parseFrame(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.flags&FlagDefaultBiome != 0 {
+		t.Fatal("the fixture names a default biome, so it does not reach the fallback")
+	}
+	got, err := ReadWorld(buf.Bytes(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fallbackBiomeID()
+	if id := got.Columns[0].Col.Chunk.Biome(0, 0, 0); id != want {
+		t.Fatalf("absent biome decoded as id %d (%s), want the fallback %d (%s)",
+			id, biomeName(id), want, biomeName(want))
+	}
+	if name := biomeName(want); name != plainsBiomeName() {
+		t.Fatalf("the fallback resolves to %q, want %q", name, plainsBiomeName())
+	}
+}

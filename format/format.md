@@ -258,15 +258,15 @@ name[count]      string           e.g. "minecraft:plains"
 
 The **reference count is the number of section-local biome palettes the name
 appears in**, exactly as for block states in §3.1, not the number of voxels
-holding it. Counts are taken over **every** section of every chunk, before the
+holding it; the two disagree whenever a rare biome appears in many sections,
+and they select different palette orders, section references and default-biome
+references. Counts are taken over **every** section of every chunk, before the
 default-biome elision of §4.7 removes any of them from the file. That ordering
 is not a detail: elision picks the biome with the most uniform sections, which
 depends on the palette order, which would depend on the counts, which would
 depend on what elision removed. Counting first breaks the loop, and writers
 MUST count that way or two of them will disagree on the palette order, on
-`defaultBiomeRef` and therefore on every byte downstream. The two disagree whenever a rare biome appears in many sections,
-and they select different palette orders, section references and default-biome
-references.
+`defaultBiomeRef` and therefore on every byte downstream.
 
 Names, not numeric IDs, so entries stay stable across game versions. Names are
 **fully qualified**: every one MUST contain a namespace and a colon, and a bare
@@ -512,10 +512,12 @@ Writers pick the biome with the most uniform sections, breaking ties by the
 **lowest global biome palette reference**. Without a tie-break two conforming
 writers could set a different `defaultBiomeRef` and clear a different presence
 bit for the same world. Without the flag, absent biome sections decode as
-numeric biome id 0, consulting **no palette entry**: the biome palette may
-legitimately be empty (a file written with biomes skipped), so a fallback
-naming a palette reference would be out of range in exactly the files that
-need it.
+`minecraft:plains`, the same fallback §3.2 gives an unresolved name. It is a
+name rather than a palette reference because the palette may legitimately be
+empty (a file written with biomes skipped), so a reference would be out of
+range in exactly the files that need it; and a name rather than a numeric id
+because ids are a property of the running game version, and one file MUST NOT
+decode to different biomes on two of them.
 
 A default biome may itself be a name no registry resolves. Readers that
 preserve unresolved biomes MUST report the elided sections through the same

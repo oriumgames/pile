@@ -631,6 +631,19 @@ func biomeName(id uint32) string {
 	return plainsBiomeName()
 }
 
+// fallbackBiomeID is the numeric id of the biome a decoder substitutes when it
+// has nothing else: an absent section in a file that names no default, and any
+// palette entry the runtime cannot resolve. It is looked up by name rather
+// than hardcoded, because a numeric id is a property of the running game
+// version and the same file must not decode to different biomes on two of
+// them.
+func fallbackBiomeID() uint32 {
+	if b, ok := lookupBiome(plainsBiomeName()); ok {
+		return uint32(b.EncodeBiome())
+	}
+	return 1
+}
+
 // qualifyBiome returns a biome identifier in the canonical namespaced form.
 // Dragonfly names vanilla biomes without a namespace, but a bare name is not a
 // stable identifier outside its own registry, and the wire form has to mean the

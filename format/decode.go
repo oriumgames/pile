@@ -213,7 +213,10 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 		return nil, err
 	}
 
-	var defaultBiome uint32
+	// Absent biome sections take the file's default when it names one, and
+	// otherwise the same fallback an unresolved name gets. Naming a numeric id
+	// here instead would make the decode depend on the running game version.
+	defaultBiome := fallbackBiomeID()
 	defaultUnknown := int32(-1)
 	haveDefault := h.flags&FlagDefaultBiome != 0
 	if haveDefault {
@@ -564,9 +567,7 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 	bioCur := 0
 	for i := range rr.sectionN {
 		if rr.bioPresence[i/8]&(1<<(i%8)) == 0 {
-			if haveDefault && defaultBiome != 0 {
-				fillBiome(ch, i, defaultBiome)
-			}
+			fillBiome(ch, i, defaultBiome)
 			// An elided section is uniformly the default biome, and the
 			// default can itself be a name no registry resolves. Without a
 			// sidecar entry the name survives in the file but not through a

@@ -52,6 +52,7 @@ c176f73b The box need not be a multiple of 16, so edge cells have padding, and t
 cf48aa12 Readers MUST reject a directory whose prologue disagrees with the constraints of §5.7, and SHOULD report a mismatch against an otherwise intact physical header (the reference implementation exposes `HeaderDamaged`; rewriting the file repairs it).
 cf8e4eb4 Padding bits above `n` MUST be zero
 d2702006 Flags `Stats` and `DefaultBiome` MUST be clear in an indexed file, and readers MUST reject one that sets either:
+d3997566 It is a name rather than a palette reference because the palette may legitimately be empty (a file written with biomes skipped), so a reference would be out of range in exactly the files that need it; and a name rather than a numeric id because ids are a property of the running game version, and one file MUST NOT decode to different biomes on two of them.
 e01f257a Decoders MUST reject blobs that violate them.
 e6b20330 Writers MUST reject an unsorted list rather than copy it through, because the same marker collection would otherwise have as many encodings as it has permutations.
 e72263a7 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
