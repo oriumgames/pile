@@ -179,4 +179,6 @@ const (
 	// maxFrameLen is the largest stored frame an indexed file can reference.
 	// Lengths are held in a uint32, so 2^32-1 is the representable maximum.
 	maxFrameLen = 1<<32 - 1
+	// lightArrayLen is the byte length of one 16-cube light nibble array.
+	lightArrayLen = 2048
 )

@@ -306,8 +306,9 @@ stats            blob             present iff flag Stats; NBT (§4.2)
 
 ### 4.2 Stats compound (optional)
 
-NBT compound with at least: `chunks` (int), `filledSections` (int),
-`uniqueBlobs` (int), `blockStates` (int), `biomes` (int). Tools may read it
+NBT compound with at least: `chunks` (long), `filledSections` (long),
+`uniqueBlobs` (long), `blockStates` (long), `biomes` (long). They are longs
+because the format's own ceilings exceed what a 32-bit tag can hold. Tools may read it
 via the meta block without decoding chunk data. Readers MUST ignore unknown
 keys.
 
@@ -371,17 +372,29 @@ not interpret entity NBT beyond `UniqueID`.
 
 ### 4.6 Light (flag StoreLight)
 
-For each **block-present** section, ascending:
+```
+lightPresence    bitset(sectionN)   bit i set = section i carries light
+per set bit, ascending:
+  flags          u8                 bit 0 = block light present,
+                                    bit 1 = sky light present,
+                                    bits 2-7 MUST be zero
+  blockLight     2048 bytes         present iff bit 0
+  skyLight       2048 bytes         present iff bit 1
+```
 
-```
-flags            u8               bit 0 = block light present, bit 1 = sky light present
-blockLight       2048 bytes       present iff bit 0
-skyLight         2048 bytes       present iff bit 1
-```
+Light presence is **independent of block presence**: a section with no blocks
+still carries light (a fully open column has full sky light throughout), so
+tying the two would make valid states unrepresentable. `flags` MUST NOT be
+zero for a present section, since an entry with no arrays is a second
+encoding of an absent one.
 
 Nibble layout per §1. Light is a cache: readers are free to ignore it, and
 consumers that recompute lighting (dragonfly does, unconditionally) gain
 nothing from it.
+
+Structures do not carry light in any form. They are pasted into worlds, which
+relight the affected columns, so storing it would be dead weight with no
+consumer.
 
 ### 4.7 Default biome
 
@@ -654,7 +667,8 @@ remain, not from these ceilings.
 | chunk records in a solid body | 4 294 967 296 |
 | entries in an indexed directory | 4 194 304 |
 | decompressed size of a solid body | 512 MiB |
-| decompressed size of any indexed frame | 64 MiB |
+| decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
+| decompressed size of an indexed directory frame | 512 MiB |
 | structure cells | 1 048 576 |
 | structure size per axis, in blocks | 1 048 576 |
 | global palette entries | 1 048 576 |
@@ -694,7 +708,8 @@ derived from untrusted counts must be validated before allocation.
 - **Bounded decompression**: a compressed frame declares its decompressed
   size and decompressors typically preallocate it, so cap the accepted
   decompressed size per payload type (the reference implementation uses
-  512 MiB for a solid body and 64 MiB for an indexed frame) rather than
+  512 MiB for a solid body, 64 MiB for an indexed data frame and 512 MiB for
+  an indexed directory) rather than
   relying on the input being small.
 - **Writing**: always write to a temporary file and atomically rename; fsync
   before renaming.

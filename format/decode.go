@@ -290,19 +290,20 @@ func tableBlobSource(blobs []decBlob) blobSource {
 // bitsets retained, so hostile presence-free records cannot force large
 // allocations.
 type recRaw struct {
-	x, z        int32
-	minSection  int64
-	sectionN    int
-	presence    []byte      // block presence bitset (aliases body)
-	bioPresence []byte      // biome presence bitset (aliases body)
-	layers      [][]decBlob // one per present block section
-	biomes      []decBlob   // one per present biome section
-	light       []lightPair // one per present block section (aliasing body)
-	bes         []beRawEntry
-	ents        [][]byte
-	tick        int64
-	ticks       []tickRawEntry
-	userData    []byte
+	x, z          int32
+	minSection    int64
+	sectionN      int
+	presence      []byte      // block presence bitset (aliases body)
+	bioPresence   []byte      // biome presence bitset (aliases body)
+	lightPresence []byte      // light presence bitset (aliases body)
+	layers        [][]decBlob // one per present block section
+	biomes        []decBlob   // one per present biome section
+	light         []lightPair // one per present block section (aliasing body)
+	bes           []beRawEntry
+	ents          [][]byte
+	tick          int64
+	ticks         []tickRawEntry
+	userData      []byte
 }
 
 type beRawEntry struct {
@@ -347,6 +348,11 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 		if err != nil {
 			return rr, err
 		}
+		if layerN == 0 {
+			// A present section with no layers is a second encoding of an
+			// absent section.
+			return rr, corruptf("section %d is present but declares no layers", i)
+		}
 		layers := make([]decBlob, layerN)
 		for l := range layerN {
 			if layers[l], err = src(r); err != nil {
@@ -374,19 +380,34 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 	}
 
 	if haveLight {
-		for range rr.layers {
+		if rr.lightPresence, err2 = r.take((rr.sectionN + 7) / 8); err2 != nil {
+			return rr, err2
+		}
+		if err := bitsetTail(rr.lightPresence, rr.sectionN); err != nil {
+			return rr, err
+		}
+		for i := range rr.sectionN {
+			if rr.lightPresence[i/8]&(1<<(i%8)) == 0 {
+				continue
+			}
 			flags, err := r.u8()
 			if err != nil {
 				return rr, err
 			}
+			if flags&^0x03 != 0 {
+				return rr, corruptf("light flags %#x set reserved bits", flags)
+			}
+			if flags == 0 {
+				return rr, corruptf("light entry for section %d carries no arrays", i)
+			}
 			var lp lightPair
 			if flags&1 != 0 {
-				if lp.block, err = r.take(2048); err != nil {
+				if lp.block, err = r.take(lightArrayLen); err != nil {
 					return rr, err
 				}
 			}
 			if flags&2 != 0 {
-				if lp.sky, err = r.take(2048); err != nil {
+				if lp.sky, err = r.take(lightArrayLen); err != nil {
 					return rr, err
 				}
 			}
@@ -493,12 +514,16 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 				return Column{}, err
 			}
 		}
-		if blockCur < len(rr.light) {
-			if lp := rr.light[blockCur]; lp.block != nil || lp.sky != nil {
-				subSetLight(subs[i], cloneBytes(lp.block), cloneBytes(lp.sky))
-			}
-		}
 		blockCur++
+	}
+	lightCur := 0
+	for i := range rr.sectionN {
+		if rr.lightPresence == nil || rr.lightPresence[i/8]&(1<<(i%8)) == 0 {
+			continue
+		}
+		lp := rr.light[lightCur]
+		lightCur++
+		subSetLight(subs[i], cloneBytes(lp.block), cloneBytes(lp.sky))
 	}
 	bioCur := 0
 	for i := range rr.sectionN {

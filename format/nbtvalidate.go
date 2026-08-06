@@ -172,7 +172,16 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 			return corruptf("nbt: negative list length %d", n)
 		}
 		if n == 0 {
+			// Canonical form: an empty list carries no element type, so only
+			// TAG_End is valid. Any other type would be a second encoding of
+			// the same value.
+			if et != tagEnd {
+				return corruptf("nbt: empty list declares element type %d, want TAG_End", et)
+			}
 			return nil
+		}
+		if et == tagEnd {
+			return corruptf("nbt: non-empty list declares TAG_End element type")
 		}
 		minSize, ok := minPayloadSize(et)
 		if !ok {

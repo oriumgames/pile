@@ -171,17 +171,17 @@ func nbtPayload(w *writer, v any, depth int) error {
 	case string:
 		return nbtString(w, x)
 	case []byte:
-		w.u8(tagByte)
+		w.u8(emptyListType(len(x), tagByte))
 		w.i32(int32(len(x)))
 		w.raw(x)
 	case []int32:
-		w.u8(tagInt)
+		w.u8(emptyListType(len(x), tagInt))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			w.u32(uint32(e))
 		}
 	case []int64:
-		w.u8(tagLong)
+		w.u8(emptyListType(len(x), tagLong))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			w.u64(uint64(e))
@@ -189,25 +189,25 @@ func nbtPayload(w *writer, v any, depth int) error {
 	case map[string]any:
 		return nbtCompound(w, x, depth)
 	case []float32:
-		w.u8(tagFloat)
+		w.u8(emptyListType(len(x), tagFloat))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			w.f32(e)
 		}
 	case []float64:
-		w.u8(tagDouble)
+		w.u8(emptyListType(len(x), tagDouble))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			w.f64(e)
 		}
 	case []int16:
-		w.u8(tagShort)
+		w.u8(emptyListType(len(x), tagShort))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			w.u16(uint16(e))
 		}
 	case []string:
-		w.u8(tagString)
+		w.u8(emptyListType(len(x), tagString))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			if err := nbtString(w, e); err != nil {
@@ -215,7 +215,7 @@ func nbtPayload(w *writer, v any, depth int) error {
 			}
 		}
 	case []map[string]any:
-		w.u8(tagCompound)
+		w.u8(emptyListType(len(x), tagCompound))
 		w.i32(int32(len(x)))
 		for _, e := range x {
 			if err := nbtCompound(w, e, depth+1); err != nil {
@@ -274,6 +274,16 @@ func nbtPayload(w *writer, v any, depth int) error {
 		return fmt.Errorf("pile: cannot encode nbt value of type %T", v)
 	}
 	return nil
+}
+
+// emptyListType returns the element type byte for a list: an empty list is
+// always TAG_End, because a decoded empty list loses its element type and any
+// other choice would make encode/decode/encode change the bytes.
+func emptyListType(n int, elem byte) byte {
+	if n == 0 {
+		return tagEnd
+	}
+	return elem
 }
 
 // nbtCompound writes a compound payload with keys in sorted order.

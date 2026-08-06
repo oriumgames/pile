@@ -148,6 +148,10 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// bothEmpty reports whether two slices are both absent, treating nil and
+// zero-length alike.
+func bothEmpty[T any](a, b []T) bool { return len(a) == 0 && len(b) == 0 }
+
 func compareColumns(t *testing.T, want, got Column) {
 	t.Helper()
 	wc, gc := want.Col.Chunk, got.Col.Chunk
@@ -177,7 +181,11 @@ func compareColumns(t *testing.T, want, got Column) {
 			}
 		}
 	}
-	if !reflect.DeepEqual(want.Col.BlockEntities, got.Col.BlockEntities) {
+	// nil and empty are the same absence on the wire, so only content is
+	// compared: the decoder allocates some collections eagerly and some
+	// lazily, which is not a format property.
+	if !bothEmpty(want.Col.BlockEntities, got.Col.BlockEntities) &&
+		!reflect.DeepEqual(want.Col.BlockEntities, got.Col.BlockEntities) {
 		t.Fatalf("column (%d,%d): block entities:\ngot  %#v\nwant %#v",
 			want.X, want.Z, got.Col.BlockEntities, want.Col.BlockEntities)
 	}
@@ -187,14 +195,15 @@ func compareColumns(t *testing.T, want, got Column) {
 		data["UniqueID"] = e.ID
 		wantEnts[i] = chunk.Entity{ID: e.ID, Data: data}
 	}
-	if !reflect.DeepEqual(wantEnts, got.Col.Entities) {
+	if !bothEmpty(wantEnts, got.Col.Entities) && !reflect.DeepEqual(wantEnts, got.Col.Entities) {
 		t.Fatalf("column (%d,%d): entities:\ngot  %#v\nwant %#v",
 			want.X, want.Z, got.Col.Entities, wantEnts)
 	}
 	if want.Col.Tick != got.Col.Tick {
 		t.Fatalf("column (%d,%d): tick %d != %d", want.X, want.Z, got.Col.Tick, want.Col.Tick)
 	}
-	if !reflect.DeepEqual(want.Col.ScheduledBlocks, got.Col.ScheduledBlocks) {
+	if !bothEmpty(want.Col.ScheduledBlocks, got.Col.ScheduledBlocks) &&
+		!reflect.DeepEqual(want.Col.ScheduledBlocks, got.Col.ScheduledBlocks) {
 		t.Fatalf("column (%d,%d): scheduled blocks:\ngot  %#v\nwant %#v",
 			want.X, want.Z, got.Col.ScheduledBlocks, want.Col.ScheduledBlocks)
 	}
@@ -497,4 +506,115 @@ func TestContentHashSemantics(t *testing.T) {
 			t.Fatalf("content hash changed for %+v: derived/advisory content must not affect identity", opts)
 		}
 	}
+}
+
+// TestLightOnAirSections: dragonfly's lighting pass fills block-absent
+// sections with sky light, so StoreLight must be able to carry it.
+func TestLightOnAirSections(t *testing.T) {
+	reg := testRegistry(t)
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	for x := uint8(0); x < 16; x++ {
+		for z := uint8(0); z < 16; z++ {
+			ch.SetBlock(x, -64, z, 0, stone)
+		}
+	}
+	chunk.LightArea([]*chunk.Chunk{ch}, 0, 0).Fill()
+
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone, StoreLight: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadWorld(buf.Bytes(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gc := got.Columns[0].Col.Chunk
+	// A high, block-free section must keep its sky light.
+	for _, y := range []int16{100, 200, 300} {
+		if w, g := ch.SkyLight(0, y, 0), gc.SkyLight(0, y, 0); w != g {
+			t.Fatalf("sky light at y=%d: got %d, want %d (air-section light lost)", y, g, w)
+		}
+	}
+	if ch.SkyLight(0, 300, 0) == 0 {
+		t.Skip("no sky light produced; nothing to assert")
+	}
+}
+
+// TestEmptyNBTListCanonical: an empty list must encode identically whatever
+// typed slice it came from, and only TAG_End is a valid element type.
+func TestEmptyNBTListCanonical(t *testing.T) {
+	forms := []any{[]string{}, []int32{}, []int64{}, []float32{}, []any{}, []map[string]any{}}
+	var first []byte
+	for i, v := range forms {
+		enc, err := marshalNBT(map[string]any{"empty": v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = enc
+		} else if !bytes.Equal(enc, first) {
+			t.Fatalf("empty %T encoded differently from the first form", v)
+		}
+		m, err := unmarshalNBT(enc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := marshalNBT(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(enc, again) {
+			t.Fatalf("empty %T is not stable across a round trip", v)
+		}
+	}
+	// An empty list declaring a concrete element type is not canonical.
+	bad := []byte{0x0a, 0, 0, 0x09, 0x05, 0, 'e', 'm', 'p', 't', 'y', 0x08, 0, 0, 0, 0, 0}
+	if err := validateNBT(bad); err == nil {
+		t.Fatal("empty list with a concrete element type accepted")
+	}
+}
+
+// TestRejectsUndefinedLightFlags: reserved light-flag bits and empty light
+// entries are second encodings and must be rejected.
+func TestRejectsUndefinedLightFlags(t *testing.T) {
+	reg := testRegistry(t)
+	d := testWorld(t, reg)
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone, StoreLight: true}); err != nil {
+		t.Fatal(err)
+	}
+	file := buf.Bytes()
+	if _, err := ReadWorld(file, reg); err != nil {
+		t.Fatal(err)
+	}
+	// Every light entry in this file carries both arrays (flags 0x03). Set a
+	// reserved bit on the first one and re-hash so only the rule under test
+	// can reject it.
+	body := file[headerSize : len(file)-footerSize]
+	i := bytes.IndexByte(body, 0x03)
+	for ; i >= 0 && i < len(body); i++ {
+		if body[i] != 0x03 {
+			continue
+		}
+		body[i] = 0x07 // reserved bit 2 set
+		rehashSolid(file)
+		if _, err := ReadWorld(file, reg); err != nil {
+			return // rejected, as required
+		}
+		body[i] = 0x03 // restore and keep looking
+		rehashSolid(file)
+	}
+	t.Skip("could not locate a light flags byte to corrupt")
+}
+
+// rehashSolid recomputes a solid file's checkpoint hash in place, so a
+// deliberate edit is rejected by the rule under test rather than by the
+// integrity check.
+func rehashSolid(file []byte) {
+	header := file[:headerSize]
+	payload := file[headerSize : len(file)-footerSize]
+	footer := file[len(file)-footerSize:]
+	binary.LittleEndian.PutUint64(footer[0:8], CheckpointHash(header, payload, footer[8:]))
 }

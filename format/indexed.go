@@ -897,14 +897,21 @@ func (w *IndexedWorld) readDirFrame(ref frameRef) ([]byte, error) {
 	if _, err := w.f.ReadAt(buf, ref.off); err != nil {
 		return nil, err
 	}
-	if !w.compressed {
-		return buf, nil
+	// The compression bit lives in the physical header, which may itself be
+	// damaged; the directory carries the authoritative header fields, so it
+	// has to be readable without trusting that bit. Try the form the header
+	// claims, then the other.
+	first, second := true, false
+	if w.compressed {
+		first, second = false, true
 	}
-	out, err := sharedDirectoryDecoder().DecodeAll(buf, nil)
-	if err != nil {
-		return nil, corruptf("decompress directory frame: %v", err)
+	if body, ok := decodeDirBody(buf, first); ok {
+		return body, nil
 	}
-	return out, nil
+	if body, ok := decodeDirBody(buf, second); ok {
+		return body, nil
+	}
+	return nil, corruptf("directory frame is neither valid raw nor valid compressed data")
 }
 
 // readFrame reads and decompresses a frame.
@@ -1366,6 +1373,9 @@ func (w *IndexedWorld) checkpointLocked() error {
 		px, pz, poff = int64(k[0]), int64(k[1]), e.off
 	}
 
+	if len(d.bytes()) > maxDecodedDirectory {
+		return fmt.Errorf("pile: directory is %d bytes, limit %d", len(d.bytes()), maxDecodedDirectory)
+	}
 	dirRef, stored, err := w.appendFrameWith(d.bytes(), true)
 	if err != nil {
 		return err
@@ -1549,6 +1559,24 @@ func (w *IndexedWorld) closeFileLocked() error {
 		w.dictDec.Close()
 	}
 	return w.f.Close()
+}
+
+// decodeDirBody returns a directory frame body interpreted as raw or
+// compressed data, reporting whether that interpretation is plausible.
+func decodeDirBody(buf []byte, compressed bool) ([]byte, bool) {
+	if !compressed {
+		// A raw directory starts with the prologue's kind byte, which is the
+		// only value a valid uncompressed directory can begin with.
+		if len(buf) == 0 || (buf[0] != KindWorld && buf[0] != KindStructure) {
+			return nil, false
+		}
+		return buf, true
+	}
+	out, err := sharedDirectoryDecoder().DecodeAll(buf, nil)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // syncDirOf fsyncs the directory containing path, making a rename into it

@@ -146,6 +146,7 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 
 	blockPal := newBlockPaletteBuilder(reg)
 	placeholder := placeholderRid(reg)
+	air := reg.AirRuntimeID()
 	type secLayer struct {
 		sec   int32
 		layer uint8
@@ -161,18 +162,18 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	cells := make([]cellData, len(s.Cells))
 	addBlock := func(rid uint32) uint32 { return blockPal.add(rid) }
 	for i, sub := range s.Cells {
-		// SubChunk compaction is not exported by dragonfly; canonicalBlob
-		// sorts palettes by global reference, so blob bytes stay canonical
-		// regardless of local palette order. Uniform cells encode as index
-		// arrays of one repeated byte, which zstd flattens.
-		if sub == nil || sub.Empty() {
+		if sub == nil {
 			continue
 		}
 		layers := sub.Layers()
 		if len(layers) > maxLayers {
 			return fmt.Errorf("pile: cell %d has %d layers (limit %d)", i, len(layers), maxLayers)
 		}
-		cd := cellData{layers: make([]secData, len(layers))}
+		// Canonicalise like world sections: all-air storages carry no
+		// information and are dropped, and a cell left with none is absent.
+		// Without this, a cell that merely had extra air layers allocated
+		// would encode differently from an identical one that did not.
+		cd := cellData{layers: make([]secData, 0, len(layers))}
 		for l, storage := range layers {
 			// Extract into raw form first so preserved unknown states can be
 			// re-injected before the palette is resolved.
@@ -185,6 +186,9 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 			if entries := unknownBySec[secLayer{sec: int32(i), layer: uint8(l)}]; len(entries) > 0 {
 				injectUnknown(&raw, entries, placeholder, len(s.UnknownStates))
 			}
+			if len(raw.rids) == 1 && raw.rids[0] == air && (raw.states == nil || raw.states[0] < 0) {
+				continue // all-air storage: drop it, like chunk compaction does
+			}
 			pal := make([]uint32, len(raw.rids))
 			for j, rid := range raw.rids {
 				if raw.states != nil && raw.states[j] >= 0 {
@@ -193,7 +197,10 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 				}
 				pal[j] = addBlock(rid)
 			}
-			cd.layers[l] = secData{pal: pal, idx: raw.idx}
+			cd.layers = append(cd.layers, secData{pal: pal, idx: raw.idx})
+		}
+		if len(cd.layers) == 0 {
+			continue
 		}
 		cells[i] = cd
 	}
@@ -361,8 +368,14 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, _, err := decodeBiomePalette(r); err != nil {
+	// Structures carry no biomes (section 6): the palette must be empty, or
+	// the same structure would have two valid encodings.
+	biomeIDs, _, _, err := decodeBiomePalette(r)
+	if err != nil {
 		return nil, err
+	}
+	if len(biomeIDs) != 0 {
+		return nil, corruptf("structure declares %d biome palette entries, want 0", len(biomeIDs))
 	}
 	blobs, err := decodeBlobTable(r)
 	if err != nil {
@@ -398,6 +411,9 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := bitsetTail(presence, len(s.Cells)); err != nil {
+		return nil, err
+	}
 	for i := range s.Cells {
 		if presence[i/8]&(1<<(i%8)) == 0 {
 			continue
@@ -405,6 +421,9 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		layerN, err := r.count(maxLayers, "layer")
 		if err != nil {
 			return nil, err
+		}
+		if layerN == 0 {
+			return nil, corruptf("cell %d is present but declares no layers", i)
 		}
 		sub := chunk.NewSubChunk(air)
 		for l := range layerN {

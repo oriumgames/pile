@@ -582,12 +582,15 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 		}
 	}
 	if storeLight {
+		// Light is collected per section independently of block presence:
+		// dragonfly's lighting pass fills air-only sections with full sky
+		// light, so tying light to block presence would silently drop it.
 		cr.light = make([]lightPair, len(subs))
 		for i, sub := range subs {
-			if cr.blockSecs[i] == nil {
+			bl, sk := subLight(sub)
+			if len(bl) != lightArrayLen && len(sk) != lightArrayLen {
 				continue
 			}
-			bl, sk := subLight(sub)
 			cr.light[i] = lightPair{block: cloneBytes(bl), sky: cloneBytes(sk)}
 		}
 	}
@@ -913,19 +916,24 @@ func encodeRecordBody(w *writer, ci *colIntermediate, cb *colBlobs, blockRemap [
 	}
 
 	if storeLight {
-		for i, secs := range cb.block {
-			if secs == nil {
+		// Light presence is independent of block presence (§4.6).
+		lightBits := make([]byte, (ci.sectionN+7)/8)
+		for i := range ci.sectionN {
+			if i < len(ci.light) && (len(ci.light[i].block) == lightArrayLen || len(ci.light[i].sky) == lightArrayLen) {
+				lightBits[i/8] |= 1 << (i % 8)
+			}
+		}
+		w.raw(lightBits)
+		for i := range ci.sectionN {
+			if lightBits[i/8]&(1<<(i%8)) == 0 {
 				continue
 			}
-			var lp lightPair
-			if i < len(ci.light) {
-				lp = ci.light[i]
-			}
+			lp := ci.light[i]
 			var flags uint8
-			if len(lp.block) == 2048 {
+			if len(lp.block) == lightArrayLen {
 				flags |= 1
 			}
-			if len(lp.sky) == 2048 {
+			if len(lp.sky) == lightArrayLen {
 				flags |= 2
 			}
 			w.u8(flags)

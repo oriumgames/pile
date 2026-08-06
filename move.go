@@ -374,14 +374,16 @@ func moveBorder(blob []byte, off cube.Pos) []byte {
 		return blob
 	}
 	shift := func(v any) (any, bool) {
-		// gophertunnel decodes NBT int arrays as fixed-size Go arrays.
+		// The border schema fixes these as int arrays, so the translated
+		// value must stay a fixed-size array: a slice would re-encode as a
+		// TAG_List and no longer match the schema.
 		switch pair := v.(type) {
 		case []int32:
 			if len(pair) == 2 {
-				return []int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
+				return [2]int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
 			}
 		case [2]int32:
-			return []int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
+			return [2]int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
 		}
 		return v, false
 	}
