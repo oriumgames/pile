@@ -411,9 +411,12 @@ An air-only section is absent (one presence bit); a fully empty chunk record
 (all bits clear, zero counts) costs ~10 bytes and means "exists, is air", which is
 distinct from a chunk that was never stored.
 
-Writers MUST NOT emit a uniform-air block layer; a section is either absent or
-contains at least one non-air-only layer. Decoders treat a uniform-air layer 0
-defensively as absent.
+A section is absent when **every** one of its layers is uniform air. A section
+that has any non-air content is present, and the uniform-air layers below that
+content are stored, for the reason the layer numbering rule below gives. A
+decoder MUST NOT treat a uniform-air layer 0 as an absent section: in a
+waterlogged-only section that layer is the state, and dropping it loses the
+water above it.
 
 ### 4.4 Block entity
 
