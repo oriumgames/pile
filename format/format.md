@@ -108,7 +108,7 @@ payload meaning).
 
 | offset | type | field |
 |--------|------|-------|
-| 0  | u64 | bodyHash. Solid: xxHash64 of the stored body bytes (compressed form); indexed: xxHash64 of the stored directory frame bytes |
+| 0  | u64 | checkpoint hash, §2.4 |
 | 8  | u64 | dirOffset. Indexed: file offset of the directory frame; solid: 0 |
 | 16 | u64 | dirLength. Indexed: stored length of the directory frame; solid: 0 |
 | 24 | u64 | generation. Indexed: checkpoint counter; solid: 0 |
@@ -117,6 +117,29 @@ payload meaning).
 
 The footer magic differs from the header magic so the indexed-mode backward
 recovery scan (§5.6) can never mistake a header for a footer.
+
+In a **solid** file the directory, generation and previous-footer words carry
+no information and MUST be zero; readers MUST reject a non-zero value. This
+keeps one valid encoding per file.
+
+### 2.4 Checkpoint hash
+
+The footer's hash authenticates the file's semantic header as well as its
+payload. Hashing the payload alone would leave `blockVersion` and the flags
+(which carry the default-biome reference) unprotected, so a single flipped bit
+there would change how the payload decodes while every integrity check still
+passed.
+
+```
+preimage = header (16 bytes)
+        || payload            (solid: the stored body; indexed: the stored directory frame)
+        || footer bytes 8..44 (the control words and the footer magic)
+hash     = xxHash64(preimage)
+```
+
+Everything but the hash field itself is therefore covered. Indexed files
+recompute this per checkpoint, so `generation` and `prevFooter` are
+authenticated too.
 
 ### 2.3 Flags
 
@@ -549,17 +572,31 @@ bounds of the playable area. Advisory.
 
 Decoders MUST enforce (reference values):
 
+These are **validity rules**: a file exceeding them is invalid, so raising one
+later would make new files unreadable to existing readers. They are set at
+what the underlying models can represent, not at what a deployment expects to
+use. Allocation safety comes from bounding every count by the input bytes that
+remain, not from these ceilings.
+
 | item | limit |
 |------|-------|
 | string length | 64 KiB |
 | blob length | 16 MiB |
-| chunks per file / structure cells | 1 048 576 |
+| chunk records per world / directory entries | 4 294 967 296 |
+| structure cells | 1 048 576 |
 | global palette entries | 1 048 576 |
 | blob table entries | 16 777 216 |
+| section blob local palette entries | 65 536 (the u16 index width) |
 | state properties per palette entry | 64 |
-| sections per chunk | 512 |
-| layers per section | 4 |
-| entities / block entities / ticks per chunk | 65 536 each |
+| sections per chunk | 4 096 (the full int16 block-Y domain) |
+| layers per section | 256 (Bedrock encodes the storage count in a byte) |
+| entities / block entities / ticks per chunk | 1 048 576 each |
+| stored frame length (indexed) | 4 294 967 295 |
+
+Writers MUST additionally refuse content that their own readers would reject:
+a record whose decompressed size exceeds the reader's frame ceiling, or NBT
+nested deeper than the reader accepts, is data loss even though every
+individual field is within limits.
 
 Decoders MUST NOT panic on any input; every violation is a clean error. Sizes
 derived from untrusted counts must be validated before allocation.

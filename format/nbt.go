@@ -48,7 +48,7 @@ func marshalNBT(m map[string]any) ([]byte, error) {
 	w := &writer{b: make([]byte, 0, 128)}
 	w.u8(tagCompound)
 	w.u16(0) // empty root name
-	if err := nbtCompound(w, m); err != nil {
+	if err := nbtCompound(w, m, 0); err != nil {
 		return nil, err
 	}
 	return w.bytes(), nil
@@ -138,7 +138,7 @@ func arrayTagType(v any) (byte, bool) {
 }
 
 // nbtPayload writes the payload of a value (no tag type, no name).
-func nbtPayload(w *writer, v any) error {
+func nbtPayload(w *writer, v any, depth int) error {
 	switch x := v.(type) {
 	case byte:
 		w.u8(x)
@@ -187,7 +187,7 @@ func nbtPayload(w *writer, v any) error {
 			w.u64(uint64(e))
 		}
 	case map[string]any:
-		return nbtCompound(w, x)
+		return nbtCompound(w, x, depth)
 	case []float32:
 		w.u8(tagFloat)
 		w.i32(int32(len(x)))
@@ -218,7 +218,7 @@ func nbtPayload(w *writer, v any) error {
 		w.u8(tagCompound)
 		w.i32(int32(len(x)))
 		for _, e := range x {
-			if err := nbtCompound(w, e); err != nil {
+			if err := nbtCompound(w, e, depth+1); err != nil {
 				return err
 			}
 		}
@@ -242,7 +242,7 @@ func nbtPayload(w *writer, v any) error {
 			if t != et {
 				return fmt.Errorf("pile: mixed element types in nbt list (%d vs %d)", t, et)
 			}
-			if err := nbtPayload(w, e); err != nil {
+			if err := nbtPayload(w, e, depth+1); err != nil {
 				return err
 			}
 		}
@@ -277,7 +277,12 @@ func nbtPayload(w *writer, v any) error {
 }
 
 // nbtCompound writes a compound payload with keys in sorted order.
-func nbtCompound(w *writer, m map[string]any) error {
+func nbtCompound(w *writer, m map[string]any, depth int) error {
+	// The decoder refuses input nested deeper than maxNBTDepth, so refuse to
+	// write it: the value would be unreadable by this same release.
+	if depth > maxNBTDepth {
+		return fmt.Errorf("pile: nbt nested deeper than %d", maxNBTDepth)
+	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -292,7 +297,7 @@ func nbtCompound(w *writer, m map[string]any) error {
 		if err := nbtString(w, k); err != nil {
 			return err
 		}
-		if err := nbtPayload(w, m[k]); err != nil {
+		if err := nbtPayload(w, m[k], depth+1); err != nil {
 			return err
 		}
 	}

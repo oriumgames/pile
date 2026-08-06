@@ -231,14 +231,84 @@ func TestIndexedRecordCorruption(t *testing.T) {
 	}
 	_ = f.Close()
 
+	// A checkpoint referencing a damaged record is not adopted: recovery
+	// falls back to an older one rather than serving corruption, and says so.
 	w, err := OpenIndexed(path, reg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	if _, err := w.Column(0, 0); !errors.Is(err, ErrChecksum) {
-		t.Fatalf("corrupted record error = %v, want ErrChecksum", err)
+	if !w.Recovered() {
+		t.Fatal("damaged checkpoint adopted without reporting recovery")
 	}
+	if _, err := w.Column(0, 0); !errors.Is(err, ErrNoColumn) && !errors.Is(err, ErrChecksum) {
+		t.Fatalf("corrupted record error = %v, want ErrNoColumn (rolled back) or ErrChecksum", err)
+	}
+}
+
+// TestIndexedRecordCorruptionFallsBack: when an older checkpoint holds an
+// intact copy of the damaged record, recovery must reach it.
+func TestIndexedRecordCorruptionFallsBack(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "overworld.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Checkpoint 2 holds a good copy; checkpoint 3 replaces it with one we
+	// then damage.
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	good := w.dir[[2]int32{0, 0}]
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	newer := good
+	{
+		probe, err := OpenIndexed(path, reg, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newer = probe.dir[[2]int32{0, 0}]
+		_ = probe.Close()
+	}
+	if newer.off == good.off {
+		t.Fatal("expected the second store to append a new record frame")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := []byte{0}
+	if _, err := f.ReadAt(buf, newer.off+int64(newer.length)/2); err != nil {
+		t.Fatal(err)
+	}
+	buf[0] ^= 0xFF
+	if _, err := f.WriteAt(buf, newer.off+int64(newer.length)/2); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	rw, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rw.Close()
+	if !rw.Recovered() {
+		t.Fatal("recovery not reported")
+	}
+	got, err := rw.Column(0, 0)
+	if err != nil {
+		t.Fatalf("older intact copy not recovered: %v", err)
+	}
+	compareColumns(t, buildTestColumn(t, reg, 0, 0), got)
 }
 
 // TestIndexedDictionary verifies that compaction trains a shared dictionary

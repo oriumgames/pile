@@ -10,7 +10,6 @@ import (
 
 	"github.com/df-mc/dragonfly/server/block/cube"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
 )
@@ -321,14 +320,17 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	hdr.u32(flags)
 	hdr.i32(chunk.CurrentBlockVersion)
 
-	// Footer.
+	// Footer. The hash authenticates the header and the footer's own control
+	// words as well as the payload (see checkpointHash).
+	tail := &writer{b: make([]byte, 0, footerSize-8)}
+	tail.u64(0) // directory offset (indexed mode only)
+	tail.u64(0) // directory length
+	tail.u64(0) // generation
+	tail.u64(0) // previous footer offset (indexed mode only)
+	tail.raw(footerMagic[:])
 	ftr := &writer{b: make([]byte, 0, footerSize)}
-	ftr.u64(xxhash.Sum64(stored))
-	ftr.u64(0) // directory offset (indexed mode only)
-	ftr.u64(0) // directory length
-	ftr.u64(0) // generation
-	ftr.u64(0) // previous footer offset (indexed mode only)
-	ftr.raw(footerMagic[:])
+	ftr.u64(checkpointHash(hdr.bytes(), stored, tail.bytes()))
+	ftr.raw(tail.bytes())
 
 	for _, part := range [][]byte{hdr.bytes(), stored, ftr.bytes()} {
 		if _, err := out.Write(part); err != nil {
@@ -447,15 +449,16 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 		}
 		return compareNBT(a.Data, b.Data)
 	})
+	// Scheduled updates are ordered by position and firing tick here; ties
+	// are broken later by the final palette reference (see sortTicks), which
+	// is registry-independent. Sorting by runtime ID at this point would make
+	// the bytes depend on how a registry happened to number its states.
 	ticks := slices.Clone(c.Col.ScheduledBlocks)
 	slices.SortStableFunc(ticks, func(a, b chunk.ScheduledBlockUpdate) int {
 		if v := comparePos(a.Pos, b.Pos); v != 0 {
 			return v
 		}
-		if v := cmp.Compare(a.Tick, b.Tick); v != 0 {
-			return v
-		}
-		return cmp.Compare(a.Block, b.Block)
+		return cmp.Compare(a.Tick, b.Tick)
 	})
 
 	// Preserved unknown states, grouped by section and layer.
@@ -838,6 +841,27 @@ func buildColBlobs(ci *colIntermediate, blockRemap, biomeRemap []uint32, default
 // blob table reference, indexed mode inlines the blob bytes.
 type blobSink func(w *writer, blob []byte)
 
+// sortTicks applies the canonical scheduled-update order, breaking ties on
+// position and firing tick with the final global block reference. It runs
+// after palette finalization because only then is that reference known.
+func sortTicks(ticks []tickIntermediate, blockRemap []uint32) {
+	slices.SortStableFunc(ticks, func(a, b tickIntermediate) int {
+		if v := cmp.Compare(a.y, b.y); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.packedXZ>>4, b.packedXZ>>4); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.packedXZ&0xF, b.packedXZ&0xF); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.at, b.at); v != 0 {
+			return v
+		}
+		return cmp.Compare(blockRemap[a.blockBuild], blockRemap[b.blockBuild])
+	})
+}
+
 // encodeRecordBody writes a chunk record without position, emitting the
 // precomputed section blobs through sink.
 func encodeRecordBody(w *writer, ci *colIntermediate, cb *colBlobs, blockRemap []uint32, storeLight bool, sink blobSink) {
@@ -913,6 +937,7 @@ func encodeRecordBody(w *writer, ci *colIntermediate, cb *colBlobs, blockRemap [
 		w.blob(e)
 	}
 	w.svarint(ci.tick)
+	sortTicks(ci.ticks, blockRemap)
 	w.uvarint(uint64(len(ci.ticks)))
 	for _, t := range ci.ticks {
 		w.u8(t.packedXZ)

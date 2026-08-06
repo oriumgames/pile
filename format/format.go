@@ -6,6 +6,8 @@ package format
 import (
 	"errors"
 	"fmt"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 // File magics. Stored as raw byte sequences, not integers, so the bytes "PILE"
@@ -108,21 +110,64 @@ var (
 	ErrChecksum           = errors.New("pile: body checksum mismatch")
 )
 
+// checkpointHash authenticates a file's semantic header and footer control
+// words alongside its stored payload. Hashing the payload alone would leave
+// blockVersion, the feature flags (which carry the default-biome reference)
+// and the indexed control fields unprotected: a single flipped bit there
+// changes how the payload decodes while every integrity check still passes.
+//
+// preimage = header (16 bytes) || stored payload || footer bytes 8..end
+// (the control words and magic, i.e. everything but the hash field itself).
+func checkpointHash(header, payload, footerTail []byte) uint64 {
+	h := xxhash.New()
+	_, _ = h.Write(header)
+	_, _ = h.Write(payload)
+	_, _ = h.Write(footerTail)
+	return h.Sum64()
+}
+
+// CheckpointHash exposes the file authentication hash so tooling (and tests
+// that rewrite files) can recompute it: it covers the header, the stored
+// payload and the footer's control words.
+func CheckpointHash(header, payload, footerTail []byte) uint64 {
+	return checkpointHash(header, payload, footerTail)
+}
+
 // corruptf returns an error wrapping ErrCorrupt with a formatted description.
 func corruptf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrCorrupt}, args...)...)
 }
 
-// Decoder limits. These bound allocations while reading untrusted files.
+// Decoder limits. These are validity rules: a file exceeding them is
+// rejected, so they can only ever be raised by a format revision. They are
+// therefore set at what the underlying models can represent rather than at
+// what deployments are expected to use. Allocation safety comes from bounding
+// every count by the input bytes that remain (see reader.count and the
+// per-structure checks), not from these ceilings.
 const (
-	maxStringLen  = 64 << 10
-	maxBlobLen    = 16 << 20
-	maxChunks     = 1 << 20
-	maxPalette    = 1 << 20
-	maxBlobs      = 1 << 24
-	maxPerChunk   = 1 << 16 // entities, block entities, scheduled ticks each
-	maxSectionCnt = 512
-	maxLayers     = 4
-	// maxFrameLen bounds any single stored frame in an indexed file.
-	maxFrameLen = 1 << 32
+	maxStringLen = 64 << 10
+	maxBlobLen   = 16 << 20
+	// maxChunks bounds chunk records in a solid body and entries in an
+	// indexed directory. 2^32 chunks is 2^36 blocks square: far beyond any
+	// reachable world, and not a limit a growing server can hit.
+	maxChunks  = 1 << 32
+	maxPalette = 1 << 20
+	maxBlobs   = 1 << 24
+	// maxPerChunk bounds entities, block entities and scheduled ticks per
+	// chunk independently.
+	maxPerChunk = 1 << 20
+	// maxSectionCnt covers the full int16 block-Y domain dragonfly can
+	// address (-32768..32767), which is 4096 sections.
+	maxSectionCnt = 4096
+	// maxLayers matches Bedrock's sub chunk storage count, which is encoded
+	// as a byte on disk.
+	maxLayers = 256
+	// maxStructureCells bounds a structure's 16-cube cell grid. Unlike a
+	// world, a structure is a single in-memory object, so this is both a
+	// wire validity rule and an allocation bound: 2^20 cells spans a
+	// 1024-block cube.
+	maxStructureCells = 1 << 20
+	// maxFrameLen is the largest stored frame an indexed file can reference.
+	// Lengths are held in a uint32, so 2^32-1 is the representable maximum.
+	maxFrameLen = 1<<32 - 1
 )

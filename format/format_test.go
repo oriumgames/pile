@@ -2,6 +2,7 @@ package format
 
 import (
 	"bytes"
+	"encoding/binary"
 	"maps"
 	"reflect"
 	"sync"
@@ -414,5 +415,86 @@ func TestUnknownStateIdentityCollision(t *testing.T) {
 	}
 	if again := bld.addState(a); again != ia {
 		t.Fatalf("identical state got two indices: %d and %d", ia, again)
+	}
+}
+
+// TestHeaderAuthentication: the semantic header is covered by the footer
+// hash, so corrupting it is detected rather than silently changing how the
+// file decodes.
+func TestHeaderAuthentication(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+
+	for _, tc := range []struct {
+		name   string
+		offset int
+	}{
+		{"blockVersion", 12},
+		{"flags", 8},
+		{"kind", 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := bytes.Clone(file)
+			bad[tc.offset] ^= 0x01
+			if _, err := ReadWorld(bad, reg); err == nil {
+				t.Fatal("corrupted header accepted")
+			}
+		})
+	}
+
+	// The footer's own control words are covered too.
+	t.Run("footer control word", func(t *testing.T) {
+		bad := bytes.Clone(file)
+		bad[len(bad)-footerSize+24] ^= 0x01 // generation
+		if _, err := ReadWorld(bad, reg); err == nil {
+			t.Fatal("corrupted footer control word accepted")
+		}
+	})
+}
+
+// TestSolidFooterMustBeZero: solid files have exactly one valid encoding of
+// their unused footer words.
+func TestSolidFooterMustBeZero(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	bad := bytes.Clone(file)
+	// Set the generation word and repair the hash: still invalid, because the
+	// field is required to be zero.
+	binary.LittleEndian.PutUint64(bad[len(bad)-footerSize+24:], 7)
+	body := bad[headerSize : len(bad)-footerSize]
+	binary.LittleEndian.PutUint64(bad[len(bad)-footerSize:],
+		checkpointHash(bad[:headerSize], body, bad[len(bad)-footerSize+8:]))
+	if _, err := ReadWorld(bad, reg); err == nil {
+		t.Fatal("non-zero solid footer control word accepted")
+	}
+}
+
+// TestContentHashSemantics: derived and advisory content must not change a
+// world's identity, and header state that changes decoding must.
+func TestContentHashSemantics(t *testing.T) {
+	reg := testRegistry(t)
+	d := testWorld(t, reg)
+
+	plain := encode(t, d, reg, CompressionNone)
+	base, err := ContentHash(plain, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opts := range []Options{
+		{Compression: CompressionBest},
+		{Compression: CompressionNone, Stats: true},
+		{Compression: CompressionNone, StoreLight: true},
+	} {
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, d, reg, opts); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ContentHash(buf.Bytes(), reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != base {
+			t.Fatalf("content hash changed for %+v: derived/advisory content must not affect identity", opts)
+		}
 	}
 }

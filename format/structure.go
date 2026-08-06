@@ -6,7 +6,6 @@ import (
 	"io"
 	"slices"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/klauspost/compress/zstd"
@@ -66,8 +65,8 @@ func NewStructureData(size [3]int32) (*StructureData, error) {
 	ny := (int64(size[1]) + 15) >> 4
 	nz := (int64(size[2]) + 15) >> 4
 	cells := nx * ny * nz
-	if cells > maxChunks {
-		return nil, fmt.Errorf("pile: structure size %v too large (%d cells, limit %d)", size, cells, maxChunks)
+	if cells > maxStructureCells {
+		return nil, fmt.Errorf("pile: structure size %v too large (%d cells, limit %d)", size, cells, maxStructureCells)
 	}
 	return &StructureData{Size: size, Cells: make([]*chunk.SubChunk, cells)}, nil
 }
@@ -313,13 +312,15 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	hdr.u32(flags)
 	hdr.i32(chunk.CurrentBlockVersion)
 
+	tail := &writer{}
+	tail.u64(0) // directory offset
+	tail.u64(0) // directory length
+	tail.u64(0) // generation
+	tail.u64(0) // previous footer offset
+	tail.raw(footerMagic[:])
 	ftr := &writer{}
-	ftr.u64(xxhash.Sum64(stored))
-	ftr.u64(0) // directory offset
-	ftr.u64(0) // directory length
-	ftr.u64(0) // generation
-	ftr.u64(0) // previous footer offset
-	ftr.raw(footerMagic[:])
+	ftr.u64(checkpointHash(hdr.bytes(), stored, tail.bytes()))
+	ftr.raw(tail.bytes())
 
 	for _, part := range [][]byte{hdr.bytes(), stored, ftr.bytes()} {
 		if _, err := out.Write(part); err != nil {

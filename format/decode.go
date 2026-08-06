@@ -73,10 +73,18 @@ func parseFrame(file []byte) (header, []byte, error) {
 		return h, nil, corruptf("bad footer magic")
 	}
 	fr := &reader{b: ftr}
-	bodyHash, _ := fr.u64()
+	wantHash, _ := fr.u64()
+
+	// Solid files have no directory or checkpoint chain: those control words
+	// must be zero, so a file has exactly one valid encoding.
+	for off, name := range map[int]string{8: "directory offset", 16: "directory length", 24: "generation", 32: "previous footer"} {
+		if v := binary.LittleEndian.Uint64(ftr[off : off+8]); v != 0 {
+			return h, nil, corruptf("solid footer %s must be zero, got %d", name, v)
+		}
+	}
 
 	stored := file[headerSize : len(file)-footerSize]
-	if xxhash.Sum64(stored) != bodyHash {
+	if checkpointHash(file[:headerSize], stored, ftr[8:]) != wantHash {
 		return h, nil, ErrChecksum
 	}
 	return h, stored, nil

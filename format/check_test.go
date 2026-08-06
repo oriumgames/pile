@@ -5,8 +5,6 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
-
-	"github.com/cespare/xxhash/v2"
 )
 
 func TestUnresolvedStates(t *testing.T) {
@@ -32,7 +30,8 @@ func TestUnresolvedStates(t *testing.T) {
 		t.Fatal("dirt not found in body")
 	}
 	copy(body[idx:], "minecraft:d1rt")
-	binary.LittleEndian.PutUint64(bad[len(bad)-footerSize:], xxhash.Sum64(body))
+	binary.LittleEndian.PutUint64(bad[len(bad)-footerSize:],
+		checkpointHash(bad[:headerSize], body, bad[len(bad)-footerSize+8:]))
 
 	unresolved, err = UnresolvedStates(bad, reg)
 	if err != nil {

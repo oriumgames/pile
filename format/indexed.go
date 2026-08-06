@@ -45,6 +45,10 @@ type IndexedWorld struct {
 	reg  world.BlockRegistry
 	opts Options
 
+	// hdrBytes is the file's 16-byte header, authenticated by every
+	// checkpoint hash.
+	hdrBytes []byte
+
 	readOnly   bool
 	closed     bool
 	end        int64
@@ -155,6 +159,7 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 		_ = f.Close()
 		return nil, fmt.Errorf("pile: write header: %w", err)
 	}
+	w.hdrBytes = append([]byte(nil), hdr.bytes()...)
 	w.end = headerSize
 	w.recordsDirty = true // force the initial checkpoint
 	if err := w.checkpointLocked(); err != nil {
@@ -281,6 +286,12 @@ func (w *IndexedWorld) load() error {
 	if flags&^knownFlags != 0 {
 		return ErrUnknownFlags
 	}
+	if flags&FlagDefaultBiome != 0 || flags>>defaultBiomeShift != 0 {
+		// Indexed records never elide biome sections, so the default-biome
+		// flag and its reference must be unset: one encoding per header.
+		return corruptf("indexed header must not set a default biome")
+	}
+	w.hdrBytes = append([]byte(nil), hdr...)
 	// Indexed files elide no biomes and carry no stats block, so those
 	// flags would be meaningless here: reject rather than ignore them.
 	if flags&(FlagDefaultBiome|FlagStats) != 0 || flags>>defaultBiomeShift != 0 {
@@ -290,6 +301,20 @@ func (w *IndexedWorld) load() error {
 	w.opts.StoreLight = flags&FlagStoreLight != 0
 
 	return w.adoptCheckpoint()
+}
+
+// verifyRecords checks the stored hash of every live record frame.
+func (w *IndexedWorld) verifyRecords() error {
+	for k, e := range w.dir {
+		stored := make([]byte, e.length)
+		if _, err := w.f.ReadAt(stored, e.off); err != nil {
+			return fmt.Errorf("pile: read record (%d,%d): %w", k[0], k[1], err)
+		}
+		if xxhash.Sum64(stored) != e.hash {
+			return fmt.Errorf("%w: record (%d,%d)", ErrChecksum, k[0], k[1])
+		}
+	}
+	return nil
 }
 
 // resetLoadedState clears everything loadDirectory populates so a failed
@@ -346,6 +371,13 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 	for i, c := range cands {
 		w.resetLoadedState()
 		if lerr := w.loadDirectory(c.dirRef); lerr != nil {
+			err = lerr
+			continue
+		}
+		// A checkpoint is only adopted if every record it references is
+		// intact: otherwise a damaged newest checkpoint would be preferred
+		// over an older one whose copy of that record is still good.
+		if lerr := w.verifyRecords(); lerr != nil {
 			err = lerr
 			continue
 		}
@@ -421,14 +453,14 @@ func (w *IndexedWorld) tryFooter(off int64) (footerCand, bool) {
 	if [4]byte(buf[footerSize-4:]) != footerMagic {
 		return footerCand{}, false
 	}
-	dirHash := binary.LittleEndian.Uint64(buf[0:8])
+	wantHash := binary.LittleEndian.Uint64(buf[0:8])
 	dirOffU := binary.LittleEndian.Uint64(buf[8:16])
 	dirLenU := binary.LittleEndian.Uint64(buf[16:24])
 	gen := binary.LittleEndian.Uint64(buf[24:32])
 	prevU := binary.LittleEndian.Uint64(buf[32:40])
 	// Bounds without overflow: compare by subtraction against the footer's
 	// own offset, and cap the frame size explicitly before any allocation.
-	if dirOffU > uint64(off) || dirLenU > maxFrameLen || dirLenU > uint64(off)-dirOffU {
+	if dirOffU > uint64(off) || dirLenU > maxFrameLen || dirLenU == 0 || dirLenU > uint64(off)-dirOffU {
 		return footerCand{}, false
 	}
 	dirOff, dirLen, prev := int64(dirOffU), int64(dirLenU), int64(prevU)
@@ -444,12 +476,12 @@ func (w *IndexedWorld) tryFooter(off int64) (footerCand, bool) {
 	if _, err := w.f.ReadAt(frame, dirOff); err != nil {
 		return footerCand{}, false
 	}
-	if xxhash.Sum64(frame) != dirHash {
+	if checkpointHash(w.hdrBytes, frame, buf[8:]) != wantHash {
 		return footerCand{}, false
 	}
 	return footerCand{
 		off:    off,
-		dirRef: frameRef{off: dirOff, length: uint32(dirLen), hash: dirHash},
+		dirRef: frameRef{off: dirOff, length: uint32(dirLen), hash: wantHash},
 		gen:    gen,
 		prev:   prev,
 	}, true
@@ -556,7 +588,10 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 				return nil, err
 			}
 			if length > maxFrameLen {
-				return nil, corruptf("%s frame length %d exceeds limit", what, length)
+				return nil, corruptf("%s frame length %d exceeds limit %d", what, length, uint64(maxFrameLen))
+			}
+			if length == 0 {
+				return nil, corruptf("%s frame has zero length", what)
 			}
 			hb, err := r.take(8)
 			if err != nil {
@@ -837,6 +872,11 @@ func (w *IndexedWorld) Store(c Column) error {
 	encodeRecordBody(body, &ci, &cb, w.identity, w.opts.StoreLight, func(bw *writer, blob []byte) {
 		bw.raw(blob)
 	})
+	if n := body.len(); n > maxDecodedFrame {
+		// The reader caps a frame's decompressed size; refuse to write a
+		// record this process could not read back.
+		return fmt.Errorf("pile: chunk (%d,%d) encodes to %d bytes, limit %d", c.X, c.Z, n, maxDecodedFrame)
+	}
 	ref, stored, err := w.appendFrame(body.bytes())
 	if err != nil {
 		return err
@@ -1149,13 +1189,15 @@ func (w *IndexedWorld) checkpointLocked() error {
 	}
 
 	w.generation++
+	tail := &writer{}
+	tail.u64(uint64(dirRef.off))
+	tail.u64(uint64(dirRef.length))
+	tail.u64(w.generation)
+	tail.u64(uint64(w.prevFooterOff))
+	tail.raw(footerMagic[:])
 	ftr := &writer{}
-	ftr.u64(xxhash.Sum64(stored))
-	ftr.u64(uint64(dirRef.off))
-	ftr.u64(uint64(dirRef.length))
-	ftr.u64(w.generation)
-	ftr.u64(uint64(w.prevFooterOff))
-	ftr.raw(footerMagic[:])
+	ftr.u64(checkpointHash(w.hdrBytes, stored, tail.bytes()))
+	ftr.raw(tail.bytes())
 	footerPos := w.end
 	if _, err := w.f.WriteAt(ftr.bytes(), w.end); err != nil {
 		return fmt.Errorf("pile: write footer: %w", err)

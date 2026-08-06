@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
@@ -33,7 +32,9 @@ func corruptStateName(t *testing.T, file []byte, from, to string) []byte {
 		t.Fatalf("%s not found in body", from)
 	}
 	copy(body[idx:], to)
-	binary.LittleEndian.PutUint64(bad[len(bad)-44:], xxhash.Sum64(body))
+	// The footer hash authenticates the header and footer control words too,
+	// so recompute it the way the format defines rather than over the body.
+	binary.LittleEndian.PutUint64(bad[len(bad)-44:], format.CheckpointHash(bad[:16], body, bad[len(bad)-44+8:]))
 	return bad
 }
 

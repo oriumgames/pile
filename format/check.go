@@ -83,16 +83,11 @@ func unresolvedOf(entries []parsedState, reg world.BlockRegistry, blockVersion i
 // Two files with the same ContentHash hold the same world; a compressor
 // upgrade changes file bytes but not this value.
 func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
-	h, stored, err := parseFrame(file)
-	if err != nil {
-		return 0, err
-	}
-	body, err := decompressBody(h, stored)
+	h, _, err := parseFrame(file)
 	if err != nil {
 		return 0, err
 	}
 	if h.kind == KindStructure {
-		// Structures decode and re-encode canonically too.
 		s, err := ReadStructure(file, reg)
 		if err != nil {
 			return 0, err
@@ -104,7 +99,20 @@ func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
 		out := buf.Bytes()
 		return xxhash.Sum64(out[headerSize : len(out)-footerSize]), nil
 	}
-	// The body is already canonical for a file written by this library; hash
-	// it directly so the value does not depend on a decode/re-encode round.
-	return xxhash.Sum64(body), nil
+	// Decode and re-encode into the canonical projection: derived and
+	// advisory content (the stats block, cached light) is excluded, while
+	// header state that changes how the world decodes (the block version and
+	// the default-biome interpretation, which decoding resolves into the
+	// biome sections) is included by construction. Hashing the stored body
+	// directly would do the opposite on both counts.
+	d, err := ReadWorld(file, reg)
+	if err != nil {
+		return 0, err
+	}
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err != nil {
+		return 0, err
+	}
+	out := buf.Bytes()
+	return xxhash.Sum64(out[headerSize : len(out)-footerSize]), nil
 }
