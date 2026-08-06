@@ -69,9 +69,8 @@ values but are different tags, and both occur in vanilla content. Decoders
 MUST keep them apart, and encoders MUST re-emit each value with the tag it was
 decoded from:
 
-- In **opaque** NBT (entity and block-entity blobs, chunk and world user
-  data), `TAG_Byte_Array`, `TAG_Int_Array` and `TAG_Long_Array` round trip as
-  themselves. Collapsing them into lists would be lossy in a way the game
+- In **opaque** NBT (entity and block-entity blobs), `TAG_Byte_Array`,
+  `TAG_Int_Array` and `TAG_Long_Array` round trip as themselves. Collapsing them into lists would be lossy in a way the game
   notices, since Bedrock stores UUIDs and similar fields as int arrays.
   A decoder that lowers every array into the same host-language value as a
   list cannot produce byte-identical output and is not conforming.
@@ -80,6 +79,10 @@ decoded from:
   border's `min` and `max` are `TAG_Int_Array`, not lists. Writers MUST reject
   a metadata blob whose fields carry the wrong tag, because a reader cannot
   tell afterwards.
+
+World and chunk **user data are not NBT at all**: they are opaque byte strings
+that the format never parses, so no rule in this section applies to them and
+any byte sequence within the blob length limit is valid.
 
 Byte identity across implementations therefore requires a decoder that retains
 tag kinds. That is a smaller demand than lossy normalisation, which would have
@@ -244,6 +247,12 @@ count            uvarint
 name[count]      string           e.g. "minecraft:plains"
 ```
 
+The **reference count is the number of section-local biome palettes the name
+appears in**, exactly as for block states in §3.1, not the number of voxels
+holding it. The two disagree whenever a rare biome appears in many sections,
+and they select different palette orders, section references and default-biome
+references.
+
 Names, not numeric IDs, so entries stay stable across game versions. Names are
 **fully qualified**: every one contains a namespace and a colon, and a bare
 name such as `plains` is invalid rather than a second spelling of
@@ -329,6 +338,15 @@ trailing empty sections, and an empty chunk carries its dimension's full span
 with every presence bit clear. Trimming would give one chunk several encodings
 and leave the content outside the span undefined; the span costs two varints.
 
+**Layer count.** Bedrock encodes the storage count in a byte, so 256 layers are
+expressible, but a 256th layer cannot be addressed: an implementation that
+selects a layer with an 8-bit index (dragonfly does, and grows its storage
+slice with `for uint8(len(storages)) <= layer`) wraps its comparison to zero at
+256 and appends without end. Nothing can read that layer back and any write to
+the section hangs, so the ceiling is 255 and decoders MUST reject a larger
+`layerN`. A file claiming 256 layers is not merely unusual, it is a way to
+wedge a server that opens it.
+
 **Layer numbering.** Layer numbers are semantic: layer 0 is the block and layer
 1 is Bedrock's waterlogging layer. A layer therefore cannot be dropped for
 being all air unless every layer above it is dropped too, because removing an
@@ -366,7 +384,7 @@ sectionN         uvarint          section count (1 ≤ sectionN ≤ 4096);
                                   the chunk's full vertical range, never trimmed
 blockPresence    bitset(sectionN) bit i set = section i has block data
 present sections, ascending i:
-  layerN         uvarint          storage layers (1 ≤ layerN ≤ 256);
+  layerN         uvarint          storage layers (1 ≤ layerN ≤ 255);
                                   layer 1 is Bedrock's waterlogging layer;
                                   trailing all-air layers omitted, internal ones kept
   blobRef[layerN] uvarint         blob table references
@@ -454,6 +472,12 @@ consumer.
 When flag `DefaultBiome` is set, `defaultBiomeRef` (flags bits 16–31) names a
 global biome palette entry. Sections whose biomes are uniformly that biome are
 omitted from `biomePresence`; decoders fill absent sections with the default.
+Writers MUST set the flag whenever the file holds at least one section whose
+biomes are uniform and the chosen reference fits the 16 bits available; they
+MUST leave it clear otherwise, including when the reference does not fit. The
+flag is not an optimisation a writer may decline, because declining it is a
+second encoding of the same world.
+
 Writers pick the biome with the most uniform sections, breaking ties by the
 **lowest global biome palette reference**. Without a tie-break two conforming
 writers could set a different `defaultBiomeRef` and clear a different presence
@@ -468,8 +492,8 @@ the reader's fallback.
 ### 4.8 Determinism
 
 Writers targeting deterministic output MUST: sort records by Morton key; sort
-the block palette as §3.1 specifies and the biome palette by reference count
-(ties: name); emit canonical section blobs (§3.3); sort NBT compound keys; and
+the block palette as §3.1 specifies and the biome palette by reference count as §3.2
+defines it (ties: name); emit canonical section blobs (§3.3); sort NBT compound keys; and
 sort every per-column collection totally.
 
 The collection orders are:
@@ -672,7 +696,7 @@ originX,Y,Z      svarint × 3      paste anchor offset; each MUST be in int32
                                   range, so that one value has one encoding
 cellPresence     bitset(cells)
 present cells:
-  layerN         uvarint  (≤ 256)
+  layerN         uvarint  (1 ≤ layerN ≤ 255)
   blobRef[layerN] uvarint
 beN              uvarint
 be[beN]:
@@ -687,6 +711,21 @@ A structure header MUST set no flags other than `Uncompressed`, its settings,
 markers and border blobs MUST be empty, and its biome palette MUST have zero
 entries. Decoders MUST reject files that violate this, so one structure has
 exactly one valid envelope.
+
+**Cell canonicalisation.** The §4.3 rules for chunk sections apply to cells
+unchanged, and are normative here rather than merely inherited:
+
+- A cell whose layers are all air is **absent**: its presence bit is clear.
+  Setting the bit and storing a uniform air layer is not an alternative
+  spelling of the same cell.
+- `layerN` is at least 1 for a present cell. A present cell with no layers
+  would be an absent cell written the long way.
+- Trailing all-air layers are dropped and internal ones are kept, for the
+  reason §4.3 gives: layer numbers are semantic.
+- Positions inside a cell but outside the structure's box are **air in every
+  layer**. The box need not be a multiple of 16, so edge cells have padding,
+  and two structures that differ only in that padding are the same structure
+  and MUST encode identically.
 
 The box is covered by 16³ **cells**: `cells{X,Y,Z} = ceil(size/16)`. The cell
 at cell-coordinates (cx, cy, cz) has index
@@ -766,7 +805,7 @@ remain, not from these ceilings.
 | section blob local palette entries | 65 536 (the u16 index width) |
 | state properties per palette entry | 64 |
 | sections per chunk | 4 096 (the full int16 block-Y domain) |
-| layers per section | 256 (Bedrock encodes the storage count in a byte) |
+| layers per section | 255 (Bedrock encodes the storage count in a byte, but the 256th layer is not addressable, see §4.3) |
 | entities / block entities / ticks per chunk | 1 048 576 each |
 | stored frame length (indexed) | 4 294 967 295 |
 

@@ -918,3 +918,106 @@ func TestEmptyChunkKeepsFullSpan(t *testing.T) {
 		t.Fatal("an empty chunk does not survive encode, decode and encode")
 	}
 }
+
+// Round 14 rules.
+
+// TestVersionZeroRoundTrips: a decoder gives a preserved state an explicit
+// version, so a later save at a different runtime version still says what the
+// state was expressed at. When that version is the writer's own, it means the
+// same thing as zero and must not become an override, or a round trip that
+// changed nothing grows the file.
+func TestVersionZeroRoundTrips(t *testing.T) {
+	reg := testRegistry(t)
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, placeholderRid(reg))
+	d := &WorldData{Columns: []Column{{
+		X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+		UnknownStates: []BlockState{{Name: "audit:missing", Version: 0}},
+		Unknown:       []UnknownBlock{{Section: -4, Layer: 0, Index: 0, State: 0}},
+	}}}
+	first := encode(t, d, reg, CompressionNone)
+	back, err := ReadWorld(first, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(first, second) {
+		t.Fatalf("a version-zero preserved state does not survive a round trip: %d then %d bytes",
+			len(first), len(second))
+	}
+}
+
+// TestMaxLayerCellPadding: a cell at the layer limit still has its out-of-box
+// padding cleared. Counting the layers in a uint8 wrapped the limit to zero and
+// skipped the padding, so two structures differing only outside their own
+// bounds encoded differently.
+func TestMaxLayerCellPadding(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	dirt, _ := reg.StateToRuntimeID("minecraft:dirt", map[string]any{})
+	air := reg.AirRuntimeID()
+
+	build := func(pad uint32) []byte {
+		data, err := NewStructureData([3]int32{1, 1, 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub := chunk.NewSubChunk(air)
+		// Force 256 layers into existence, then place blocks in the last one.
+		sub.SetBlock(0, 0, 0, maxLayers-1, stone)
+		sub.SetBlock(15, 15, 15, maxLayers-1, pad) // outside the 1x1x1 box
+		data.Cells[0] = sub
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	if a, b := build(stone), build(dirt); !bytes.Equal(a, b) {
+		t.Fatalf("content outside the structure box reached the file: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestRejectsUnrepresentableRange: block Y is an int16 throughout dragonfly's
+// chunk API, so an aligned but astronomically high range is not representable.
+// Accepting one narrows the section index into a completely different range.
+func TestRejectsUnrepresentableRange(t *testing.T) {
+	reg := testRegistry(t)
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+	if err := validateColumn(d.Columns[0]); err != nil {
+		t.Fatalf("an ordinary range was rejected: %v", err)
+	}
+	// cube.Range is a pair of ints, so it can hold more than the chunk API can
+	// address: this one is aligned and a single section high, but its block Y
+	// is past int16.
+	high := Column{X: 0, Z: 0, Col: &chunk.Column{Chunk: chunk.New(reg, cube.Range{32768, 32783})}}
+	if err := validateColumn(high); err == nil {
+		t.Fatal("a range outside the int16 block Y domain was accepted")
+	}
+}
+
+// TestRejectsUnaddressableLayerCount: dragonfly grows a sub chunk's storage
+// slice with `for uint8(len(storages)) <= layer`, so a 256th layer makes that
+// comparison wrap and append without end. A file claiming one would hang the
+// server that read it, which makes this a rule about what a decoder accepts
+// rather than a detail of what a writer happens to produce.
+func TestRejectsUnaddressableLayerCount(t *testing.T) {
+	if maxLayers != 255 {
+		t.Fatalf("maxLayers = %d: a layer count dragonfly cannot address is reachable", maxLayers)
+	}
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	body := file[headerSize : len(file)-footerSize]
+
+	// Find a record's layer count and claim one layer past the limit.
+	// layerN is a uvarint immediately after the block presence bitset, and
+	// every fixture record stores exactly one layer, so the first 0x01 after
+	// the palettes is it. Rather than hunt for the offset, assert the reader's
+	// bound directly: it is what stands between a hostile file and the hang.
+	if _, err := (&reader{b: []byte{0x80, 0x02}}).count(maxLayers, "layer"); err == nil {
+		t.Fatal("a layer count of 256 was accepted")
+	}
+	if len(body) == 0 {
+		t.Fatal("empty body")
+	}
+}

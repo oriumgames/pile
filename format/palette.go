@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/df-mc/worldupgrader/blockupgrader"
 )
 
@@ -67,19 +68,33 @@ func (b *blockPaletteBuilder) add(rid uint32) uint32 {
 	return i
 }
 
+// normaliseStateVersion folds a state version that equals the palette's own
+// into the zero that means exactly that. A decoder hands preserved states an
+// explicit version (the file's, so a later save at a different runtime version
+// still says what the state was expressed at), and without this fold that
+// explicit value would come back as an override the writer did not need,
+// growing the file on a round trip that changed nothing.
+func normaliseStateVersion(v int32) int32 {
+	if v == chunk.CurrentBlockVersion {
+		return 0
+	}
+	return v
+}
+
 // addState records one reference to an explicit block state that has no
 // runtime ID (an unknown state being preserved through a save). Unknown
 // states never collide with registry-resolvable ones, so keying by canonical
 // state string is safe.
 func (b *blockPaletteBuilder) addState(bs BlockState) uint32 {
-	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(bs.Version))
+	version := normaliseStateVersion(bs.Version)
+	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(version))
 	if i, ok := b.byKey[key]; ok {
 		b.ent[i].count++
 		return i
 	}
 	i := uint32(len(b.ent))
 	b.ent = append(b.ent, blockPaletteEntry{
-		name: bs.Name, props: bs.Properties, key: key, count: 1, version: bs.Version,
+		name: bs.Name, props: bs.Properties, key: key, count: 1, version: version,
 	})
 	b.byKey[key] = i
 	return i

@@ -159,9 +159,15 @@ const (
 	// maxSectionCnt covers the full int16 block-Y domain dragonfly can
 	// address (-32768..32767), which is 4096 sections.
 	maxSectionCnt = 4096
-	// maxLayers matches Bedrock's sub chunk storage count, which is encoded
-	// as a byte on disk.
-	maxLayers = 256
+	// maxLayers is one below Bedrock's byte-encoded sub chunk storage count.
+	// Dragonfly addresses a layer with a uint8 and grows its storage slice
+	// with `for uint8(len(storages)) <= layer`, so a sub chunk holding 256
+	// layers makes that comparison wrap to zero and append without end. A
+	// 256th layer is therefore not merely unusual, it is unreachable: nothing
+	// can read it back and any write to the sub chunk hangs. Accepting one
+	// from a file would hand a hostile world a way to wedge the server, so the
+	// limit is what can actually be addressed.
+	maxLayers = 255
 	// maxDirEntries bounds an indexed directory. The directory is one frame
 	// and every entry costs at least a few bytes, so the ceiling that the
 	// design can actually reach is set by the directory decode limit, not by

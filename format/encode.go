@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -602,8 +603,16 @@ func validateColumn(c Column) error {
 	if c.Col == nil || c.Col.Chunk == nil {
 		return fmt.Errorf("pile: chunk (%d,%d) has no chunk data", c.X, c.Z)
 	}
-	if r := c.Col.Chunk.Range(); !AlignedRange(r) {
+	r := c.Col.Chunk.Range()
+	if !AlignedRange(r) {
 		return fmt.Errorf("pile: chunk (%d,%d) has vertical range %v, which is not 16-block aligned and cannot be stored exactly", c.X, c.Z, r)
+	}
+	// Block Y is an int16 throughout dragonfly's chunk API and the section
+	// index is stored as an int32, so a range outside that is not
+	// representable. Alignment alone would let one through to be silently
+	// narrowed into a completely different range.
+	if r[0] < math.MinInt16 || r[1] > math.MaxInt16 {
+		return fmt.Errorf("pile: chunk (%d,%d) has vertical range %v, which is outside the representable block Y domain", c.X, c.Z, r)
 	}
 	if n := len(c.Col.Entities); n > maxPerChunk {
 		return fmt.Errorf("pile: chunk (%d,%d) has %d entities, limit %d", c.X, c.Z, n, maxPerChunk)

@@ -1013,7 +1013,8 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (fram
 // addState assigns (or returns) the palette index of a preserved unknown
 // state, queueing new entries for the next checkpoint's segment.
 func (w *IndexedWorld) addState(bs BlockState) uint32 {
-	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(bs.Version))
+	version := normaliseStateVersion(bs.Version)
+	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(version))
 	if idx, ok := w.stateIdx[key]; ok {
 		return idx
 	}
@@ -1028,11 +1029,11 @@ func (w *IndexedWorld) addState(bs BlockState) uint32 {
 	w.identity = append(w.identity, idx)
 	w.pendingBlock.str(bs.Name)
 	encodeProps(&w.pendingBlock, bs.Properties)
-	if bs.Version != 0 {
+	if version != 0 {
 		// This state is expressed at a different version than the segment it
 		// lands in (a preserved unknown state carried through compaction).
 		w.pendingOverride = append(w.pendingOverride, paletteOverride{
-			index: uint64(w.pendingBlkN), version: bs.Version,
+			index: uint64(w.pendingBlkN), version: version,
 		})
 	}
 	w.pendingBlkN++
@@ -1220,6 +1221,12 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 			return nil, nil, nil, nil, nil, false, corruptf("decompress record (%d,%d): %v", x, z, err)
 		}
 	} else {
+		// The ceiling is a rule about the record, so an uncompressed one past
+		// it is just as invalid as a compressed one that decodes past it.
+		if len(stored) > maxDecodedFrame {
+			return nil, nil, nil, nil, nil, false,
+				corruptf("record (%d,%d) is %d bytes, limit %d", x, z, len(stored), maxDecodedFrame)
+		}
 		body = stored
 	}
 	return body, w.rids, w.biomeIDs, w.unknown, w.unkStates, w.opts.StoreLight, nil

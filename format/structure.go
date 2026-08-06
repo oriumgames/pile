@@ -91,8 +91,12 @@ func clearPadding(s *StructureData, air uint32) {
 							if x < s.Size[0] && y < s.Size[1] && z < s.Size[2] {
 								continue
 							}
-							for layer := range uint8(len(cell.Layers())) {
-								cell.SetBlock(lx, ly, lz, layer, air)
+							// The layer count is bounded by 256, which does
+							// not fit the uint8 SetBlock takes: counting in
+							// uint8 would wrap the maximum to zero and skip
+							// the padding entirely.
+							for layer := range len(cell.Layers()) {
+								cell.SetBlock(lx, ly, lz, uint8(layer), air)
 							}
 						}
 					}
