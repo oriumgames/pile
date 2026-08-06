@@ -27,21 +27,6 @@ func DimPath(dir string, dim world.Dimension) string {
 	return filepath.Join(dir, name)
 }
 
-// formatDimension maps a dragonfly dimension onto the header field. Custom
-// dimensions have no encoding of their own, so they record themselves as the
-// overworld and rely on their file name, which is what identified them before
-// the field existed.
-func formatDimension(dim world.Dimension) format.Dimension {
-	id, _ := world.DimensionID(dim)
-	switch id {
-	case 1:
-		return format.Nether
-	case 2:
-		return format.End
-	}
-	return format.Overworld
-}
-
 // worldDimensions lists every dimension that has a file in dir: the three
 // vanilla dimensions plus any registered custom dimension with a
 // dim<id>.pile file. Files for unregistered dimension IDs are an error, not
@@ -228,7 +213,10 @@ func (wf *WorldFiles) Write(dir string, reg world.BlockRegistry) error {
 func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegistry) error {
 	_ = os.Remove(tmp)
 	if df.Indexed {
-		iw, err := format.CreateIndexed(tmp, reg, format.Options{Compression: format.CompressionDefault, StoreLight: df.StoreLight})
+		iw, err := format.CreateIndexed(tmp, reg, format.Options{
+			Compression: format.CompressionDefault, StoreLight: df.StoreLight,
+			Dimension: format.DimensionOf(df.Dim),
+		})
 		if err != nil {
 			return err
 		}
@@ -252,7 +240,7 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 	} else {
 		d := &format.WorldData{
 			Settings: wf.Settings, UserData: wf.UserData, Markers: wf.Markers, Border: wf.Border,
-			Columns: df.Columns,
+			Columns: df.Columns, Dimension: format.DimensionOf(df.Dim),
 		}
 		f, err := os.Create(tmp)
 		if err != nil {

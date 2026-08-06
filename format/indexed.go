@@ -5,11 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -172,6 +172,12 @@ type dirEntry struct {
 // CreateIndexed creates a new indexed world file at path. The file is valid
 // (empty, checkpointed) when CreateIndexed returns.
 func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*IndexedWorld, error) {
+	// Validate before touching the filesystem: a rejected option must not
+	// leave a file behind, least of all an empty one that the next call
+	// cannot create over.
+	if opts.Dimension > maxDimension {
+		return nil, fmt.Errorf("pile: dimension %d is reserved", uint8(opts.Dimension))
+	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("pile: create indexed world: %w", err)
@@ -194,9 +200,6 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 	}
 	if opts.StoreLight {
 		flags |= FlagStoreLight
-	}
-	if opts.Dimension > maxDimension {
-		return nil, fmt.Errorf("pile: dimension %d is reserved", uint8(opts.Dimension))
 	}
 	flags |= uint32(opts.Dimension) << dimensionShift
 	hdr.u32(flags)
@@ -887,7 +890,11 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 				}
 				w.unknown = append(w.unknown, int32(len(w.unkStates)))
 				w.unkStates = append(w.unkStates, st)
-				w.stateIdx[stateIdentity(st.Name, st.Properties)+"@"+strconv.Itoa(int(st.Version))] = idx
+				// The same key builder the writer uses: a state stored at the
+				// writer's own version and one stored at no version in
+				// particular are one entry, and keying them apart here would
+				// duplicate it on the next store after a reopen.
+				w.stateIdx[preservedStateKey(st.Name, st.Properties, st.Version)] = idx
 			} else {
 				w.unknown = append(w.unknown, -1)
 				if _, ok := w.blockIdx[rid]; !ok {
@@ -1027,7 +1034,7 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (fram
 // state, queueing new entries for the next checkpoint's segment.
 func (w *IndexedWorld) addState(bs BlockState) uint32 {
 	version := normaliseStateVersion(bs.Version)
-	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(version))
+	key := preservedStateKey(bs.Name, bs.Properties, bs.Version)
 	if idx, ok := w.stateIdx[key]; ok {
 		return idx
 	}
@@ -1067,7 +1074,7 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	// state twice, and the palette holds one entry per unique state: the solid
 	// builder merges such aliases, so indexed mode must too or the same
 	// content would encode differently depending on which writer produced it.
-	key := stateIdentity(name, props) + "@0"
+	key := preservedStateKey(name, props, 0)
 	if idx, ok := w.stateIdx[key]; ok {
 		w.blockIdx[rid] = idx
 		return idx
@@ -1134,6 +1141,76 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 	return idx
 }
 
+// paletteSnapshot records how far the palettes had grown, so a failed Store
+// can wind them back. Every palette structure is append-only within a
+// checkpoint, so lengths are enough to undo one; the maps are the exception
+// and their new keys are removed by name.
+type paletteSnapshot struct {
+	rids, identity       int
+	unknown, unkStates   int
+	blockKeys            []uint32
+	stateKeys            []string
+	biomeKeys            []string
+	biomeIDs, biomeIdent int
+	biomeNames           int
+	biomeUnknown         int
+	pendingBlockLen      int
+	pendingBlkN          int
+	pendingOverride      int
+	pendingBiomeLen      int
+	pendingBioN          int
+}
+
+func (w *IndexedWorld) snapshotPalettes() paletteSnapshot {
+	return paletteSnapshot{
+		rids: len(w.rids), identity: len(w.identity),
+		unknown: len(w.unknown), unkStates: len(w.unkStates),
+		blockKeys: slices.Collect(maps.Keys(w.blockIdx)),
+		stateKeys: slices.Collect(maps.Keys(w.stateIdx)),
+		biomeKeys: slices.Collect(maps.Keys(w.biomeIdx)),
+		biomeIDs:  len(w.biomeIDs), biomeIdent: len(w.biomeIdent),
+		biomeNames: len(w.biomeNames), biomeUnknown: len(w.biomeUnknown),
+		pendingBlockLen: w.pendingBlock.len(), pendingBlkN: w.pendingBlkN,
+		pendingOverride: len(w.pendingOverride),
+		pendingBiomeLen: w.pendingBiome.len(), pendingBioN: w.pendingBioN,
+	}
+}
+
+func (w *IndexedWorld) restorePalettes(s paletteSnapshot) {
+	w.rids = w.rids[:s.rids]
+	w.identity = w.identity[:s.identity]
+	w.unknown = w.unknown[:s.unknown]
+	w.unkStates = w.unkStates[:s.unkStates]
+	keepKeys(w.blockIdx, s.blockKeys)
+	keepKeys(w.stateIdx, s.stateKeys)
+	keepKeys(w.biomeIdx, s.biomeKeys)
+	w.biomeIDs = w.biomeIDs[:s.biomeIDs]
+	w.biomeIdent = w.biomeIdent[:s.biomeIdent]
+	w.biomeNames = w.biomeNames[:s.biomeNames]
+	w.biomeUnknown = w.biomeUnknown[:s.biomeUnknown]
+	w.pendingBlock.b = w.pendingBlock.b[:s.pendingBlockLen]
+	w.pendingBlkN = s.pendingBlkN
+	w.pendingOverride = w.pendingOverride[:s.pendingOverride]
+	w.pendingBiome.b = w.pendingBiome.b[:s.pendingBiomeLen]
+	w.pendingBioN = s.pendingBioN
+}
+
+// keepKeys deletes every key of m that is not in keep.
+func keepKeys[K comparable, V any](m map[K]V, keep []K) {
+	if len(m) == len(keep) {
+		return
+	}
+	set := make(map[K]struct{}, len(keep))
+	for _, k := range keep {
+		set[k] = struct{}{}
+	}
+	for k := range m {
+		if _, ok := set[k]; !ok {
+			delete(m, k)
+		}
+	}
+}
+
 // Store encodes and appends a column, replacing any previous record at its
 // position. The column is read, not retained; the caller keeps ownership.
 func (w *IndexedWorld) Store(c Column) error {
@@ -1155,10 +1232,18 @@ func (w *IndexedWorld) Store(c Column) error {
 	if cr.err != nil {
 		return fmt.Errorf("pile: encode chunk (%d,%d): %w", c.X, c.Z, cr.err)
 	}
+	// Resolving a column appends to the cumulative and pending palettes as it
+	// goes, and the first entry it cannot admit is only reported afterwards.
+	// A rejected Store must leave nothing behind: entries added before the bad
+	// one are valid but unreferenced, and would still reach the next
+	// checkpoint, so an empty world that refused a column would not encode
+	// like an empty world that never saw one.
+	snap := w.snapshotPalettes()
 	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState)
 	if w.paletteErr != nil {
 		err := w.paletteErr
 		w.paletteErr = nil
+		w.restorePalettes(snap)
 		return fmt.Errorf("pile: chunk (%d,%d): %w", c.X, c.Z, err)
 	}
 	cb := buildColBlobs(&ci, w.identity, w.biomeIdent, 0, false)
@@ -1587,6 +1672,10 @@ func (w *IndexedWorld) Compact() error {
 		}
 	})
 	opts, path := w.opts, w.path
+	// Compaction rewrites the file, so it has to carry the header forward:
+	// w.opts came from the caller and never held the dimension the file
+	// records.
+	opts.Dimension = Dimension((w.headerFlags & dimensionMask) >> dimensionShift)
 
 	// Train a shared dictionary from the live record bodies when there is
 	// enough material for it to pay off.

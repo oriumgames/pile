@@ -68,6 +68,15 @@ func (b *blockPaletteBuilder) add(rid uint32) uint32 {
 	return i
 }
 
+// preservedStateKey is the dedup key for a preserved unresolved state. Every
+// place that indexes such a state must build its key the same way, or one path
+// stores under a key another cannot find: the version is normalised here so a
+// state expressed at the writer's own version and one expressed at no version
+// in particular are the same entry, which is what they mean.
+func preservedStateKey(name string, props map[string]any, version int32) string {
+	return stateIdentity(name, props) + "@" + strconv.Itoa(int(normaliseStateVersion(version)))
+}
+
 // normaliseStateVersion folds a state version that equals the palette's own
 // into the zero that means exactly that. A decoder hands preserved states an
 // explicit version (the file's, so a later save at a different runtime version
@@ -87,7 +96,7 @@ func normaliseStateVersion(v int32) int32 {
 // state string is safe.
 func (b *blockPaletteBuilder) addState(bs BlockState) uint32 {
 	version := normaliseStateVersion(bs.Version)
-	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(version))
+	key := preservedStateKey(bs.Name, bs.Properties, bs.Version)
 	if i, ok := b.byKey[key]; ok {
 		b.ent[i].count++
 		return i

@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/df-mc/dragonfly/server/world"
 )
 
 // File magics. Stored as raw byte sequences, not integers, so the bytes "PILE"
@@ -86,6 +87,25 @@ const (
 	// rather than ignoring them, so the encoding stays available.
 	maxDimension = End
 )
+
+// DimensionOf maps a dragonfly dimension onto the header field. Custom
+// dimensions have no encoding of their own, so they record themselves as the
+// overworld and rely on their file name, which is what identified them before
+// the field existed.
+//
+// It lives here rather than in a caller so that every writer answers the
+// question the same way: a world file names its dimension, and a path that
+// forgets to set it silently claims to be the overworld.
+func DimensionOf(dim world.Dimension) Dimension {
+	id, _ := world.DimensionID(dim)
+	switch id {
+	case 1:
+		return Nether
+	case 2:
+		return End
+	}
+	return Overworld
+}
 
 func (d Dimension) String() string {
 	switch d {

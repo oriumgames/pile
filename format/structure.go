@@ -135,6 +135,41 @@ func validateStructureData(s *StructureData) error {
 	return nil
 }
 
+// insideStructure reports whether a preserved-state entry names a position
+// within the declared box. Whole-storage entries cover the cell, so they are
+// inside only when the cell holds no padding at all.
+func insideStructure(s *StructureData, u UnknownBlock) bool {
+	nx, ny, nz := CellDims(s.Size)
+	if u.Section < 0 || int64(u.Section) >= int64(nx)*int64(ny)*int64(nz) {
+		return false
+	}
+	// Inverse of CellIndex: idx = (cx*nz + cz)*ny + cy.
+	cy := u.Section % int32(ny)
+	t := u.Section / int32(ny)
+	cz := t % int32(nz)
+	cx := t / int32(nz)
+	base := [3]int32{cx * 16, cy * 16, cz * 16}
+	if u.Index == WholeStorage {
+		// The entry stands for every position in the cell, so it is only
+		// representable when the whole cell is inside the box.
+		for i := range 3 {
+			if base[i]+16 > s.Size[i] {
+				return false
+			}
+		}
+		return true
+	}
+	local := [3]int32{
+		int32(u.Index>>8) & 0xF, int32(u.Index) & 0xF, int32(u.Index>>4) & 0xF,
+	}
+	for i := range 3 {
+		if base[i]+local[i] >= s.Size[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // WriteStructure encodes a structure file. Output is deterministic.
 func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, opts Options) error {
 	if err := validateStructureData(s); err != nil {
@@ -159,6 +194,14 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	}
 	unknownBySec := make(map[secLayer][]UnknownBlock, len(s.Unknown))
 	for _, u := range s.Unknown {
+		// Padding is cleared to air above, but a sidecar entry describing a
+		// padding position would be reinjected below and put a state back
+		// there. Clearing cannot prevent that on a registry whose placeholder
+		// resolves to air, which is exactly the registry where the two are
+		// indistinguishable, so the entries are dropped by position instead.
+		if !insideStructure(s, u) {
+			continue
+		}
 		k := secLayer{sec: u.Section, layer: u.Layer}
 		unknownBySec[k] = append(unknownBySec[k], u)
 	}

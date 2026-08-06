@@ -1349,3 +1349,142 @@ func TestAbsentBiomeFallbackIsVersionStable(t *testing.T) {
 		t.Fatalf("the fallback resolves to %q, want %q", name, plainsBiomeName())
 	}
 }
+
+// TestRejectedStoreLeavesNoTrace: resolving a column appends to the palettes
+// as it goes, and the first entry that cannot be admitted is only reported
+// afterwards. Entries added before it are valid but unreferenced, and would
+// still reach the next checkpoint, so a world that refused a column would not
+// encode like a world that never saw one.
+func TestRejectedStoreLeavesNoTrace(t *testing.T) {
+	reg := testRegistry(t)
+	build := func(offer bool) int64 {
+		path := filepath.Join(t.TempDir(), "w.pile")
+		w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if offer {
+			props := make(map[string]any, 65)
+			for i := range 65 {
+				props[fmt.Sprintf("p%02d", i)] = int32(i)
+			}
+			c := buildTestColumn(t, reg, 0, 0)
+			c.Col.Chunk.SetBlock(0, -64, 0, 0, placeholderRid(reg))
+			c.UnknownStates = []BlockState{{Name: "audit:toowide", Properties: props, Version: 1}}
+			c.Unknown = []UnknownBlock{{Section: -4, Layer: 0, Index: 0, State: 0}}
+			if err := w.Store(c); err == nil {
+				t.Fatal("the invalid column was accepted")
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	if refused, untouched := build(true), build(false); refused != untouched {
+		t.Fatalf("a refused Store left %d bytes behind: %d vs %d for an untouched world",
+			refused-untouched, refused, untouched)
+	}
+}
+
+// TestPreservedStateSurvivesReopen: a preserved state expressed at the
+// writer's own version means the same as one expressed at no version in
+// particular. Loading a segment and admitting a new entry must therefore build
+// the same dedup key, or reopening a file and storing an unchanged column
+// appends a second copy of a state the palette already holds.
+func TestPreservedStateSurvivesReopen(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	col := func() Column {
+		c := buildTestColumn(t, reg, 0, 0)
+		c.Col.Chunk.SetBlock(0, -64, 0, 0, placeholderRid(reg))
+		c.UnknownStates = []BlockState{{Name: "audit:current", Version: chunk.CurrentBlockVersion}}
+		c.Unknown = []UnknownBlock{{Section: -4, Layer: 0, Index: 0, State: 0}}
+		return c
+	}
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(col()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err = OpenIndexed(path, reg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Column(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(got); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	states, err := v.UnresolvedStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("palette holds %d unresolved states after a reopen and store, want 1: %v",
+			len(states), states)
+	}
+}
+
+// TestStructurePaddingSidecarDropped: positions outside the declared box are
+// cleared to air, but a preserved-state entry naming one would be reinjected
+// afterwards and put a state back there. On a registry whose placeholder
+// resolves to air the clearing cannot be told apart from the injection, so the
+// entries have to go by position.
+func TestStructurePaddingSidecarDropped(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	air := reg.AirRuntimeID()
+
+	build := func(withSidecar bool) []byte {
+		data, err := NewStructureData([3]int32{1, 1, 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub := chunk.NewSubChunk(air)
+		sub.SetBlock(0, 0, 0, 0, stone)
+		data.Cells[0] = sub
+		if withSidecar {
+			data.UnknownStates = []BlockState{{Name: "audit:padding", Version: 1}}
+			// (15,15,15) is inside the cell and outside the 1x1x1 box.
+			data.Unknown = []UnknownBlock{{
+				Section: 0, Layer: 0,
+				Index: uint16(15)<<8 | uint16(15)<<4 | 15, State: 0,
+			}}
+		}
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	with, without := build(true), build(false)
+	if !bytes.Equal(with, without) {
+		t.Fatalf("a preserved state outside the box reached the file: %d vs %d bytes",
+			len(with), len(without))
+	}
+	if bytes.Contains(with, []byte("audit:padding")) {
+		t.Fatal("the out-of-box state is in the palette")
+	}
+}

@@ -117,7 +117,10 @@ func (p *Provider) readahead(dim world.Dimension, pos world.ChunkPos) {
 			// StoreColumn holds p.mu for its whole store, so re-checking the
 			// identity here is sufficient to serialise against it.
 			if now, still := iw.RecordID(n[0], n[1]); still && now == id && !p.closed && ds.cache != nil {
-				ds.cache.put(key, fc.Col, fc.UserData, sidecar{unknown: fc.Unknown, ticks: fc.UnknownTicks, states: fc.UnknownStates})
+				// The same sidecar a direct load caches: building a partial one
+				// here would let cache timing decide whether an unresolved
+				// biome survives the next store.
+				ds.cache.put(key, fc.Col, fc.UserData, sidecarOf(fc))
 			}
 			p.mu.Unlock()
 		}

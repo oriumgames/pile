@@ -1,6 +1,7 @@
 package pile
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -232,3 +233,107 @@ func TestBuilderEntityIDsUnique(t *testing.T) {
 
 // TestExtractCarriesEntityID: an entity whose NBT has no UniqueID yet must
 // keep its stable ID through extraction and paste.
+
+// TestDimensionHeaderSurvivesEveryWriter: the dimension lives in the file
+// header, and every path that writes a world has to set it. A path that forgets
+// leaves the zero value, which is a valid claim to be the overworld, so the
+// mistake is invisible to anything that trusts the file name instead. This test
+// walks each writer and reads the header back.
+func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
+	reg := testRegistry(t)
+	dims := []struct {
+		dim  world.Dimension
+		file string
+		want format.Dimension
+	}{
+		{world.Overworld, "overworld.pile", format.Overworld},
+		{world.Nether, "nether.pile", format.Nether},
+		{world.End, "end.pile", format.End},
+	}
+
+	headerDimension := func(t *testing.T, path string) format.Dimension {
+		t.Helper()
+		// Read the 16-byte header directly: solid and indexed files share it,
+		// and the point is what the bytes say rather than what a decoder makes
+		// of them.
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) < 16 {
+			t.Fatalf("%s is %d bytes", path, len(b))
+		}
+		flags := binary.LittleEndian.Uint32(b[8:12])
+		return format.Dimension((flags >> 5) & 0b111)
+	}
+
+	t.Run("save", func(t *testing.T) {
+		dir := t.TempDir()
+		p, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
+				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			}
+		}
+	})
+
+	t.Run("append", func(t *testing.T) {
+		dir := t.TempDir()
+		p, err := Open(dir, AppendMode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
+				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			}
+		}
+	})
+
+	t.Run("offline rewrite", func(t *testing.T) {
+		dir := t.TempDir()
+		p, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+		wf, err := LoadWorldFiles(dir, reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := wf.Write(dir, reg); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range dims {
+			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
+				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			}
+		}
+	})
+}
