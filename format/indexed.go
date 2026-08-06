@@ -322,22 +322,23 @@ func (w *IndexedWorld) load() error {
 	// Magic and version identify the file; the remaining header fields are
 	// validated against the directory prologue, which the checkpoint hash
 	// authenticates and which therefore survives damage to these 16 bytes.
-	if hdr[6] != KindWorld && hdr[6] != 0xFF {
-		// Kind is checked again from the directory; reject only an explicit
-		// structure header, which is never an indexed world.
-		if hdr[6] == KindStructure {
-			return corruptf("file kind %d is not a world", hdr[6])
-		}
-	}
-	if hdr[7] == ModeSolid {
-		return ErrUnsupportedMode
-	}
 	w.hdrBytes = append([]byte(nil), hdr...)
 	w.headerFlags = binary.LittleEndian.Uint32(hdr[8:12])
 	w.headerBlockVersion = int32(binary.LittleEndian.Uint32(hdr[12:16]))
 	w.compressed = w.headerFlags&FlagUncompressed == 0
 
 	if err := w.adoptCheckpoint(); err != nil {
+		// Only the magic and version have to survive in the physical header,
+		// so kind and mode are not consulted until the directory has had its
+		// chance. Once recovery has failed they are the best explanation
+		// available: a solid or structure file opened as an indexed world has
+		// no directory to find, and that is a clearer answer than corruption.
+		if hdr[7] == ModeSolid {
+			return ErrUnsupportedMode
+		}
+		if hdr[6] == KindStructure {
+			return corruptf("file kind %d is not a world", hdr[6])
+		}
 		return err
 	}
 	// The directory prologue is authoritative and has now been applied; make
@@ -1307,7 +1308,7 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error
 			}
 		}
 	}
-	if err := checkBorderBlob(border); err != nil {
+	if err := checkMetaSchemas(settings, markers, border); err != nil {
 		return err
 	}
 	w.mu.Lock()

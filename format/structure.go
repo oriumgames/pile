@@ -171,11 +171,13 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		if len(layers) > maxLayers {
 			return fmt.Errorf("pile: cell %d has %d layers (limit %d)", i, len(layers), maxLayers)
 		}
-		// Canonicalise like world sections: all-air storages carry no
+		// Canonicalise like world sections: trailing all-air storages carry no
 		// information and are dropped, and a cell left with none is absent.
 		// Without this, a cell that merely had extra air layers allocated
 		// would encode differently from an identical one that did not.
-		cd := cellData{layers: make([]secData, 0, len(layers))}
+		// Internal all-air layers stay: layer numbers are semantic, so an
+		// empty layer 0 under a populated layer 1 is real state.
+		raws := make([]rawBlockSec, 0, len(layers))
 		for l, storage := range layers {
 			// Extract into raw form first so preserved unknown states can be
 			// re-injected before the palette is resolved.
@@ -188,9 +190,16 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 			if entries := unknownBySec[secLayer{sec: int32(i), layer: uint8(l)}]; len(entries) > 0 {
 				injectUnknown(&raw, entries, placeholder, len(s.UnknownStates))
 			}
-			if len(raw.rids) == 1 && raw.rids[0] == air && (raw.states == nil || raw.states[0] < 0) {
-				continue // all-air storage: drop it, like chunk compaction does
-			}
+			raws = append(raws, raw)
+		}
+		for len(raws) > 0 && airOnlyLayer(raws[len(raws)-1], air) {
+			raws = raws[:len(raws)-1]
+		}
+		if len(raws) == 0 {
+			continue
+		}
+		cd := cellData{layers: make([]secData, 0, len(raws))}
+		for _, raw := range raws {
 			pal := make([]uint32, len(raw.rids))
 			for j, rid := range raw.rids {
 				if raw.states != nil && raw.states[j] >= 0 {
@@ -200,9 +209,6 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 				pal[j] = addBlock(rid)
 			}
 			cd.layers = append(cd.layers, secData{pal: pal, idx: raw.idx})
-		}
-		if len(cd.layers) == 0 {
-			continue
 		}
 		cells[i] = cd
 	}

@@ -722,3 +722,199 @@ func TestBiomeNamesAreNamespaced(t *testing.T) {
 		t.Fatal("an unnamespaced biome name was accepted")
 	}
 }
+
+// Round 13 rules.
+
+// TestInternalAirLayerSurvives: layer numbers are semantic. Layer 1 is the
+// waterlogging layer, so dropping an all-air layer 0 beneath it renumbers
+// everything above and turns waterlogging into a solid liquid.
+func TestInternalAirLayerSurvives(t *testing.T) {
+	reg := testRegistry(t)
+	water, _ := reg.StateToRuntimeID("minecraft:water", map[string]any{"liquid_depth": int32(0)})
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, 100, 0, 0, stone) // a different section, so this one stays air
+	ch.SetBlock(5, -60, 5, 1, water) // layer 1 only: layer 0 is uniformly air
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+
+	first := encode(t, d, reg, CompressionNone)
+	got, err := ReadWorld(first, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gc := got.Columns[0].Col.Chunk
+	if rid := gc.Block(5, -60, 5, 1); rid != water {
+		t.Fatalf("water left layer 1 (found %d there): an internal air layer was dropped", rid)
+	}
+	if rid := gc.Block(5, -60, 5, 0); rid == water {
+		t.Fatal("water arrived in layer 0: waterlogging became a liquid block")
+	}
+	if second := encode(t, got, reg, CompressionNone); !bytes.Equal(first, second) {
+		t.Fatal("a chunk with an internal air layer does not survive encode, decode and encode")
+	}
+}
+
+// TestStructureInternalAirLayerSurvives is the same rule for structure cells.
+func TestStructureInternalAirLayerSurvives(t *testing.T) {
+	reg := testRegistry(t)
+	water, _ := reg.StateToRuntimeID("minecraft:water", map[string]any{"liquid_depth": int32(0)})
+	air := reg.AirRuntimeID()
+
+	data, err := NewStructureData([3]int32{16, 16, 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := chunk.NewSubChunk(air)
+	sub.SetBlock(1, 2, 3, 1, water) // layer 1 only
+	data.Cells[0] = sub
+
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadStructure(buf.Bytes(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := got.Cells[0]
+	if cell == nil {
+		t.Fatal("the cell holding only a waterlogging layer was dropped")
+	}
+	if rid := cell.Block(1, 2, 3, 1); rid != water {
+		t.Fatalf("water left layer 1 (found %d there)", rid)
+	}
+}
+
+// TestTrailingAirLayersDropped: the flip side of the rule. A layer past the
+// last stored one already reads as air, so trailing all-air layers must not
+// reach the file, or one chunk would have an encoding per spare layer.
+func TestTrailingAirLayersDropped(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	air := reg.AirRuntimeID()
+
+	bare := chunk.New(reg, cube.Range{-64, 319})
+	bare.SetBlock(0, -64, 0, 0, stone)
+
+	padded := chunk.New(reg, cube.Range{-64, 319})
+	padded.SetBlock(0, -64, 0, 0, stone)
+	padded.SetBlock(0, -64, 0, 3, air) // forces layers 1..3 into existence
+
+	a := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: bare}}}}, reg, CompressionNone)
+	b := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: padded}}}}, reg, CompressionNone)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("spare trailing air layers reached the file: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestRejectsMetaSchemaViolations: §7 fixes the tag of every field it names,
+// and a dynamically typed decoder cannot tell afterwards which tag a value came
+// from, so the blobs have to be right on the way in.
+func TestRejectsMetaSchemaViolations(t *testing.T) {
+	reg := testRegistry(t)
+	write := func(d *WorldData) error {
+		var buf bytes.Buffer
+		return WriteWorld(&buf, d, reg, Options{Compression: CompressionNone})
+	}
+
+	// time is a long, not an int.
+	d := testWorld(t, reg)
+	bad, err := marshalNBT(map[string]any{"name": "x", "time": int32(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Settings = bad
+	if err := write(d); err == nil {
+		t.Fatal("settings with time as an int were accepted")
+	}
+
+	// Markers must be sorted by name, strictly.
+	d = testWorld(t, reg)
+	unsorted, err := marshalNBT(map[string]any{"markers": []map[string]any{
+		{"name": "b", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
+		{"name": "a", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Markers = unsorted
+	if err := write(d); err == nil {
+		t.Fatal("an unsorted marker list was accepted")
+	}
+
+	// A marker position is three doubles.
+	d = testWorld(t, reg)
+	badPos, err := marshalNBT(map[string]any{"markers": []map[string]any{
+		{"name": "a", "kind": "region", "pos": []any{float32(0), float32(0), float32(0)}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Markers = badPos
+	if err := write(d); err == nil {
+		t.Fatal("a marker position of floats was accepted")
+	}
+}
+
+// TestIndexedRecoversDamagedKindAndMode: only the magic and version have to
+// survive in the physical header. Kind and mode are carried by the directory
+// prologue, which the checkpoint hash authenticates, so damage to the physical
+// bytes must not defeat a file that is otherwise intact.
+func TestIndexedRecoversDamagedKindAndMode(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file[6] = KindStructure // kind
+	file[7] = ModeSolid     // mode
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err = OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatalf("a damaged physical kind and mode defeated recovery: %v", err)
+	}
+	defer w.Close()
+	if !w.HeaderDamaged() {
+		t.Fatal("the damaged physical header was not reported")
+	}
+	if w.ChunkCount() != 1 {
+		t.Fatalf("recovered chunks = %d, want 1", w.ChunkCount())
+	}
+}
+
+// TestEmptyChunkKeepsFullSpan: the section span is the chunk's whole vertical
+// range, never trimmed. Trimming would give one chunk several encodings and
+// leave the content outside the span undefined.
+func TestEmptyChunkKeepsFullSpan(t *testing.T) {
+	reg := testRegistry(t)
+	r := cube.Range{-64, 319}
+	ch := chunk.New(reg, r)
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+	file := encode(t, d, reg, CompressionNone)
+	got, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gr := got.Columns[0].Col.Chunk.Range(); gr != r {
+		t.Fatalf("empty chunk came back with range %v, want %v: the span was trimmed", gr, r)
+	}
+	if second := encode(t, got, reg, CompressionNone); !bytes.Equal(file, second) {
+		t.Fatal("an empty chunk does not survive encode, decode and encode")
+	}
+}

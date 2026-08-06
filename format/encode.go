@@ -385,7 +385,7 @@ func validateWorldData(d *WorldData) error {
 			}
 		}
 	}
-	if err := checkBorderBlob(d.Border); err != nil {
+	if err := checkMetaSchemas(d.Settings, d.Markers, d.Border); err != nil {
 		return err
 	}
 	if len(d.Columns) > maxChunks {
@@ -406,6 +406,137 @@ func validateWorldData(d *WorldData) error {
 		}
 	}
 	return nil
+}
+
+// checkMetaSchemas applies every §7 schema. The tag of each specified field is
+// fixed, and a dynamically typed decoder cannot tell afterwards which one a
+// value came from, so the blobs have to be right on the way in.
+func checkMetaSchemas(settings, markers, border []byte) error {
+	if err := checkSettingsBlob(settings); err != nil {
+		return err
+	}
+	if err := checkMarkersBlob(markers); err != nil {
+		return err
+	}
+	return checkBorderBlob(border)
+}
+
+// settingsSchema fixes the tag of every field §7.1 names. Unlisted keys are
+// preserved verbatim and unconstrained, but a listed one carrying the wrong
+// tag makes the same settings expressible two ways.
+var settingsSchema = map[string]string{
+	"name": "string", "time": "int64", "timeCycle": "uint8",
+	"spawnX": "int32", "spawnY": "int32", "spawnZ": "int32",
+	"rainTime": "int64", "raining": "uint8",
+	"thunderTime": "int64", "thundering": "uint8", "weatherCycle": "uint8",
+	"requiredSleepTicks": "int64", "currentTick": "int64",
+	"defaultGameMode": "int32", "difficulty": "int32", "tickRange": "int32",
+}
+
+// checkSettingsBlob enforces the settings schema of §7.1.
+func checkSettingsBlob(b []byte) error {
+	if len(b) == 0 {
+		return nil
+	}
+	m, err := unmarshalNBT(b)
+	if err != nil {
+		return fmt.Errorf("pile: settings blob: %w", err)
+	}
+	for k, want := range settingsSchema {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		if got := fmt.Sprintf("%T", v); got != want {
+			return fmt.Errorf("pile: settings blob: %q is %s, want %s", k, got, want)
+		}
+	}
+	return nil
+}
+
+// checkMarkersBlob enforces the marker schema of §7.2, including the list
+// order. Two blobs listing the same markers in different orders would
+// otherwise both be accepted and copied through verbatim.
+func checkMarkersBlob(b []byte) error {
+	if len(b) == 0 {
+		return nil
+	}
+	m, err := unmarshalNBT(b)
+	if err != nil {
+		return fmt.Errorf("pile: markers blob: %w", err)
+	}
+	raw, ok := m["markers"]
+	if !ok {
+		return nil // no markers is not a malformed marker list
+	}
+	list, err := compoundList(raw)
+	if err != nil {
+		return fmt.Errorf("pile: markers blob: %w", err)
+	}
+	prev := ""
+	for i, mk := range list {
+		name, ok := mk["name"].(string)
+		if !ok {
+			return fmt.Errorf("pile: markers blob: marker %d has no string name", i)
+		}
+		if _, ok := mk["kind"].(string); !ok {
+			return fmt.Errorf("pile: markers blob: marker %q has no string kind", name)
+		}
+		if _, err := doubleTriple(mk["pos"]); err != nil {
+			return fmt.Errorf("pile: markers blob: marker %q pos: %w", name, err)
+		}
+		if i > 0 && name <= prev {
+			return fmt.Errorf("pile: markers blob: marker %q follows %q, want ascending unique names", name, prev)
+		}
+		prev = name
+	}
+	return nil
+}
+
+// compoundList normalises a decoded NBT list of compounds, which arrives as a
+// typed slice or a slice of any depending on how it was built.
+func compoundList(v any) ([]map[string]any, error) {
+	switch l := v.(type) {
+	case []map[string]any:
+		return l, nil
+	case []any:
+		out := make([]map[string]any, len(l))
+		for i, e := range l {
+			c, ok := e.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("element %d is %T, want a compound", i, e)
+			}
+			out[i] = c
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("value is %T, want a list of compounds", v)
+}
+
+// doubleTriple normalises a decoded list of exactly three doubles.
+func doubleTriple(v any) ([3]float64, error) {
+	var out [3]float64
+	switch l := v.(type) {
+	case []float64:
+		if len(l) != 3 {
+			return out, fmt.Errorf("has %d elements, want 3", len(l))
+		}
+		copy(out[:], l)
+		return out, nil
+	case []any:
+		if len(l) != 3 {
+			return out, fmt.Errorf("has %d elements, want 3", len(l))
+		}
+		for i, e := range l {
+			d, ok := e.(float64)
+			if !ok {
+				return out, fmt.Errorf("element %d is %T, want a double", i, e)
+			}
+			out[i] = d
+		}
+		return out, nil
+	}
+	return out, fmt.Errorf("is %T, want a list of three doubles", v)
 }
 
 // checkBorderBlob enforces the border schema of the specification: min and max
@@ -624,12 +755,14 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 			if entries := unknownBySec[secLayer{sec: int32(r[0]>>4) + int32(i), layer: uint8(l)}]; len(entries) > 0 {
 				injectUnknown(&rs, entries, placeholder, len(c.UnknownStates))
 			}
-			if len(rs.rids) == 1 && rs.rids[0] == air && (rs.states == nil || rs.states[0] < 0) {
-				// Air-only layer: drop it, shifting later layers down. This
-				// mirrors what dragonfly's own Compact would do.
-				continue
-			}
 			secs = append(secs, rs)
+		}
+		// Layer numbers are semantic: layer 1 is the waterlogging layer, so an
+		// all-air layer 0 under a populated layer 1 is meaningful state.
+		// Only trailing all-air layers may be dropped, because a layer past
+		// the last stored one already reads as air.
+		for len(secs) > 0 && airOnlyLayer(secs[len(secs)-1], air) {
+			secs = secs[:len(secs)-1]
 		}
 		if len(secs) == 0 {
 			continue
@@ -835,6 +968,12 @@ func extractBiomeRaw(ch *chunk.Chunk, secIdx int) rawBiomeSec {
 	})
 	out.idx = sd.idx
 	return out
+}
+
+// airOnlyLayer reports whether a layer holds nothing but air, carrying no
+// preserved state that would make it worth storing.
+func airOnlyLayer(rs rawBlockSec, air uint32) bool {
+	return len(rs.rids) == 1 && rs.rids[0] == air && (rs.states == nil || rs.states[0] < 0)
 }
 
 // resolveColumn maps a raw column's local palettes into the global palette

@@ -124,9 +124,10 @@ func goldenWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Ascending by name, as §7.2 requires.
 	markers, err := marshalNBT(map[string]any{"markers": []map[string]any{
-		{"name": "spawn", "kind": "spawn", "pos": []any{1.5, 65.0, -2.5}},
 		{"name": "arena", "kind": "region", "pos": []any{0.0, 0.0, 0.0}, "radius": int32(12)},
+		{"name": "spawn", "kind": "spawn", "pos": []any{1.5, 65.0, -2.5}},
 	}})
 	if err != nil {
 		t.Fatal(err)

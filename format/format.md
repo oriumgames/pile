@@ -323,6 +323,21 @@ The same rule applies to indexed directory entries (§5.4).
 
 Nothing may follow the last record.
 
+**Section span.** `minSection` and `sectionN` describe the chunk's whole
+vertical range, section-aligned per §4.4. Writers MUST NOT trim leading or
+trailing empty sections, and an empty chunk carries its dimension's full span
+with every presence bit clear. Trimming would give one chunk several encodings
+and leave the content outside the span undefined; the span costs two varints.
+
+**Layer numbering.** Layer numbers are semantic: layer 0 is the block and layer
+1 is Bedrock's waterlogging layer. A layer therefore cannot be dropped for
+being all air unless every layer above it is dropped too, because removing an
+internal one renumbers the layers above it and turns waterlogging into a solid
+liquid. Writers MUST drop **trailing** all-air layers, since a layer past the
+last stored one already reads as air, and MUST keep internal ones, encoded as
+an ordinary uniform section blob referencing air. A layer holding a preserved
+unresolved state is never all air, whatever its placeholder resolves to.
+
 ### 4.1 Meta block
 
 ```
@@ -347,11 +362,13 @@ keys.
 dx, dz           svarint          chunk position delta from the previous
                                   record (the first record deltas from (0,0))
 minSection       svarint          lowest section index (blockY = section*16)
-sectionN         uvarint          section count (1 ≤ sectionN ≤ 4096)
+sectionN         uvarint          section count (1 ≤ sectionN ≤ 4096);
+                                  the chunk's full vertical range, never trimmed
 blockPresence    bitset(sectionN) bit i set = section i has block data
 present sections, ascending i:
   layerN         uvarint          storage layers (1 ≤ layerN ≤ 256);
-                                  layer 1 is Bedrock's waterlogging layer
+                                  layer 1 is Bedrock's waterlogging layer;
+                                  trailing all-air layers omitted, internal ones kept
   blobRef[layerN] uvarint         blob table references
 biomePresence    bitset(sectionN)
 present biome sections, ascending i:
@@ -461,7 +478,7 @@ The collection orders are:
 |------------|-------|
 | block entities | (y, z, x), then the encoded NBT **as written**, with the x/y/z keys already stripped |
 | entities | `UniqueID`, then the encoded NBT **as written**, with `UniqueID` already set to that value |
-| scheduled updates | position, then firing tick, then block palette reference |
+| scheduled updates | (y, z, x), then firing tick, then block palette reference |
 | structure block entities | (y, z, x), then the encoded NBT as written |
 | structure entities | the encoded NBT alone: a structure entity is a bare compound with no separate ID field, so `UniqueID` is simply one of its keys |
 
@@ -696,11 +713,20 @@ should treat all fields as optional.
 `currentTick` (long), `defaultGameMode` (int), `difficulty` (int),
 `tickRange` (int).
 
+The tag of each listed field is fixed and writers MUST reject a blob carrying
+the wrong one: `time` as an int rather than a long is a different encoding of
+the same setting, and no decoder can tell afterwards. Keys not listed here are
+preserved verbatim and unconstrained.
+
 ### 7.2 Markers
 
 Compound `{markers: [compound]}`; each marker has `name` (string), `kind`
-(string), `pos` (list of 3 doubles), plus arbitrary extra keys. Sorted by
-name.
+(string), `pos` (list of 3 doubles), plus arbitrary extra keys. The list is
+sorted by `name`, **strictly** ascending: names are unique, since two markers
+with one name would have no defined order and no way to be told apart.
+Writers MUST reject an unsorted list rather than copy it through, because the
+same marker collection would otherwise have as many encodings as it has
+permutations.
 
 ### 7.3 Border
 
