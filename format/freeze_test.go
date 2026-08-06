@@ -493,3 +493,232 @@ func TestRecoveredHeaderCheckpointVerifies(t *testing.T) {
 			"directory prologue: got %016x, want %016x", got, want)
 	}
 }
+
+// Round 12 rules.
+
+// aliasRegistry gives one block state two runtime IDs, which a custom registry
+// is free to do. The palette holds one entry per unique state, so both IDs must
+// collapse to a single entry and any section using both must come out uniform.
+type aliasRegistry struct {
+	world.BlockRegistry
+	alias uint32 // the extra ID, a duplicate of alias-1's state
+}
+
+func newAliasRegistry(base world.BlockRegistry) *aliasRegistry {
+	return &aliasRegistry{BlockRegistry: base, alias: uint32(base.BlockCount())}
+}
+
+func (r *aliasRegistry) BlockCount() int { return r.BlockRegistry.BlockCount() + 1 }
+
+func (r *aliasRegistry) RuntimeIDToState(rid uint32) (string, map[string]any, bool) {
+	if rid == r.alias {
+		rid = r.alias - 1
+	}
+	return r.BlockRegistry.RuntimeIDToState(rid)
+}
+
+// TestAliasedRuntimeIDsCollapse: two runtime IDs describing one state must
+// produce one palette entry and, where a section holds only those two, a
+// uniform section. Emitting the reference twice would break the strictly
+// ascending rule the reader enforces, and would hold the section at a wider
+// index than its true entry count needs.
+func TestAliasedRuntimeIDsCollapse(t *testing.T) {
+	reg := newAliasRegistry(testRegistry(t))
+	twin := reg.alias - 1
+
+	// Fill a whole section, so a correct merge leaves it genuinely uniform.
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(-64); y < -48; y++ {
+				rid := twin
+				if (x+z+uint8(y&15))%2 == 0 {
+					rid = reg.alias
+				}
+				ch.SetBlock(x, y, z, 0, rid)
+			}
+		}
+	}
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	// The reader rejects a section palette whose references repeat, so a
+	// failure to merge shows up here first.
+	got, err := ReadWorld(buf.Bytes(), reg)
+	if err != nil {
+		t.Fatalf("aliased runtime IDs produced a file the reader rejects: %v", err)
+	}
+	sub := got.Columns[0].Col.Chunk.Sub()[0]
+	if n := sub.Layers()[0].Palette().Len(); n != 1 {
+		t.Fatalf("section palette has %d entries, want 1: aliased states did not merge", n)
+	}
+
+	// The same content addressed through a single runtime ID must give the
+	// same bytes: which ID a registry happened to hand out is not content.
+	plain := chunk.New(reg, cube.Range{-64, 319})
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(-64); y < -48; y++ {
+				plain.SetBlock(x, y, z, 0, twin)
+			}
+		}
+	}
+	var single bytes.Buffer
+	if err := WriteWorld(&single, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: plain}}}}, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), single.Bytes()) {
+		t.Fatalf("aliased and single-ID encodings differ: %d vs %d bytes", buf.Len(), single.Len())
+	}
+}
+
+// TestIndexedAliasedRuntimeIDsCollapse: indexed palettes are first-seen order,
+// but "one entry per unique state" is not waived by that.
+func TestIndexedAliasedRuntimeIDsCollapse(t *testing.T) {
+	reg := newAliasRegistry(testRegistry(t))
+	twin := reg.alias - 1
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, twin)
+	ch.SetBlock(1, -64, 0, 0, reg.alias)
+	if err := w.Store(Column{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := w.Column(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := got.Col.Chunk.Block(0, -64, 0, 0), got.Col.Chunk.Block(1, -64, 0, 0); a != b {
+		t.Fatalf("aliased states resolved to different blocks %d and %d", a, b)
+	}
+	if n := got.Col.Chunk.Sub()[0].Layers()[0].Palette().Len(); n != 2 {
+		// air plus the one merged state
+		t.Fatalf("section palette has %d entries, want 2: the aliases did not merge", n)
+	}
+}
+
+// TestEntityIDZeroRoundTrips: zero is a legal UniqueID. Replacing it on read
+// would make encode, decode and encode again produce different bytes.
+func TestEntityIDZeroRoundTrips(t *testing.T) {
+	reg := testRegistry(t)
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{
+		Chunk:    ch,
+		Entities: []chunk.Entity{{ID: 0, Data: map[string]any{"identifier": "minecraft:cow"}}},
+	}}}}
+	first := encode(t, d, reg, CompressionNone)
+	back, err := ReadWorld(first, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := back.Columns[0].Col.Entities[0].ID; id != 0 {
+		t.Fatalf("UniqueID 0 came back as %d: the reader rewrote a legal value", id)
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(first, second) {
+		t.Fatal("a zero UniqueID does not survive encode, decode and encode")
+	}
+}
+
+// TestRejectsNonUTF8Strings: the string primitive is UTF-8 by rule, not by
+// description. Palettes are ordered bytewise, so arbitrary bytes would order
+// differently under an implementation that decodes before comparing.
+func TestRejectsNonUTF8Strings(t *testing.T) {
+	reg := testRegistry(t)
+	d := testWorld(t, reg)
+	d.Columns[0].UnknownStates = []BlockState{{Name: string([]byte{0xff}), Version: 1}}
+	d.Columns[0].Unknown = []UnknownBlock{{Section: -4, Layer: 0, Index: 0, State: 0}}
+	d.Columns[0].Col.Chunk.SetBlock(0, -64, 0, 0, placeholderRid(reg))
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+		t.Fatal("a block state name that is not valid UTF-8 was accepted")
+	}
+}
+
+// TestUnknownDefaultBiomePreserved: the default biome can itself be a name no
+// registry resolves, and its sections are elided from the file. Without a
+// sidecar entry for them the name survives in the bytes but not through a read
+// and rewrite.
+func TestUnknownDefaultBiomePreserved(t *testing.T) {
+	reg := testRegistry(t)
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	// The sidecar only re-substitutes where the reader's fallback biome is
+	// still in place, so every section has to hold that fallback. Marking all
+	// of them makes the unresolved name the most common one, which is what
+	// puts it in the header as the default and elides every section.
+	plains := uint32(1)
+	if b, ok := world.BiomeByName(plainsBiomeName()); ok {
+		plains = uint32(b.EncodeBiome())
+	}
+	r := ch.Range()
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(r[0]); y <= int16(r[1]); y++ {
+				ch.SetBiome(x, y, z, plains)
+			}
+		}
+	}
+	var unknownBiomes []UnknownBlock
+	for sec := int32(r[0] >> 4); sec <= int32(r[1]>>4); sec++ {
+		unknownBiomes = append(unknownBiomes, UnknownBlock{
+			Section: sec, Index: WholeStorage, State: 0,
+		})
+	}
+	d := &WorldData{Columns: []Column{{
+		X: 0, Z: 0, Col: &chunk.Column{Chunk: ch},
+		UnknownBiomeNames: []string{"audit:unknown"},
+		UnknownBiomes:     unknownBiomes,
+	}}}
+	first := encode(t, d, reg, CompressionNone)
+	back, err := ReadWorld(first, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Columns[0].UnknownBiomes) == 0 {
+		t.Fatal("the unresolved default biome was not reported: a rewrite renames it")
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(first, second) {
+		t.Fatal("an unresolved default biome does not survive encode, decode and encode")
+	}
+}
+
+// TestBiomeNamesAreNamespaced: biome names are fully qualified on the wire.
+// Dragonfly names vanilla biomes bare, but a bare name is not a stable
+// identifier outside its own registry, and accepting both spellings would give
+// one biome two encodings.
+func TestBiomeNamesAreNamespaced(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	body := file[headerSize : len(file)-footerSize]
+	if !bytes.Contains(body, []byte("minecraft:ocean")) {
+		t.Fatal("the biome palette does not carry a namespaced name")
+	}
+	if bytes.Contains(body, []byte("\x05ocean")) {
+		t.Fatal("the biome palette still carries a bare name")
+	}
+
+	// A bare name is not a second spelling of the same biome; it is invalid.
+	// Rewriting the length prefix and name in place keeps every later offset.
+	patched := bytes.Clone(file)
+	i := bytes.Index(patched, []byte("\x0fminecraft:ocean"))
+	if i < 0 {
+		t.Fatal("namespaced name not found for patching")
+	}
+	copy(patched[i:], append([]byte{0x05}, []byte("oceanXXXXXXXXXX")...))
+	rehashSolid(patched)
+	if _, err := ReadWorld(patched, reg); err == nil {
+		t.Fatal("an unnamespaced biome name was accepted")
+	}
+}

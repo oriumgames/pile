@@ -129,10 +129,23 @@ func translateColumns(cols []format.Column, reg world.BlockRegistry, off cube.Po
 		out := make([]format.Column, len(cols))
 		for i, c := range cols {
 			moveColumnExtras(c.Col, off, report)
+			// Unknown block entries are keyed by section and section-local
+			// index, both unchanged by a chunk-aligned offset with no vertical
+			// component. Unknown ticks are keyed by absolute position, so they
+			// have to move with the updates they describe or the next save
+			// writes the placeholder in place of the preserved state.
+			ticks := make([]format.UnknownTick, len(c.UnknownTicks))
+			for j, ut := range c.UnknownTicks {
+				ut.Pos = [3]int32{
+					ut.Pos[0] + int32(off.X()), ut.Pos[1] + int32(off.Y()), ut.Pos[2] + int32(off.Z()),
+				}
+				ticks[j] = ut
+			}
 			out[i] = format.Column{
 				X: c.X + int32(off.X()>>4), Z: c.Z + int32(off.Z()>>4),
 				Col: c.Col, UserData: c.UserData,
-				Unknown: c.Unknown, UnknownTicks: c.UnknownTicks, UnknownStates: c.UnknownStates,
+				Unknown: c.Unknown, UnknownTicks: ticks, UnknownStates: c.UnknownStates,
+				UnknownBiomes: c.UnknownBiomes, UnknownBiomeNames: c.UnknownBiomeNames,
 			}
 		}
 		return out, nil

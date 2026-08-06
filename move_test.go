@@ -11,6 +11,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
+	"github.com/oriumgames/pile/format"
 )
 
 // buildMoveWorld creates a small on-disk world with a platform, block entity,
@@ -259,5 +260,64 @@ func TestMoveKeepsUnreadableEntities(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("move dropped an entity whose Pos could not be parsed")
+	}
+}
+
+// TestMoveFastPathKeepsSidecars: the fast path only re-keys columns, so it has
+// to carry the preservation sidecars across itself. Unknown ticks are keyed by
+// absolute position and must move with the updates they describe; unknown
+// biomes are keyed by section and survive an offset with no vertical
+// component untouched, but only if they are carried at all.
+func TestMoveFastPathKeepsSidecars(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := buildSidecarColumn(t, reg)
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col.Col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	moved, err := translateColumns([]format.Column{col}, reg, cube.Pos{16, 0, 0}, &MoveReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := moved[0]
+	if len(got.UnknownBiomes) != len(col.UnknownBiomes) || len(got.UnknownBiomeNames) == 0 {
+		t.Fatalf("move dropped the unknown biome sidecar: %d entries, %d names",
+			len(got.UnknownBiomes), len(got.UnknownBiomeNames))
+	}
+	if len(got.UnknownTicks) != 1 {
+		t.Fatalf("move dropped the unknown tick sidecar: %d entries", len(got.UnknownTicks))
+	}
+	want := col.UnknownTicks[0].Pos
+	want[0] += 16
+	if got.UnknownTicks[0].Pos != want {
+		t.Fatalf("unknown tick position = %v, want %v: the sidecar key did not move with the update",
+			got.UnknownTicks[0].Pos, want)
+	}
+}
+
+// buildSidecarColumn makes a column carrying every preservation sidecar.
+func buildSidecarColumn(t *testing.T, reg world.BlockRegistry) format.Column {
+	t.Helper()
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	stone := reg.BlockRuntimeID(block.Stone{})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	return format.Column{
+		X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch, ScheduledBlocks: []chunk.ScheduledBlockUpdate{
+			{Pos: cube.Pos{2, -60, 3}, Block: stone, Tick: 40},
+		}},
+		UnknownStates:     []format.BlockState{{Name: "audit:missing", Version: 1}},
+		UnknownTicks:      []format.UnknownTick{{Pos: [3]int32{2, -60, 3}, At: 40, State: 0}},
+		UnknownBiomeNames: []string{"audit:biome"},
+		UnknownBiomes:     []format.UnknownBlock{{Section: -4, Index: format.WholeStorage, State: 0}},
 	}
 }

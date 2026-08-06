@@ -28,7 +28,7 @@ All fixed-width integers are **little-endian**.
 | `u8`, `u16`, `u32`, `u64`, `i32` | fixed-width little-endian |
 | `uvarint` | unsigned LEB128 (Go `binary.PutUvarint`): 7 bits per byte, high bit = continuation. MUST be minimal: decoders reject overlong encodings |
 | `svarint` | zigzag-encoded LEB128 (Go `binary.PutVarint`): value `v` maps to `uvarint((v << 1) ^ (v >> 63))`. MUST be minimal |
-| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 536 (64 KiB) |
+| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 536 (64 KiB), and MUST reject bytes that are not valid UTF-8: strings are compared bytewise when ordering palettes, so arbitrary bytes would order differently under an implementation that decodes before comparing |
 | `blob`   | `uvarint` byte length + raw bytes. Decoders MUST reject lengths > 16 777 216 (16 MiB) |
 | `bitset(n)` | `ceil(n/8)` bytes; bit `i` is bit `i%8` of byte `i/8` (LSB-first). Padding bits above `n` MUST be zero |
 
@@ -244,8 +244,13 @@ count            uvarint
 name[count]      string           e.g. "minecraft:plains"
 ```
 
-Names, not numeric IDs, so entries stay stable across game versions. Unknown biomes decode as
-`minecraft:plains`.
+Names, not numeric IDs, so entries stay stable across game versions. Names are
+**fully qualified**: every one contains a namespace and a colon, and a bare
+name such as `plains` is invalid rather than a second spelling of
+`minecraft:plains`. Servers whose own registries name vanilla biomes without a
+namespace qualify them at the boundary. Unknown biomes decode as
+`minecraft:plains` while the palette entry keeps the original name, so a read
+and rewrite does not rename them.
 
 ### 3.3 Section blob
 
@@ -394,6 +399,13 @@ floats), `Rotation`/`Yaw`/`Pitch`, `Motion`, and a `UniqueID` (long) which the
 reference implementation surfaces as the entity's stable id. The format does
 not interpret entity NBT beyond `UniqueID`.
 
+Writers MUST store `UniqueID` as a long and readers MUST take it verbatim.
+**Zero is a legal value**, and rewriting it (to avoid collisions in some other
+storage layer, say) would mean encode, decode and encode again produce
+different bytes. A reader that meets a compound with no `UniqueID`, or one of
+the wrong type, may substitute an id of its choosing, since no conforming
+writer produces that.
+
 ### 4.6 Light (flag StoreLight)
 
 ```
@@ -425,19 +437,38 @@ consumer.
 When flag `DefaultBiome` is set, `defaultBiomeRef` (flags bits 16–31) names a
 global biome palette entry. Sections whose biomes are uniformly that biome are
 omitted from `biomePresence`; decoders fill absent sections with the default.
-Writers pick the biome with the most uniform sections. Without the flag,
-absent biome sections decode as biome id 0.
+Writers pick the biome with the most uniform sections, breaking ties by the
+**lowest global biome palette reference**. Without a tie-break two conforming
+writers could set a different `defaultBiomeRef` and clear a different presence
+bit for the same world. Without the flag, absent biome sections decode as
+biome id 0.
+
+A default biome may itself be a name no registry resolves. Readers that
+preserve unresolved biomes MUST report the elided sections through the same
+mechanism they use for stored ones, or a read and rewrite renames the biome to
+the reader's fallback.
 
 ### 4.8 Determinism
 
 Writers targeting deterministic output MUST: sort records by Morton key; sort
-the block palette by reference count (ties: canonical state string, then the
-length-prefixed identity) and the biome palette by reference count (ties:
-name); emit canonical section blobs (§3.3); sort NBT compound keys; and sort
-every per-column collection totally — block entities by (y, z, x) then
-encoded NBT, entities by id then encoded NBT, scheduled updates by position,
-tick and block reference. Structure block entities and entities follow the
-same rule.
+the block palette as §3.1 specifies and the biome palette by reference count
+(ties: name); emit canonical section blobs (§3.3); sort NBT compound keys; and
+sort every per-column collection totally.
+
+The collection orders are:
+
+| collection | order |
+|------------|-------|
+| block entities | (y, z, x), then the encoded NBT **as written**, with the x/y/z keys already stripped |
+| entities | `UniqueID`, then the encoded NBT **as written**, with `UniqueID` already set to that value |
+| scheduled updates | position, then firing tick, then block palette reference |
+| structure block entities | (y, z, x), then the encoded NBT as written |
+| structure entities | the encoded NBT alone: a structure entity is a bare compound with no separate ID field, so `UniqueID` is simply one of its keys |
+
+The tie-break is the bytes that get written, not the caller's value. A block
+entity's x/y/z are stripped on encode and an entity's `UniqueID` is replaced
+with its authoritative ID, so ordering on the unprojected input would let
+discarded values decide the file.
 
 Two caveats on file identity:
 

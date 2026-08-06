@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"unicode/utf8"
 )
 
 // writer is an append-only byte buffer with typed little-endian writes.
@@ -48,6 +49,14 @@ func checkBlob(p []byte, what string) error {
 func checkString(s, what string) error {
 	if len(s) > maxStringLen {
 		return fmt.Errorf("pile: %s is %d bytes, limit %d", what, len(s), maxStringLen)
+	}
+	// The format's string primitive is UTF-8, which is a validity rule and not
+	// a description: block state names, property values and biome names are
+	// ordered bytewise, and a file that smuggles arbitrary bytes through them
+	// would order differently under an implementation that decodes strings
+	// before comparing.
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("pile: %s is not valid UTF-8", what)
 	}
 	return nil
 }
@@ -174,6 +183,9 @@ func (r *reader) str() (string, error) {
 	p, err := r.take(n)
 	if err != nil {
 		return "", err
+	}
+	if !utf8.Valid(p) {
+		return "", corruptf("string is not valid UTF-8")
 	}
 	return string(p), nil
 }

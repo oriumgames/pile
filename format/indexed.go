@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/cespare/xxhash/v2"
@@ -442,6 +443,10 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.rids, w.identity = nil, nil
 	w.unknown, w.unkStates = nil, nil
 	w.biomeIDs, w.biomeNames, w.biomeIdent = nil, nil, nil
+	// The unknown-biome mapping is indexed by palette reference, so leaving it
+	// behind would reinterpret the next directory's references through the
+	// previous one's names.
+	w.biomeUnknown, w.biomeUnkName = nil, nil
 	w.metaRef, w.dirRef = frameRef{}, frameRef{}
 	w.footerPending = false
 	w.recovered = false
@@ -949,6 +954,12 @@ func (w *IndexedWorld) readFrame(ref frameRef) ([]byte, error) {
 		return nil, err
 	}
 	if !w.compressed {
+		// Same ceiling as the compressed path: the limit is a validity rule
+		// about the frame, so one encoding of it cannot be legal while the
+		// other is not.
+		if len(buf) > maxDecodedFrame {
+			return nil, corruptf("frame is %d bytes, limit %d", len(buf), maxDecodedFrame)
+		}
 		return buf, nil
 	}
 	dec := sharedFrameDecoder()
@@ -1037,11 +1048,21 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	if !found {
 		name, props = "minecraft:air", nil
 	}
+	// Key by the state, not by the runtime ID. A registry may number the same
+	// state twice, and the palette holds one entry per unique state: the solid
+	// builder merges such aliases, so indexed mode must too or the same
+	// content would encode differently depending on which writer produced it.
+	key := stateIdentity(name, props) + "@0"
+	if idx, ok := w.stateIdx[key]; ok {
+		w.blockIdx[rid] = idx
+		return idx
+	}
 	if err := w.reservePaletteEntry(checkState(name, props)); err != nil {
 		return 0
 	}
 	idx := uint32(len(w.rids))
 	w.blockIdx[rid] = idx
+	w.stateIdx[key] = idx
 	w.rids = append(w.rids, rid)
 	w.unknown = append(w.unknown, -1)
 	w.identity = append(w.identity, idx)
@@ -1072,12 +1093,23 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 	if idx, ok := w.biomeIdx[name]; ok {
 		return idx
 	}
+	if err := w.reservePaletteEntry(checkString(name, "biome name")); err != nil {
+		return 0
+	}
+	if !strings.Contains(name, ":") {
+		w.reservePaletteEntry(fmt.Errorf("pile: biome name %q is not namespaced", name))
+		return 0
+	}
+	if len(w.biomeNames) >= maxPalette {
+		w.reservePaletteEntry(fmt.Errorf("pile: %d biomes exceeds limit %d", len(w.biomeNames)+1, maxPalette))
+		return 0
+	}
 	idx := uint32(len(w.biomeNames))
 	w.biomeIdx[name] = idx
 	w.biomeNames = append(w.biomeNames, name)
 	w.biomeIdent = append(w.biomeIdent, idx)
 	id := uint32(1)
-	if b, ok := world.BiomeByName(name); ok {
+	if b, ok := lookupBiome(name); ok {
 		id = uint32(b.EncodeBiome())
 	}
 	w.biomeIDs = append(w.biomeIDs, id)
@@ -1195,7 +1227,9 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 // applyRecordBody decodes a fetched record body into a Column.
 func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, storeLight bool, x, z int32) (Column, error) {
 	r := &reader{b: body}
-	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), 0, false, storeLight, unknown, unkStates,
+	// Indexed mode never elides a biome section, so it has no default and no
+	// default-biome sidecar.
+	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), 0, false, storeLight, -1, unknown, unkStates,
 		w.biomeUnknown, w.biomeUnkName,
 		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z)
 	if err != nil {
@@ -1646,6 +1680,9 @@ func decodeDirBody(buf []byte, compressed bool) ([]byte, bool) {
 		// A raw directory starts with the prologue's kind byte, which is the
 		// only value a valid uncompressed directory can begin with.
 		if len(buf) == 0 || (buf[0] != KindWorld && buf[0] != KindStructure) {
+			return nil, false
+		}
+		if len(buf) > maxDecodedDirectory {
 			return nil, false
 		}
 		return buf, true

@@ -558,6 +558,9 @@ func (b *biomePaletteBuilder) finalize() (encoded []byte, remap []uint32, err er
 		if err := checkString(b.ent[build].name, "biome name"); err != nil {
 			return nil, nil, err
 		}
+		if !strings.Contains(b.ent[build].name, ":") {
+			return nil, nil, fmt.Errorf("pile: biome name %q is not namespaced", b.ent[build].name)
+		}
 		w.str(b.ent[build].name)
 	}
 	return w.bytes(), remap, nil
@@ -583,12 +586,17 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 		if err != nil {
 			return nil, nil, nil, err
 		}
+		// Biome names are fully qualified on the wire. Accepting the bare
+		// form too would give one biome two encodings.
+		if !strings.Contains(name, ":") {
+			return nil, nil, nil, corruptf("biome name %q is not namespaced", name)
+		}
 		unknown[i] = -1
-		bio, ok := world.BiomeByName(name)
+		bio, ok := lookupBiome(name)
 		if !ok {
 			unknown[i] = int32(len(names))
 			names = append(names, name)
-			bio, ok = world.BiomeByName("minecraft:plains")
+			bio, ok = lookupBiome(plainsBiomeName())
 		}
 		if ok {
 			ids[i] = uint32(bio.EncodeBiome())
@@ -599,10 +607,36 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 	return ids, unknown, names, nil
 }
 
-// biomeName resolves a numeric biome ID to its name, falling back to plains.
+// biomeName resolves a numeric biome ID to its canonical name, falling back to
+// plains.
 func biomeName(id uint32) string {
 	if b, ok := world.BiomeByID(int(id)); ok {
-		return b.String()
+		return qualifyBiome(b.String())
 	}
-	return "minecraft:plains"
+	return plainsBiomeName()
+}
+
+// qualifyBiome returns a biome identifier in the canonical namespaced form.
+// Dragonfly names vanilla biomes without a namespace, but a bare name is not a
+// stable identifier outside its own registry, and the wire form has to mean the
+// same thing to an implementation that has never heard of dragonfly.
+func qualifyBiome(name string) string {
+	if strings.Contains(name, ":") {
+		return name
+	}
+	return "minecraft:" + name
+}
+
+// lookupBiome resolves a canonical biome name, accounting for dragonfly
+// storing vanilla biomes unnamespaced.
+func lookupBiome(name string) (world.Biome, bool) {
+	if b, ok := world.BiomeByName(name); ok {
+		return b, true
+	}
+	if rest, cut := strings.CutPrefix(name, "minecraft:"); cut {
+		if b, ok := world.BiomeByName(rest); ok {
+			return b, true
+		}
+	}
+	return nil, false
 }

@@ -94,6 +94,13 @@ func parseFrame(file []byte) (header, []byte, error) {
 // decompressBody returns the raw body bytes, decompressing when needed.
 func decompressBody(h header, stored []byte) ([]byte, error) {
 	if h.flags&FlagUncompressed != 0 {
+		// The ceiling is a validity rule about the body, not a guard against
+		// decompression: an uncompressed body past it is just as invalid, and
+		// accepting one here would make the same content legal in one
+		// encoding and illegal in the other.
+		if len(stored) > maxDecodedBody {
+			return nil, corruptf("body is %d bytes, limit %d", len(stored), maxDecodedBody)
+		}
 		return stored, nil
 	}
 	body, err := sharedDecoder().DecodeAll(stored, nil)
@@ -202,6 +209,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	}
 
 	var defaultBiome uint32
+	defaultUnknown := int32(-1)
 	haveDefault := h.flags&FlagDefaultBiome != 0
 	if haveDefault {
 		ref := h.flags >> defaultBiomeShift
@@ -209,6 +217,9 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 			return nil, corruptf("default biome reference %d out of range", ref)
 		}
 		defaultBiome = biomeIDs[ref]
+		if bioUnknown != nil {
+			defaultUnknown = bioUnknown[ref]
+		}
 	}
 
 	chunkN, err := r.count(maxChunks, "chunk")
@@ -266,7 +277,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	cols := make([]Column, len(raws))
 	errs := make([]error, len(raws))
 	parallelFor(len(raws), 0, func(i int) {
-		cols[i], errs[i] = applyRecord(&raws[i], reg, rids, biomeIDs, air, defaultBiome, haveDefault, unknown, unkStates, bioUnknown, bioNames)
+		cols[i], errs[i] = applyRecord(&raws[i], reg, rids, biomeIDs, air, defaultBiome, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
 	})
 	for _, err := range errs {
 		if err != nil {
@@ -496,7 +507,7 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 
 // applyRecord turns a parsed record into a Column: chunk construction, blob
 // application and NBT decoding. Safe to run in parallel across records.
-func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault bool, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string) (Column, error) {
+func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string) (Column, error) {
 	x, z := rr.x, rr.z
 	rng := cube.Range{int(rr.minSection) * 16, int(rr.minSection+int64(rr.sectionN))*16 - 1}
 	ch := chunk.New(reg, rng)
@@ -541,6 +552,16 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		if rr.bioPresence[i/8]&(1<<(i%8)) == 0 {
 			if haveDefault && defaultBiome != 0 {
 				fillBiome(ch, i, defaultBiome)
+			}
+			// An elided section is uniformly the default biome, and the
+			// default can itself be a name no registry resolves. Without a
+			// sidecar entry the name survives in the file but not through a
+			// read and rewrite, which would quietly rename it to the fallback.
+			if defaultUnknown >= 0 {
+				col.UnknownBiomes = append(col.UnknownBiomes, UnknownBlock{
+					Section: int32(rr.minSection) + int32(i), Index: WholeStorage,
+					State: uint32(defaultUnknown),
+				})
 			}
 			continue
 		}
@@ -588,12 +609,14 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 			return Column{}, err
 		}
 		id, ok := data["UniqueID"].(int64)
-		if !ok || id == 0 {
-			// Records written by other tools may lack a usable UniqueID.
-			// Leaving them all at zero would make them collide (leveldb keys
-			// entities by ID), so derive a stable non-zero one from the
-			// chunk position and index: the same record always yields the
-			// same ID, and encoding writes it back.
+		if !ok {
+			// A conforming writer always stores UniqueID as a long, so this
+			// is only reachable for foreign input. Zero is a legal value and
+			// is kept verbatim: rewriting it would make encode, decode and
+			// encode again produce different bytes. Only a missing or
+			// wrongly typed field is replaced, with a value derived from the
+			// chunk position and index so the same record always yields the
+			// same ID.
 			id = syntheticEntityID(x, z, i)
 			data["UniqueID"] = id
 		}
@@ -628,12 +651,12 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 
 // decodeRecordBody parses and applies a chunk record in one step (indexed
 // mode's single-column path).
-func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault, haveLight bool, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
+func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault, haveLight bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
 	rr, err := parseRecordBody(r, src, haveLight, x, z)
 	if err != nil {
 		return Column{}, err
 	}
-	return applyRecord(&rr, reg, rids, biomeIDs, air, defaultBiome, haveDefault, unknown, unkStates, bioUnknown, bioNames)
+	return applyRecord(&rr, reg, rids, biomeIDs, air, defaultBiome, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
 }
 
 // blobIndices decodes a blob's 4096 local indices into out, validating them

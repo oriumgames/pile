@@ -82,29 +82,41 @@ func (sd secData) uniform() (uint32, bool) {
 // remapped accordingly. Identical content therefore yields identical bytes
 // regardless of the order values were first seen in.
 func canonicalBlob(sd secData, remap []uint32) []byte {
-	n := len(sd.pal)
-	final := make([]uint32, n)
+	final := make([]uint32, len(sd.pal))
 	for i, b := range sd.pal {
 		final[i] = remap[b]
 	}
 
 	// order[newLocal] = oldLocal, sorted by final reference.
-	order := make([]uint16, n)
+	order := make([]uint16, len(final))
 	for i := range order {
 		order[i] = uint16(i)
 	}
 	slices.SortFunc(order, func(a, b uint16) int {
 		return int(final[a]) - int(final[b])
 	})
-	inv := make([]uint16, n)
-	for newLocal, oldLocal := range order {
-		inv[oldLocal] = uint16(newLocal)
+
+	// Two local entries can point at one global entry: the global palette
+	// merges states that encode identically, so distinct runtime IDs that
+	// describe the same state arrive here already collapsed. Local references
+	// must strictly ascend, so the duplicates are folded away here too. Left
+	// in, they would emit a reference twice (which readers reject) and could
+	// hold a section at a wider index than its true entry count needs.
+	inv := make([]uint16, len(final))
+	refs := make([]uint32, 0, len(final))
+	for _, oldLocal := range order {
+		ref := final[oldLocal]
+		if len(refs) == 0 || refs[len(refs)-1] != ref {
+			refs = append(refs, ref)
+		}
+		inv[oldLocal] = uint16(len(refs) - 1)
 	}
+	n := len(refs)
 
 	w := &writer{b: make([]byte, 0, 16+4096)}
 	w.uvarint(uint64(n))
-	for _, oldLocal := range order {
-		w.uvarint(uint64(final[oldLocal]))
+	for _, ref := range refs {
+		w.uvarint(uint64(ref))
 	}
 	switch {
 	case n <= 1:

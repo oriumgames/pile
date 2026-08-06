@@ -307,6 +307,9 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	table.encode(body)
 	body.raw(rec.bytes())
 
+	if n := body.len(); n > maxDecodedBody {
+		return fmt.Errorf("pile: structure body is %d bytes, limit %d", n, maxDecodedBody)
+	}
 	flags := uint32(0)
 	stored := body.bytes()
 	if opts.Compression == CompressionNone {
