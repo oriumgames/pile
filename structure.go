@@ -235,7 +235,9 @@ func extractChunkRegion(s *Structure, col *chunk.Column, cx, cz int32, lo, hi cu
 	y0 := max(r[0], lo.Y())
 	y1 := min(r[1], hi.Y())
 
-	layerN := chunkLayers(ch)
+	// A preserved state can name a layer with no storage of its own, so the
+	// traversal ceiling covers whatever the sidecar reaches too.
+	layerN := max(chunkLayers(ch), sidecarLayers(unknown))
 	for wx := x0; wx <= x1; wx++ {
 		for wz := z0; wz <= z1; wz++ {
 			for wy := y0; wy <= y1; wy++ {

@@ -721,10 +721,6 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 	})
 
 	// Preserved unknown states, grouped by section and layer.
-	type secLayer struct {
-		sec   int32
-		layer uint8
-	}
 	var unknownBySec map[secLayer][]UnknownBlock
 	if len(c.Unknown) > 0 {
 		unknownBySec = make(map[secLayer][]UnknownBlock)
@@ -759,28 +755,25 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 	for i, sub := range subs {
 		layers := sub.Layers()
 		sec := int32(r[0]>>4) + int32(i)
-		if len(layers) == 0 {
-			// An empty section still has to carry preserved states. On a
-			// registry whose placeholder resolves to air, a section holding
-			// nothing but unresolved blocks has no storages at all, and
-			// skipping it would drop the only record that they were ever
-			// there.
-			if entries := unknownBySec[secLayer{sec: sec, layer: 0}]; len(entries) > 0 {
-				rs := rawBlockSec{rids: []uint32{air}}
-				injectUnknown(&rs, entries, placeholder, len(c.UnknownStates))
-				if !airOnlyLayer(rs, air) {
-					cr.blockSecs[i] = []rawBlockSec{rs}
-				}
-			}
+		// A preserved state can name a layer the runtime never allocated: on a
+		// registry whose placeholder resolves to air, a layer holding only
+		// unresolved blocks has no storage, and neither does the section
+		// beneath it. Walking only the allocated layers would drop exactly
+		// those entries, so the walk covers whatever the sidecar reaches.
+		n := max(len(layers), sidecarLayers(unknownBySec, sec))
+		if n == 0 {
 			continue
 		}
-		if len(layers) > maxLayers {
-			cr.err = fmt.Errorf("section %d has %d layers (limit %d)", i, len(layers), maxLayers)
+		if n > maxLayers {
+			cr.err = fmt.Errorf("section %d has %d layers (limit %d)", i, n, maxLayers)
 			return cr
 		}
-		secs := make([]rawBlockSec, 0, len(layers))
-		for l, storage := range layers {
-			rs := extractBlockRaw(storage)
+		secs := make([]rawBlockSec, 0, n)
+		for l := range n {
+			rs := rawBlockSec{rids: []uint32{air}}
+			if l < len(layers) {
+				rs = extractBlockRaw(layers[l])
+			}
 			// Inject preserved states first: with a registry where the
 			// placeholder resolves to air, an air-only test before injection
 			// would discard the layer and lose them.
@@ -1096,6 +1089,24 @@ func extractBiomeRaw(ch *chunk.Chunk, secIdx int) rawBiomeSec {
 	})
 	out.idx = sd.idx
 	return out
+}
+
+// secLayer identifies one section's storage layer.
+type secLayer struct {
+	sec   int32
+	layer uint8
+}
+
+// sidecarLayers returns how many layers a section's preserved-state entries
+// reach, so a layer the runtime never allocated is still written.
+func sidecarLayers(unknownBySec map[secLayer][]UnknownBlock, sec int32) int {
+	n := 0
+	for k := range unknownBySec {
+		if k.sec == sec && int(k.layer)+1 > n {
+			n = int(k.layer) + 1
+		}
+	}
+	return n
 }
 
 // airOnlyLayer reports whether a layer holds nothing but air, carrying no

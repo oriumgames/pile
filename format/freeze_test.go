@@ -1912,3 +1912,130 @@ func TestRejectsOversizedFrameLength(t *testing.T) {
 		}
 	}
 }
+
+// Round 20 rules.
+
+// TestUnknownStateAboveAllocatedLayers: a preserved state can name a layer the
+// runtime never allocated. On a registry whose placeholder resolves to air, a
+// layer holding only unresolved blocks has no storage, and neither does the
+// section beneath it, so a writer that walks only allocated layers drops
+// exactly the entries the sidecar exists for. An all-air object and one
+// carrying an unresolved layer-1 state would then encode identically.
+func TestUnknownStateAboveAllocatedLayers(t *testing.T) {
+	reg := newNoPlaceholderRegistry(testRegistry(t))
+	build := func(withState bool) []byte {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		c := Column{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}
+		if withState {
+			c.UnknownStates = []BlockState{{Name: "audit:layer1", Version: 1}}
+			c.Unknown = []UnknownBlock{{
+				Section: -4, Layer: 1, Index: WholeStorage, State: 0,
+			}}
+		}
+		var buf bytes.Buffer
+		if err := WriteWorld(&buf, &WorldData{Columns: []Column{c}}, reg,
+			Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	with, without := build(true), build(false)
+	if bytes.Equal(with, without) {
+		t.Fatal("an unresolved state in an unallocated layer encodes like an empty world")
+	}
+	if !bytes.Contains(with, []byte("audit:layer1")) {
+		t.Fatal("the state is not in the palette")
+	}
+	back, err := ReadWorld(with, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(back.Columns[0].Unknown); n != 1 || back.Columns[0].Unknown[0].Layer != 1 {
+		t.Fatalf("recovered %d entries at %v, want one in layer 1", n, back.Columns[0].Unknown)
+	}
+	// Layer 0 has to survive as an internal all-air layer, or layer 1 would
+	// have been renumbered on the way out.
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(with, second) {
+		t.Fatal("a state above the allocated layers does not survive a round trip")
+	}
+}
+
+// TestStructureUnknownStateAboveAllocatedLayers is the same rule for cells.
+func TestStructureUnknownStateAboveAllocatedLayers(t *testing.T) {
+	reg := newNoPlaceholderRegistry(testRegistry(t))
+	build := func(withState bool) []byte {
+		data, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if withState {
+			data.UnknownStates = []BlockState{{Name: "audit:layer1", Version: 1}}
+			data.Unknown = []UnknownBlock{{
+				Section: 0, Layer: 1, Index: WholeStorage, State: 0,
+			}}
+		}
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	with, without := build(true), build(false)
+	if bytes.Equal(with, without) {
+		t.Fatal("an unresolved state in an unallocated cell layer encodes like an empty structure")
+	}
+	got, err := ReadStructure(with, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(got.Unknown); n != 1 || got.Unknown[0].Layer != 1 {
+		t.Fatalf("recovered %d entries at %v, want one in layer 1", n, got.Unknown)
+	}
+}
+
+// TestRejectedStoreRollsBackEveryPath: the palette snapshot was restored only
+// when the palette itself reported the error. A record too large to write, a
+// frame that will not append and a full directory all leave the same
+// unreferenced entries behind, and they would still reach the next checkpoint.
+func TestRejectedStoreRollsBackEveryPath(t *testing.T) {
+	reg := testRegistry(t)
+	build := func(offer bool) int64 {
+		path := filepath.Join(t.TempDir(), "w.pile")
+		w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if offer {
+			// Six blobs just under the per-blob ceiling: each is legal, the
+			// record they make is not.
+			c := buildTestColumn(t, reg, 0, 0)
+			for i := range 6 {
+				c.Col.Entities = append(c.Col.Entities, chunk.Entity{
+					ID: int64(1000 + i),
+					Data: map[string]any{
+						"identifier": "minecraft:cow",
+						// A byte list, not a string: strings are capped at
+						// 64 KiB, so a string payload is rejected during
+						// extraction and never reaches the palette at all.
+						"pad": make([]byte, 12<<20),
+					},
+				})
+			}
+			if err := w.Store(c); err == nil {
+				t.Fatal("an oversized record was accepted")
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	if refused, untouched := build(true), build(false); refused != untouched {
+		t.Fatalf("a Store rejected past the palette left %d bytes behind: %d vs %d",
+			refused-untouched, refused, untouched)
+	}
+}

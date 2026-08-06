@@ -117,6 +117,19 @@ func maxSourceLayers(ch *chunk.Chunk) uint8 {
 	return uint8(min(n, format.MaxLayers))
 }
 
+// sidecarLayers returns how many layers a column's preserved-state entries
+// reach. On a registry whose placeholder resolves to air such a layer has no
+// storage of its own, so the allocated count alone would not find it.
+func sidecarLayers(unknown []format.UnknownBlock) uint8 {
+	n := uint8(0)
+	for _, u := range unknown {
+		if u.Layer+1 > n {
+			n = u.Layer + 1
+		}
+	}
+	return n
+}
+
 // isFastOffset reports whether the offset allows chunk re-keying without
 // rewriting block data.
 func isFastOffset(off cube.Pos) bool {
@@ -173,7 +186,9 @@ func translateColumns(cols []format.Column, reg world.BlockRegistry, off cube.Po
 	for _, c := range cols {
 		ch := c.Col.Chunk
 		r := ch.Range()
-		layerN := maxSourceLayers(ch)
+		// A preserved state can name a layer the runtime never allocated, so
+		// the traversal ceiling is whatever the sidecar reaches as well.
+		layerN := max(maxSourceLayers(ch), sidecarLayers(c.Unknown))
 
 		// Preserved unknown states, keyed by their source position so they
 		// can be re-anchored at the destination. Each destination column

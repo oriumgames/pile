@@ -215,10 +215,6 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	blockPal := newBlockPaletteBuilder(reg)
 	placeholder := placeholderRid(reg)
 	air := reg.AirRuntimeID()
-	type secLayer struct {
-		sec   int32
-		layer uint8
-	}
 	unknownBySec := make(map[secLayer][]UnknownBlock, len(s.Unknown))
 	for _, u := range s.Unknown {
 		// Padding is cleared to air above, but a sidecar entry describing a
@@ -245,35 +241,18 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		if sub != nil {
 			layers = sub.Layers()
 		}
-		if len(layers) == 0 {
-			// A cell with no storages still has to carry preserved states, the
-			// same way an empty world section does. On a registry whose
-			// placeholder resolves to air, a cell holding nothing but
-			// unresolved blocks has none, and skipping it would drop the only
-			// record they existed. Whether the caller left the cell nil or
-			// handed over an empty sub chunk must not decide that.
-			entries := unknownBySec[secLayer{sec: int32(i), layer: 0}]
-			if len(entries) == 0 {
-				continue
-			}
-			raw := rawBlockSec{rids: []uint32{air}}
-			injectUnknown(&raw, entries, placeholder, len(s.UnknownStates))
-			if airOnlyLayer(raw, air) {
-				continue
-			}
-			pal := make([]uint32, len(raw.rids))
-			for j, rid := range raw.rids {
-				if raw.states != nil && raw.states[j] >= 0 {
-					pal[j] = blockPal.addState(s.UnknownStates[raw.states[j]])
-					continue
-				}
-				pal[j] = addBlock(rid)
-			}
-			cells[i] = cellData{layers: []secData{{pal: pal, idx: raw.idx}}}
+		// A preserved state can name a layer the runtime never allocated, and
+		// a cell holding only unresolved blocks has no storages at all when
+		// the placeholder resolves to air. Walking only what was allocated
+		// would drop exactly those entries, so the walk covers whatever the
+		// sidecar reaches. Whether the caller left the cell nil or handed over
+		// an empty sub chunk must not decide that either.
+		n := max(len(layers), sidecarLayers(unknownBySec, int32(i)))
+		if n == 0 {
 			continue
 		}
-		if len(layers) > maxLayers {
-			return fmt.Errorf("pile: cell %d has %d layers (limit %d)", i, len(layers), maxLayers)
+		if n > maxLayers {
+			return fmt.Errorf("pile: cell %d has %d layers (limit %d)", i, n, maxLayers)
 		}
 		// Canonicalise like world sections: trailing all-air storages carry no
 		// information and are dropped, and a cell left with none is absent.
@@ -281,16 +260,19 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		// would encode differently from an identical one that did not.
 		// Internal all-air layers stay: layer numbers are semantic, so an
 		// empty layer 0 under a populated layer 1 is real state.
-		raws := make([]rawBlockSec, 0, len(layers))
-		for l, storage := range layers {
+		raws := make([]rawBlockSec, 0, n)
+		for l := range n {
 			// Extract into raw form first so preserved unknown states can be
 			// re-injected before the palette is resolved.
-			var raw rawBlockSec
-			sd := extractStorage(storage, func(v uint32) uint32 {
-				raw.rids = append(raw.rids, v)
-				return uint32(len(raw.rids) - 1)
-			})
-			raw.idx = sd.idx
+			raw := rawBlockSec{rids: []uint32{air}}
+			if l < len(layers) {
+				raw = rawBlockSec{}
+				sd := extractStorage(layers[l], func(v uint32) uint32 {
+					raw.rids = append(raw.rids, v)
+					return uint32(len(raw.rids) - 1)
+				})
+				raw.idx = sd.idx
+			}
 			if entries := unknownBySec[secLayer{sec: int32(i), layer: uint8(l)}]; len(entries) > 0 {
 				injectUnknown(&raw, entries, placeholder, len(s.UnknownStates))
 			}

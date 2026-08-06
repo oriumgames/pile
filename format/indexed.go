@@ -1076,10 +1076,26 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (fram
 	}
 	ref := frameRef{off: w.end, length: uint32(len(stored)), hash: xxhash.Sum64(stored)}
 	if _, err := w.f.WriteAt(stored, w.end); err != nil {
+		// A partial write leaves the file longer than the logical end while
+		// w.end stays put, so a later, shorter frame plus its footer would sit
+		// inside the abandoned prefix and leave stale bytes past the footer.
+		// A completed save must end at its own ELIP, or reopening it reports
+		// recovery from an EOF nothing damaged.
+		w.truncateToEnd()
 		return frameRef{}, nil, fmt.Errorf("pile: append frame: %w", err)
 	}
 	w.end += int64(len(stored))
 	return ref, stored, nil
+}
+
+// truncateToEnd discards anything written past the logical end of the file.
+// It is best effort: if the truncation itself fails there is nothing further
+// to be done here, and the recovery scan still bounds what a reader will
+// believe.
+func (w *IndexedWorld) truncateToEnd() {
+	if st, err := w.f.Stat(); err == nil && st.Size() > w.end {
+		_ = w.f.Truncate(w.end)
+	}
 }
 
 // addState assigns (or returns) the palette index of a preserved unknown
@@ -1214,6 +1230,7 @@ type paletteSnapshot struct {
 	biomeIDs, biomeIdent int
 	biomeNames           int
 	biomeUnknown         int
+	biomeUnkName         int
 	pendingBlockLen      int
 	pendingBlkN          int
 	pendingOverride      int
@@ -1230,6 +1247,7 @@ func (w *IndexedWorld) snapshotPalettes() paletteSnapshot {
 		biomeKeys: slices.Collect(maps.Keys(w.biomeIdx)),
 		biomeIDs:  len(w.biomeIDs), biomeIdent: len(w.biomeIdent),
 		biomeNames: len(w.biomeNames), biomeUnknown: len(w.biomeUnknown),
+		biomeUnkName:    len(w.biomeUnkName),
 		pendingBlockLen: w.pendingBlock.len(), pendingBlkN: w.pendingBlkN,
 		pendingOverride: len(w.pendingOverride),
 		pendingBiomeLen: w.pendingBiome.len(), pendingBioN: w.pendingBioN,
@@ -1248,6 +1266,7 @@ func (w *IndexedWorld) restorePalettes(s paletteSnapshot) {
 	w.biomeIdent = w.biomeIdent[:s.biomeIdent]
 	w.biomeNames = w.biomeNames[:s.biomeNames]
 	w.biomeUnknown = w.biomeUnknown[:s.biomeUnknown]
+	w.biomeUnkName = w.biomeUnkName[:s.biomeUnkName]
 	w.pendingBlock.b = w.pendingBlock.b[:s.pendingBlockLen]
 	w.pendingBlkN = s.pendingBlkN
 	w.pendingOverride = w.pendingOverride[:s.pendingOverride]
@@ -1299,13 +1318,23 @@ func (w *IndexedWorld) Store(c Column) error {
 	// checkpoint, so an empty world that refused a column would not encode
 	// like an empty world that never saw one.
 	snap := w.snapshotPalettes()
+	// Any failure from here on has to wind the palettes back, not just the
+	// one the palette itself reported: a record that is too large, a frame
+	// that will not append, or a directory that is full all leave the same
+	// unreferenced entries behind, and they would still reach the next
+	// checkpoint.
+	committed := false
+	defer func() {
+		if !committed {
+			w.restorePalettes(snap)
+		}
+	}()
 	// Indexed palettes are first-seen order with no frequency sorting, so
 	// nothing there consumes a reference count.
 	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState, func(uint32) {}, func(uint32) {})
 	if w.paletteErr != nil {
 		err := w.paletteErr
 		w.paletteErr = nil
-		w.restorePalettes(snap)
 		return fmt.Errorf("pile: chunk (%d,%d): %w", c.X, c.Z, err)
 	}
 	cb := buildColBlobs(&ci, w.identity, w.biomeIdent, 0, false)
@@ -1332,6 +1361,7 @@ func (w *IndexedWorld) Store(c Column) error {
 	w.dir[key] = dirEntry{off: ref.off, length: ref.length, hash: xxhash.Sum64(stored)}
 	w.liveBytes += int64(ref.length)
 	w.recordsDirty = true
+	committed = true
 	return nil
 }
 
