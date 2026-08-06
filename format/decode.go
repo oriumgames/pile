@@ -1,318 +1,705 @@
 package format
 
 import (
-	"fmt"
-	"io"
+	"encoding/binary"
+	"math"
 
-	"github.com/google/uuid"
+	"github.com/cespare/xxhash/v2"
+	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 )
 
-// DecodeWorld decodes a World from a reader.
-func DecodeWorld(r io.Reader) (*World, error) {
-	rd := newReader(r)
+// Meta is the cheap-to-read portion of a file: header fields and metadata
+// blobs, no chunk data.
+type Meta struct {
+	Kind         uint8
+	Mode         uint8
+	Flags        uint32
+	BlockVersion int32
 
-	w := &World{
-		Version: CurrentVersion,
-		chunks:  make(map[int64]*Chunk),
-	}
-
-	// Read section range
-	minSection, err := rd.ReadInt32()
-	if err != nil {
-		return nil, fmt.Errorf("read min section: %w", err)
-	}
-	maxSection, err := rd.ReadInt32()
-	if err != nil {
-		return nil, fmt.Errorf("read max section: %w", err)
-	}
-	w.MinSection = minSection
-	w.MaxSection = maxSection
-
-	// Read user data
-	userData, err := rd.ReadBytes()
-	if err != nil {
-		return nil, fmt.Errorf("read user data: %w", err)
-	}
-	w.UserData = userData
-
-	// Read chunk count
-	chunkCount, err := rd.ReadVarInt()
-	if err != nil {
-		return nil, fmt.Errorf("read chunk count: %w", err)
-	}
-
-	if chunkCount < 0 || chunkCount > 1000000 {
-		return nil, fmt.Errorf("invalid chunk count: %d", chunkCount)
-	}
-
-	// Read chunks
-	for i := range chunkCount {
-		chunk, err := decodeChunk(rd, minSection, maxSection)
-		if err != nil {
-			return nil, fmt.Errorf("decode chunk %d (total: %d): %w", i, chunkCount, err)
-		}
-		w.setChunk(chunk)
-	}
-
-	return w, nil
+	Settings []byte
+	UserData []byte
+	Markers  []byte
+	Border   []byte
+	Stats    []byte
 }
 
-// decodeChunk decodes a Chunk from a reader.
-func decodeChunk(rd *reader, minSection, maxSection int32) (*Chunk, error) {
-	chunk := &Chunk{}
+// header is the parsed fixed-size file header.
+type header struct {
+	kind         uint8
+	mode         uint8
+	flags        uint32
+	blockVersion int32
+}
 
-	// Read coordinates
-	x, err := rd.ReadInt32()
+// parseFrame validates header, footer and body checksum of a complete file
+// and returns the parsed header and the stored (possibly compressed) body.
+func parseFrame(file []byte) (header, []byte, error) {
+	var h header
+	if len(file) < headerSize+footerSize {
+		return h, nil, corruptf("file too short (%d bytes)", len(file))
+	}
+	if [4]byte(file[0:4]) != headerMagic {
+		return h, nil, corruptf("bad header magic")
+	}
+	r := &reader{b: file, off: 4}
+	ver, _ := r.take(2)
+	version := uint16(ver[0]) | uint16(ver[1])<<8
+	if version != Version {
+		return h, nil, ErrUnsupportedVersion
+	}
+	h.kind, _ = r.u8()
+	h.mode, _ = r.u8()
+	h.flags, _ = r.u32()
+	bv, _ := r.u32()
+	h.blockVersion = int32(bv)
+
+	if h.flags&^knownFlags != 0 {
+		return h, nil, ErrUnknownFlags
+	}
+	// The default-biome reference occupies the high bits only when its flag
+	// is set; requiring them to be zero otherwise keeps one encoding per
+	// header.
+	if h.flags&FlagDefaultBiome == 0 && h.flags>>defaultBiomeShift != 0 {
+		return h, nil, corruptf("default biome reference set without its flag")
+	}
+	if h.mode != ModeSolid {
+		return h, nil, ErrUnsupportedMode
+	}
+
+	ftr := file[len(file)-footerSize:]
+	if [4]byte(ftr[footerSize-4:]) != footerMagic {
+		return h, nil, corruptf("bad footer magic")
+	}
+	fr := &reader{b: ftr}
+	bodyHash, _ := fr.u64()
+
+	stored := file[headerSize : len(file)-footerSize]
+	if xxhash.Sum64(stored) != bodyHash {
+		return h, nil, ErrChecksum
+	}
+	return h, stored, nil
+}
+
+// decompressBody returns the raw body bytes, decompressing when needed.
+func decompressBody(h header, stored []byte) ([]byte, error) {
+	if h.flags&FlagUncompressed != 0 {
+		return stored, nil
+	}
+	body, err := sharedDecoder().DecodeAll(stored, nil)
 	if err != nil {
-		return nil, fmt.Errorf("read x: %w", err)
+		return nil, corruptf("decompress body: %v", err)
 	}
-	z, err := rd.ReadInt32()
+	return body, nil
+}
+
+// readMetaBlobs reads the meta block from the start of the body.
+func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border, stats []byte, err error) {
+	if settings, err = r.blob(); err != nil {
+		return
+	}
+	if userData, err = r.blob(); err != nil {
+		return
+	}
+	if markers, err = r.blob(); err != nil {
+		return
+	}
+	if border, err = r.blob(); err != nil {
+		return
+	}
+	if flags&FlagStats != 0 {
+		stats, err = r.blob()
+	}
+	return
+}
+
+// ReadMeta parses header fields and metadata blobs from a complete file
+// without decoding any chunk data.
+func ReadMeta(file []byte) (*Meta, error) {
+	h, stored, err := parseFrame(file)
 	if err != nil {
-		return nil, fmt.Errorf("read z: %w", err)
+		return nil, err
 	}
-	chunk.X = x
-	chunk.Z = z
-
-	// Read sections
-	sectionCount := int(maxSection - minSection)
-	chunk.Sections = make([]*Section, sectionCount)
-
-	for i := range sectionCount {
-		section, err := decodeSection(rd)
-		if err != nil {
-			return nil, fmt.Errorf("decode section %d: %w", i, err)
-		}
-		// Only store non-empty sections
-		if !section.IsEmpty() {
-			chunk.Sections[i] = section
-		}
-	}
-
-	// Read block entities
-	beCount, err := rd.ReadVarInt()
+	body, err := decompressBody(h, stored)
 	if err != nil {
-		return nil, fmt.Errorf("read block entity count: %w", err)
+		return nil, err
 	}
-	if beCount < 0 {
-		return nil, fmt.Errorf("invalid block entity count: %d", beCount)
-	}
-
-	chunk.BlockEntities = make([]BlockEntity, beCount)
-	for i := range beCount {
-		be, err := decodeBlockEntity(rd)
-		if err != nil {
-			return nil, fmt.Errorf("decode block entity %d: %w", i, err)
-		}
-		chunk.BlockEntities[i] = *be
-	}
-
-	// Read entities
-	entCount, err := rd.ReadVarInt()
+	r := &reader{b: body}
+	settings, userData, markers, border, stats, err := readMetaBlobs(r, h.flags)
 	if err != nil {
-		return nil, fmt.Errorf("read entity count: %w", err)
+		return nil, err
 	}
-	if entCount < 0 {
-		return nil, fmt.Errorf("invalid entity count: %d", entCount)
+	return &Meta{
+		Kind: h.kind, Mode: h.mode, Flags: h.flags, BlockVersion: h.blockVersion,
+		Settings: cloneBytes(settings), UserData: cloneBytes(userData),
+		Markers: cloneBytes(markers), Border: cloneBytes(border), Stats: cloneBytes(stats),
+	}, nil
+}
+
+// ReadWorld decodes a complete world file. The registry must be finalized;
+// palette entries that cannot be resolved against it decode as
+// minecraft:info_update. Records are parsed serially and applied in parallel.
+func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
+	h, stored, err := parseFrame(file)
+	if err != nil {
+		return nil, err
 	}
-	chunk.Entities = make([]Entity, 0, entCount)
-	for i := range entCount {
-		id, err := rd.ReadString()
-		if err != nil {
-			return nil, fmt.Errorf("read entity %d id: %w", i, err)
+	if h.kind != KindWorld {
+		return nil, corruptf("file kind %d is not a world", h.kind)
+	}
+	body, err := decompressBody(h, stored)
+	if err != nil {
+		return nil, err
+	}
+
+	r := &reader{b: body}
+	d := &WorldData{}
+	var stats []byte
+	if d.Settings, d.UserData, d.Markers, d.Border, stats, err = readMetaBlobs(r, h.flags); err != nil {
+		return nil, err
+	}
+	_ = stats
+	d.Settings = cloneBytes(d.Settings)
+	d.UserData = cloneBytes(d.UserData)
+	d.Markers = cloneBytes(d.Markers)
+	d.Border = cloneBytes(d.Border)
+
+	rids, unknown, unkStates, err := decodeBlockPalette(r, reg, h.blockVersion)
+	if err != nil {
+		return nil, err
+	}
+	biomeIDs, bioUnknown, bioNames, err := decodeBiomePalette(r)
+	if err != nil {
+		return nil, err
+	}
+	blobs, err := decodeBlobTable(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var defaultBiome uint32
+	haveDefault := h.flags&FlagDefaultBiome != 0
+	if haveDefault {
+		ref := h.flags >> defaultBiomeShift
+		if int(ref) >= len(biomeIDs) {
+			return nil, corruptf("default biome reference %d out of range", ref)
 		}
-		uidStr, err := rd.ReadString()
+		defaultBiome = biomeIDs[ref]
+	}
+
+	chunkN, err := r.count(maxChunks, "chunk")
+	if err != nil {
+		return nil, err
+	}
+	haveLight := h.flags&FlagStoreLight != 0
+
+	// Parse phase (serial): record boundaries are implicit, so records must
+	// be walked in order; parsing is cheap slicing. Capacity is bounded by
+	// what the input could actually contain (a record is >= 8 bytes).
+	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1))
+	src := tableBlobSource(blobs)
+	var prevX, prevZ int64
+	for range chunkN {
+		dx, err := r.svarint()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d uuid: %w", i, err)
+			return nil, err
 		}
-		// Read position (float32)
-		posX, err := rd.ReadFloat32()
+		dz, err := r.svarint()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d position X: %w", i, err)
+			return nil, err
 		}
-		posY, err := rd.ReadFloat32()
+		// Accumulate in 64 bits and range-check: letting the sum wrap would
+		// let two different byte sequences denote the same chunk position.
+		sx, sz := prevX+dx, prevZ+dz
+		if sx < math.MinInt32 || sx > math.MaxInt32 || sz < math.MinInt32 || sz > math.MaxInt32 {
+			return nil, corruptf("chunk position (%d,%d) out of int32 range", sx, sz)
+		}
+		x, z := int32(sx), int32(sz)
+		rr, err := parseRecordBody(r, src, haveLight, x, z)
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d position Y: %w", i, err)
+			return nil, err
 		}
-		posZ, err := rd.ReadFloat32()
+		prevX, prevZ = int64(x), int64(z)
+		raws = append(raws, rr)
+	}
+	if r.remaining() != 0 {
+		return nil, corruptf("%d trailing bytes after last chunk", r.remaining())
+	}
+
+	// Apply phase (parallel): chunk construction and NBT decoding.
+	air := reg.AirRuntimeID()
+	cols := make([]Column, len(raws))
+	errs := make([]error, len(raws))
+	parallelFor(len(raws), 0, func(i int) {
+		cols[i], errs[i] = applyRecord(&raws[i], reg, rids, biomeIDs, air, defaultBiome, haveDefault, unknown, unkStates, bioUnknown, bioNames)
+	})
+	for _, err := range errs {
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d position Z: %w", i, err)
+			return nil, err
 		}
-		// Read rotation (float32)
-		yaw, err := rd.ReadFloat32()
+	}
+	d.Columns = cols
+	return d, nil
+}
+
+// blobSource resolves the next section blob of a record: solid mode reads a
+// blob table reference, indexed mode parses inline blob bytes.
+type blobSource func(r *reader) (decBlob, error)
+
+// tableBlobSource returns a blobSource reading references into a blob table.
+func tableBlobSource(blobs []decBlob) blobSource {
+	return func(r *reader) (decBlob, error) {
+		ref, err := r.uvarint()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d rotation yaw: %w", i, err)
+			return decBlob{}, err
 		}
-		pitch, err := rd.ReadFloat32()
+		if int(ref) >= len(blobs) {
+			return decBlob{}, corruptf("section blob reference %d out of range", ref)
+		}
+		return blobs[ref], nil
+	}
+}
+
+// recRaw is a parsed chunk record before the (parallelisable) apply phase.
+// Byte slices alias the body buffer. Section data is stored compactly (one
+// entry per present section, in ascending section order) with the presence
+// bitsets retained, so hostile presence-free records cannot force large
+// allocations.
+type recRaw struct {
+	x, z        int32
+	minSection  int64
+	sectionN    int
+	presence    []byte      // block presence bitset (aliases body)
+	bioPresence []byte      // biome presence bitset (aliases body)
+	layers      [][]decBlob // one per present block section
+	biomes      []decBlob   // one per present biome section
+	light       []lightPair // one per present block section (aliasing body)
+	bes         []beRawEntry
+	ents        [][]byte
+	tick        int64
+	ticks       []tickRawEntry
+	userData    []byte
+}
+
+type beRawEntry struct {
+	packedXZ uint8
+	y        int64
+	nbt      []byte
+}
+
+type tickRawEntry struct {
+	packedXZ uint8
+	y        int64
+	ref      uint64
+	at       int64
+}
+
+// parseRecordBody reads one chunk record without applying it.
+func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (recRaw, error) {
+	rr := recRaw{x: x, z: z}
+	var err error
+	if rr.minSection, err = r.svarint(); err != nil {
+		return rr, err
+	}
+	if rr.sectionN, err = r.count(maxSectionCnt, "section"); err != nil {
+		return rr, err
+	}
+	if rr.sectionN == 0 {
+		return rr, corruptf("chunk (%d,%d) has no sections", x, z)
+	}
+
+	var err2 error
+	if rr.presence, err2 = r.take((rr.sectionN + 7) / 8); err2 != nil {
+		return rr, err2
+	}
+	if err := bitsetTail(rr.presence, rr.sectionN); err != nil {
+		return rr, err
+	}
+	for i := range rr.sectionN {
+		if rr.presence[i/8]&(1<<(i%8)) == 0 {
+			continue
+		}
+		layerN, err := r.count(maxLayers, "layer")
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d rotation pitch: %w", i, err)
+			return rr, err
 		}
-		// Read velocity (float32)
-		velX, err := rd.ReadFloat32()
+		layers := make([]decBlob, layerN)
+		for l := range layerN {
+			if layers[l], err = src(r); err != nil {
+				return rr, err
+			}
+		}
+		rr.layers = append(rr.layers, layers)
+	}
+
+	if rr.bioPresence, err2 = r.take((rr.sectionN + 7) / 8); err2 != nil {
+		return rr, err2
+	}
+	if err := bitsetTail(rr.bioPresence, rr.sectionN); err != nil {
+		return rr, err
+	}
+	for i := range rr.sectionN {
+		if rr.bioPresence[i/8]&(1<<(i%8)) == 0 {
+			continue
+		}
+		blob, err := src(r)
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d velocity X: %w", i, err)
+			return rr, err
 		}
-		velY, err := rd.ReadFloat32()
+		rr.biomes = append(rr.biomes, blob)
+	}
+
+	if haveLight {
+		for range rr.layers {
+			flags, err := r.u8()
+			if err != nil {
+				return rr, err
+			}
+			var lp lightPair
+			if flags&1 != 0 {
+				if lp.block, err = r.take(2048); err != nil {
+					return rr, err
+				}
+			}
+			if flags&2 != 0 {
+				if lp.sky, err = r.take(2048); err != nil {
+					return rr, err
+				}
+			}
+			rr.light = append(rr.light, lp)
+		}
+	}
+
+	beN, err := r.count(maxPerChunk, "block entity")
+	if err != nil {
+		return rr, err
+	}
+	for range beN {
+		packed, err := r.u8()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d velocity Y: %w", i, err)
+			return rr, err
 		}
-		velZ, err := rd.ReadFloat32()
+		y, err := r.svarint()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d velocity Z: %w", i, err)
+			return rr, err
 		}
-		// Read additional data
-		data, err := rd.ReadBytes()
+		blob, err := r.blob()
 		if err != nil {
-			return nil, fmt.Errorf("read entity %d data: %w", i, err)
+			return rr, err
 		}
-		u, _ := uuid.Parse(uidStr)
-		chunk.Entities = append(chunk.Entities, Entity{
-			UUID:     u,
-			ID:       id,
-			Position: [3]float32{posX, posY, posZ},
-			Rotation: [2]float32{yaw, pitch},
-			Velocity: [3]float32{velX, velY, velZ},
-			Data:     data,
+		rr.bes = append(rr.bes, beRawEntry{packedXZ: packed, y: y, nbt: blob})
+	}
+
+	entN, err := r.count(maxPerChunk, "entity")
+	if err != nil {
+		return rr, err
+	}
+	for range entN {
+		blob, err := r.blob()
+		if err != nil {
+			return rr, err
+		}
+		rr.ents = append(rr.ents, blob)
+	}
+
+	if rr.tick, err = r.svarint(); err != nil {
+		return rr, err
+	}
+
+	stN, err := r.count(maxPerChunk, "scheduled tick")
+	if err != nil {
+		return rr, err
+	}
+	for range stN {
+		packed, err := r.u8()
+		if err != nil {
+			return rr, err
+		}
+		y, err := r.svarint()
+		if err != nil {
+			return rr, err
+		}
+		ref, err := r.uvarint()
+		if err != nil {
+			return rr, err
+		}
+		at, err := r.svarint()
+		if err != nil {
+			return rr, err
+		}
+		rr.ticks = append(rr.ticks, tickRawEntry{packedXZ: packed, y: y, ref: ref, at: at})
+	}
+
+	userData, err := r.blob()
+	if err != nil {
+		return rr, err
+	}
+	rr.userData = userData
+	return rr, nil
+}
+
+// applyRecord turns a parsed record into a Column: chunk construction, blob
+// application and NBT decoding. Safe to run in parallel across records.
+func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault bool, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string) (Column, error) {
+	x, z := rr.x, rr.z
+	rng := cube.Range{int(rr.minSection) * 16, int(rr.minSection+int64(rr.sectionN))*16 - 1}
+	ch := chunk.New(reg, rng)
+	subs := ch.Sub()
+	if len(subs) != rr.sectionN {
+		return Column{}, corruptf("chunk (%d,%d): range yields %d sections, record has %d", x, z, len(subs), rr.sectionN)
+	}
+
+	col := Column{X: x, Z: z}
+	blockCur := 0
+	for i := range rr.sectionN {
+		if rr.presence[i/8]&(1<<(i%8)) == 0 {
+			continue
+		}
+		for l, blob := range rr.layers[blockCur] {
+			var report func(idx uint16, state uint32)
+			if unknown != nil {
+				report = func(idx uint16, state uint32) {
+					col.Unknown = append(col.Unknown, UnknownBlock{
+						Section: int32(rr.minSection) + int32(i), Layer: uint8(l),
+						Index: idx, State: state,
+					})
+				}
+			}
+			if err := applyBlockBlob(subs[i], uint8(l), blob, rids, air, unknown, report); err != nil {
+				return Column{}, err
+			}
+		}
+		if blockCur < len(rr.light) {
+			if lp := rr.light[blockCur]; lp.block != nil || lp.sky != nil {
+				subSetLight(subs[i], cloneBytes(lp.block), cloneBytes(lp.sky))
+			}
+		}
+		blockCur++
+	}
+	bioCur := 0
+	for i := range rr.sectionN {
+		if rr.bioPresence[i/8]&(1<<(i%8)) == 0 {
+			if haveDefault && defaultBiome != 0 {
+				fillBiome(ch, i, defaultBiome)
+			}
+			continue
+		}
+		blob := rr.biomes[bioCur]
+		if err := applyBiomeBlob(ch, i, blob, biomeIDs); err != nil {
+			return Column{}, err
+		}
+		if bioUnknown != nil {
+			sec := int32(rr.minSection) + int32(i)
+			if blob.width == widthUniform {
+				if st := bioUnknown[blob.refs[0]]; st >= 0 {
+					col.UnknownBiomes = append(col.UnknownBiomes, UnknownBlock{
+						Section: sec, Index: WholeStorage, State: uint32(st),
+					})
+				}
+			} else {
+				var idx [4096]uint16
+				if err := blobIndices(blob, len(blob.refs), &idx); err == nil {
+					for pos, li := range idx {
+						if st := bioUnknown[blob.refs[li]]; st >= 0 {
+							col.UnknownBiomes = append(col.UnknownBiomes, UnknownBlock{
+								Section: sec, Index: uint16(pos), State: uint32(st),
+							})
+						}
+					}
+				}
+			}
+		}
+		bioCur++
+	}
+
+	col.Col = &chunk.Column{Chunk: ch}
+	for _, be := range rr.bes {
+		data, err := unmarshalNBT(be.nbt)
+		if err != nil {
+			return Column{}, err
+		}
+		pos := cube.Pos{int(x)*16 + int(be.packedXZ&0xF), int(be.y), int(z)*16 + int(be.packedXZ>>4)}
+		data["x"], data["y"], data["z"] = int32(pos.X()), int32(pos.Y()), int32(pos.Z())
+		col.Col.BlockEntities = append(col.Col.BlockEntities, chunk.BlockEntity{Pos: pos, Data: data})
+	}
+	for i, blob := range rr.ents {
+		data, err := unmarshalNBT(blob)
+		if err != nil {
+			return Column{}, err
+		}
+		id, ok := data["UniqueID"].(int64)
+		if !ok || id == 0 {
+			// Records written by other tools may lack a usable UniqueID.
+			// Leaving them all at zero would make them collide (leveldb keys
+			// entities by ID), so derive a stable non-zero one from the
+			// chunk position and index: the same record always yields the
+			// same ID, and encoding writes it back.
+			id = syntheticEntityID(x, z, i)
+			data["UniqueID"] = id
+		}
+		col.Col.Entities = append(col.Col.Entities, chunk.Entity{ID: id, Data: data})
+	}
+	col.Col.Tick = rr.tick
+	for _, t := range rr.ticks {
+		if int(t.ref) >= len(rids) {
+			return Column{}, corruptf("scheduled tick block reference %d out of range", t.ref)
+		}
+		pos := cube.Pos{int(x)*16 + int(t.packedXZ&0xF), int(t.y), int(z)*16 + int(t.packedXZ>>4)}
+		if unknown != nil && unknown[t.ref] >= 0 {
+			col.UnknownTicks = append(col.UnknownTicks, UnknownTick{
+				Pos:   [3]int32{int32(pos.X()), int32(pos.Y()), int32(pos.Z())},
+				At:    t.at,
+				State: uint32(unknown[t.ref]),
+			})
+		}
+		col.Col.ScheduledBlocks = append(col.Col.ScheduledBlocks, chunk.ScheduledBlockUpdate{
+			Pos: pos, Block: rids[t.ref], Tick: t.at,
 		})
 	}
-
-	// Read scheduled ticks
-	tickCount, err := rd.ReadVarInt()
-	if err != nil {
-		return nil, fmt.Errorf("read scheduled tick count: %w", err)
+	col.UserData = cloneBytes(rr.userData)
+	if len(col.Unknown) > 0 || len(col.UnknownTicks) > 0 {
+		col.UnknownStates = unkStates
 	}
-	if tickCount < 0 {
-		return nil, fmt.Errorf("invalid scheduled tick count: %d", tickCount)
+	if len(col.UnknownBiomes) > 0 {
+		col.UnknownBiomeNames = bioNames
 	}
-	chunk.ScheduledTicks = make([]ScheduledTick, 0, tickCount)
-	for i := range tickCount {
-		pxz, err := rd.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("read scheduled tick %d packed xz: %w", i, err)
-		}
-		y, err := rd.ReadInt32()
-		if err != nil {
-			return nil, fmt.Errorf("read scheduled tick %d y: %w", i, err)
-		}
-		block, err := rd.ReadString()
-		if err != nil {
-			return nil, fmt.Errorf("read scheduled tick %d block: %w", i, err)
-		}
-		t, err := rd.ReadVarInt()
-		if err != nil {
-			return nil, fmt.Errorf("read scheduled tick %d tick: %w", i, err)
-		}
-		chunk.ScheduledTicks = append(chunk.ScheduledTicks, ScheduledTick{
-			PackedXZ: pxz,
-			Y:        y,
-			Block:    block,
-			Tick:     t,
-		})
-	}
-
-	// Read user data
-	userData, err := rd.ReadBytes()
-	if err != nil {
-		return nil, fmt.Errorf("read user data: %w", err)
-	}
-	chunk.UserData = userData
-
-	return chunk, nil
+	return col, nil
 }
 
-// decodeSection decodes a Section from a reader.
-func decodeSection(rd *reader) (*Section, error) {
-	section := &Section{}
-
-	// Read block palette
-	paletteSize, err := rd.ReadVarInt()
+// decodeRecordBody parses and applies a chunk record in one step (indexed
+// mode's single-column path).
+func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault, haveLight bool, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
+	rr, err := parseRecordBody(r, src, haveLight, x, z)
 	if err != nil {
-		return nil, fmt.Errorf("read block palette size: %w", err)
+		return Column{}, err
 	}
-
-	section.BlockPalette = make([]string, paletteSize)
-	for i := range paletteSize {
-		block, err := rd.ReadString()
-		if err != nil {
-			return nil, fmt.Errorf("read block palette entry %d: %w", i, err)
-		}
-		section.BlockPalette[i] = block
-	}
-
-	// Read block data
-	blockDataSize, err := rd.ReadVarInt()
-	if err != nil {
-		return nil, fmt.Errorf("read block data size: %w", err)
-	}
-
-	section.BlockData = make([]int64, blockDataSize)
-	for i := range blockDataSize {
-		val, err := rd.ReadInt64()
-		if err != nil {
-			return nil, fmt.Errorf("read block data %d: %w", i, err)
-		}
-		section.BlockData[i] = val
-	}
-
-	// Read biome palette
-	biomePaletteSize, err := rd.ReadVarInt()
-	if err != nil {
-		return nil, fmt.Errorf("read biome palette size: %w", err)
-	}
-
-	section.BiomePalette = make([]string, biomePaletteSize)
-	for i := range biomePaletteSize {
-		biome, err := rd.ReadString()
-		if err != nil {
-			return nil, fmt.Errorf("read biome palette entry %d: %w", i, err)
-		}
-		section.BiomePalette[i] = biome
-	}
-
-	// Read biome data
-	biomeDataSize, err := rd.ReadVarInt()
-	if err != nil {
-		return nil, fmt.Errorf("read biome data size: %w", err)
-	}
-
-	section.BiomeData = make([]int64, biomeDataSize)
-	for i := range biomeDataSize {
-		val, err := rd.ReadInt64()
-		if err != nil {
-			return nil, fmt.Errorf("read biome data %d: %w", i, err)
-		}
-		section.BiomeData[i] = val
-	}
-
-	return section, nil
+	return applyRecord(&rr, reg, rids, biomeIDs, air, defaultBiome, haveDefault, unknown, unkStates, bioUnknown, bioNames)
 }
 
-// decodeBlockEntity decodes a BlockEntity from a reader.
-func decodeBlockEntity(rd *reader) (*BlockEntity, error) {
-	be := &BlockEntity{}
-
-	packedXZ, err := rd.ReadByte()
-	if err != nil {
-		return nil, fmt.Errorf("read packed xz: %w", err)
+// blobIndices decodes a blob's 4096 local indices into out, validating them
+// against the local palette size.
+func blobIndices(blob decBlob, paletteLen int, out *[4096]uint16) error {
+	n := uint16(paletteLen)
+	switch blob.width {
+	case widthU8:
+		for i := range 4096 {
+			li := uint16(blob.idx[i])
+			if li >= n {
+				return corruptf("section index %d out of palette range %d", li, n)
+			}
+			out[i] = li
+		}
+	case widthU16:
+		for i := range 4096 {
+			li := uint16(blob.idx[i*2]) | uint16(blob.idx[i*2+1])<<8
+			if li >= n {
+				return corruptf("section index %d out of palette range %d", li, n)
+			}
+			out[i] = li
+		}
 	}
-	be.PackedXZ = packedXZ
+	return nil
+}
 
-	y, err := rd.ReadInt32()
-	if err != nil {
-		return nil, fmt.Errorf("read y: %w", err)
+// applyBlockBlob constructs a storage from a decoded section blob and places
+// it into a sub chunk layer directly (unsafe fast path). When unknown is
+// non-nil, positions referencing unresolved palette entries are reported so
+// callers can preserve the original states.
+func applyBlockBlob(sub *chunk.SubChunk, layer uint8, blob decBlob, rids []uint32, air uint32, unknown []int32, report func(idx uint16, state uint32)) error {
+	local := make([]uint32, len(blob.refs))
+	localUnk := make([]int32, len(blob.refs))
+	anyUnk := false
+	for i, ref := range blob.refs {
+		if int(ref) >= len(rids) {
+			return corruptf("block palette reference %d out of range", ref)
+		}
+		local[i] = rids[ref]
+		localUnk[i] = -1
+		if unknown != nil && unknown[ref] >= 0 {
+			localUnk[i] = unknown[ref]
+			anyUnk = true
+		}
 	}
-	be.Y = y
-
-	id, err := rd.ReadString()
-	if err != nil {
-		return nil, fmt.Errorf("read id: %w", err)
+	if blob.width == widthUniform {
+		// Record the preserved state before any air elision: with a registry
+		// that resolves neither the state nor the placeholder block, the
+		// entry would otherwise be dropped and the state lost on re-encode.
+		if anyUnk && report != nil && localUnk[0] >= 0 {
+			report(WholeStorage, uint32(localUnk[0]))
+		}
+		if local[0] == air && !anyUnk {
+			// A uniform-air layer stays unrepresented, keeping the sub chunk
+			// empty (the encoder never writes one; this is defensive).
+			return nil
+		}
+		subSetLayer(sub, int(layer), makeStorage(local, nil))
+		return nil
 	}
-	be.ID = id
-
-	data, err := rd.ReadBytes()
-	if err != nil {
-		return nil, fmt.Errorf("read data: %w", err)
+	var idx [4096]uint16
+	if err := blobIndices(blob, len(local), &idx); err != nil {
+		return err
 	}
-	be.Data = data
+	if anyUnk && report != nil {
+		for i, li := range idx {
+			if st := localUnk[li]; st >= 0 {
+				report(uint16(i), uint32(st))
+			}
+		}
+	}
+	subSetLayer(sub, int(layer), makeStorage(local, &idx))
+	return nil
+}
 
-	return be, nil
+// applyBiomeBlob constructs a biome storage from a decoded blob and installs
+// it into one section of a chunk directly (unsafe fast path).
+func applyBiomeBlob(ch *chunk.Chunk, secIdx int, blob decBlob, biomeIDs []uint32) error {
+	local := make([]uint32, len(blob.refs))
+	for i, ref := range blob.refs {
+		if int(ref) >= len(biomeIDs) {
+			return corruptf("biome palette reference %d out of range", ref)
+		}
+		local[i] = biomeIDs[ref]
+	}
+	if blob.width == widthUniform {
+		chunkSetBiomes(ch, secIdx, makeStorage(local, nil))
+		return nil
+	}
+	var idx [4096]uint16
+	if err := blobIndices(blob, len(local), &idx); err != nil {
+		return err
+	}
+	chunkSetBiomes(ch, secIdx, makeStorage(local, &idx))
+	return nil
+}
+
+// fillBiome sets one section of a chunk to a uniform biome.
+func fillBiome(ch *chunk.Chunk, secIdx int, id uint32) {
+	chunkSetBiomes(ch, secIdx, makeStorage([]uint32{id}, nil))
+}
+
+// syntheticEntityID derives a stable non-zero entity ID for a record that
+// carries none.
+func syntheticEntityID(x, z int32, index int) int64 {
+	h := xxhash.New()
+	var b [16]byte
+	binary.LittleEndian.PutUint32(b[0:4], uint32(x))
+	binary.LittleEndian.PutUint32(b[4:8], uint32(z))
+	binary.LittleEndian.PutUint64(b[8:16], uint64(index))
+	_, _ = h.Write(b[:])
+	id := int64(h.Sum64() &^ (1 << 63)) // keep it positive
+	if id == 0 {
+		id = 1
+	}
+	return id
+}
+
+// cloneBytes copies b, returning nil for empty input.
+func cloneBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
 }

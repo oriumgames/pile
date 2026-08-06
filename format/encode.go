@@ -1,126 +1,924 @@
 package format
 
-// EncodeWorld encodes a World into a buffer.
-func EncodeWorld(buf *buffer, w *World) {
-	// Write section range
-	buf.WriteInt32(w.MinSection)
-	buf.WriteInt32(w.MaxSection)
+import (
+	"bytes"
+	"cmp"
+	"fmt"
+	"io"
+	"maps"
+	"slices"
 
-	// Write user data
-	buf.WriteBytes(w.UserData)
+	"github.com/df-mc/dragonfly/server/block/cube"
 
-	// Write chunks
-	chunks := w.Chunks()
-	chunkCount := int64(len(chunks))
-	buf.WriteVarInt(chunkCount)
+	"github.com/cespare/xxhash/v2"
+	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
+)
 
-	for _, chunk := range chunks {
-		EncodeChunk(buf, chunk, w.MinSection, w.MaxSection)
-	}
+// Column pairs a chunk column with its position and optional per-chunk
+// application metadata.
+type Column struct {
+	X, Z     int32
+	Col      *chunk.Column
+	UserData []byte
+
+	// Unknown, UnknownTicks and UnknownStates preserve block states that did
+	// not resolve against the registry at decode time: the runtime sees
+	// placeholder blocks, but re-encoding emits the original states wherever
+	// the placeholder is still in place, so a load/save round trip is
+	// lossless.
+	Unknown       []UnknownBlock
+	UnknownTicks  []UnknownTick
+	UnknownStates []BlockState
+
+	// UnknownBiomes and UnknownBiomeNames do the same for biome names the
+	// runtime could not resolve (which decode as plains).
+	UnknownBiomes     []UnknownBlock
+	UnknownBiomeNames []string
 }
 
-// EncodeChunk encodes a Chunk into a buffer.
-func EncodeChunk(buf *buffer, c *Chunk, minSection, maxSection int32) {
-	// Write coordinates
-	buf.WriteInt32(c.X)
-	buf.WriteInt32(c.Z)
+// UnknownBlock records one preserved unknown-state occurrence in block data.
+type UnknownBlock struct {
+	// Section identifies the storage: for world columns it is the absolute
+	// section Y (blockY >> 4), so the entry survives a change of the
+	// dimension's vertical range; for structures it is the cell index.
+	Section int32
+	// Layer is the storage layer within the section.
+	Layer uint8
+	// Index is the section-local block index ((x<<8)|(z<<4)|y), or
+	// WholeStorage for a uniform section.
+	Index uint16
+	// State indexes Column.UnknownStates.
+	State uint32
+}
 
-	// Calculate section count
-	sectionCount := int(maxSection - minSection)
+// UnknownTick records a scheduled block update whose block state did not
+// resolve, so it is not lost on re-encode. The update is identified by its
+// position and firing tick rather than by slice index: dragonfly builds the
+// scheduled-block slice in arbitrary order and range adaptation may drop
+// entries, so an index would not survive a load/store cycle.
+type UnknownTick struct {
+	// Pos is the absolute block position of the update.
+	Pos [3]int32
+	// At is the absolute tick the update fires at.
+	At int64
+	// State indexes Column.UnknownStates.
+	State uint32
+}
 
-	// Write sections (pad with empty sections if needed)
-	for i := range sectionCount {
-		if i < len(c.Sections) && c.Sections[i] != nil {
-			encodeSection(buf, c.Sections[i])
-		} else {
-			encodeEmptySection(buf)
+// WholeStorage marks an UnknownBlock covering its whole storage.
+const WholeStorage = 0xFFFF
+
+// WorldData is the decoded content of a world file: metadata blobs plus all
+// columns. Metadata blobs are little-endian NBT (or empty).
+type WorldData struct {
+	Settings []byte
+	UserData []byte
+	Markers  []byte
+	Border   []byte
+	Columns  []Column
+}
+
+// rawBlockSec is one extracted block storage before global palette
+// resolution: local palette of runtime IDs plus 4096 indices (nil = uniform).
+// states, when non-nil, marks palette entries that stand for preserved
+// unknown states (-1 = a real runtime ID, >= 0 = index into the column's
+// UnknownStates).
+type rawBlockSec struct {
+	rids   []uint32
+	idx    []uint16
+	states []int32
+}
+
+// rawBiomeSec is one extracted biome storage before global palette
+// resolution. A nil names slice means the section holds no biome data.
+type rawBiomeSec struct {
+	names []string
+	idx   []uint16
+}
+
+// rawTick is a scheduled tick before palette resolution. state >= 0 marks a
+// preserved unknown state (index into the column's UnknownStates).
+type rawTick struct {
+	packedXZ uint8
+	y        int32
+	rid      uint32
+	state    int32
+	at       int64
+}
+
+// colRaw holds one column after the parallel extraction stage.
+type colRaw struct {
+	x, z       int32
+	minSection int32
+	sectionN   int
+	blockSecs  [][]rawBlockSec
+	biomeSecs  []rawBiomeSec
+	light      []lightPair
+	bes        []beIntermediate
+	ents       [][]byte
+	tick       int64
+	ticks      []rawTick
+	userData   []byte
+	unkStates  []BlockState
+	err        error
+}
+
+// colIntermediate holds one column after global palette resolution.
+type colIntermediate struct {
+	x, z       int32
+	minSection int32
+	sectionN   int
+	blockSecs  [][]secData // per section; nil = absent, else one secData per layer
+	biomeSecs  []secData   // per section; pal == nil = no data
+	light      []lightPair // per section; nil slices when absent
+	bes        []beIntermediate
+	ents       [][]byte
+	tick       int64
+	ticks      []tickIntermediate
+	userData   []byte
+}
+
+// lightPair holds one section's baked light nibble arrays (2048 bytes each,
+// nil when unset).
+type lightPair struct {
+	block, sky []byte
+}
+
+type beIntermediate struct {
+	packedXZ uint8
+	y        int32
+	nbt      []byte
+}
+
+type tickIntermediate struct {
+	packedXZ   uint8
+	y          int32
+	blockBuild uint32
+	at         int64
+}
+
+// colBlobs holds the canonical section blob bytes of one column, computed in
+// parallel after palette finalization. A nil biome entry means the section is
+// absent (no data, or uniformly the world default).
+type colBlobs struct {
+	block [][][]byte // per section, per layer
+	biome [][]byte   // per section; nil = absent
+}
+
+// WriteWorld encodes a world to out in solid mode. Chunks are read-only
+// inputs: extraction canonicalizes (used-only palettes, air-only layers
+// dropped) without mutating them. Output is deterministic unless
+// Options.FastCompression is set: identical content, registry and options
+// produce identical bytes.
+func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Options) error {
+	if err := validateWorldData(d); err != nil {
+		return err
+	}
+	cols := slices.Clone(d.Columns)
+	slices.SortFunc(cols, func(a, b Column) int {
+		ka, kb := mortonKey(a.X, a.Z), mortonKey(b.X, b.Z)
+		switch {
+		case ka < kb:
+			return -1
+		case ka > kb:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	placeholder := placeholderRid(reg)
+
+	// Stage A (parallel): heavy per-column extraction, no shared state.
+	raws := make([]colRaw, len(cols))
+	parallelFor(len(cols), opts.Workers, func(i int) {
+		raws[i] = extractColumnRaw(cols[i], opts.SkipBiomes, opts.StoreLight, placeholder)
+	})
+	for i := range raws {
+		if raws[i].err != nil {
+			return fmt.Errorf("pile: encode chunk (%d,%d): %w", raws[i].x, raws[i].z, raws[i].err)
 		}
 	}
 
-	// Write block entities
-	buf.WriteVarInt(int64(len(c.BlockEntities)))
-	for _, be := range c.BlockEntities {
-		encodeBlockEntity(buf, &be)
+	// Stage B (serial): global palette resolution in deterministic order.
+	blockPal := newBlockPaletteBuilder(reg)
+	biomePal := newBiomePaletteBuilder()
+	uniformBiomes := make(map[uint32]uint64)
+	addBiome := func(name string) uint32 { return biomePal.add(name, 1) }
+	inter := make([]colIntermediate, len(raws))
+	for i := range raws {
+		inter[i] = resolveColumn(&raws[i], blockPal.add, addBiome, blockPal.addState)
+		for _, sd := range inter[i].biomeSecs {
+			if build, ok := sd.uniform(); ok {
+				uniformBiomes[build]++
+			}
+		}
 	}
 
-	// Write entities
-	buf.WriteVarInt(int64(len(c.Entities)))
-	for _, e := range c.Entities {
-		// Entity identifier and UUID are written explicitly for fast indexing.
-		buf.WriteString(e.ID)
-		buf.WriteString(e.UUID.String())
-		// Write position (float32)
-		buf.WriteFloat32(e.Position[0])
-		buf.WriteFloat32(e.Position[1])
-		buf.WriteFloat32(e.Position[2])
-		// Write rotation (float32)
-		buf.WriteFloat32(e.Rotation[0])
-		buf.WriteFloat32(e.Rotation[1])
-		// Write velocity (float32)
-		buf.WriteFloat32(e.Velocity[0])
-		buf.WriteFloat32(e.Velocity[1])
-		buf.WriteFloat32(e.Velocity[2])
-		// Write additional data
-		buf.WriteBytes(e.Data)
+	blockPalBytes, blockRemap, err := blockPal.finalize()
+	if err != nil {
+		return err
+	}
+	biomePalBytes, biomeRemap, err := biomePal.finalize()
+	if err != nil {
+		return err
 	}
 
-	// Write scheduled ticks (v4)
-	buf.WriteVarInt(int64(len(c.ScheduledTicks)))
-	for _, t := range c.ScheduledTicks {
-		buf.WriteByte(t.PackedXZ)
-		buf.WriteInt32(t.Y)
-		buf.WriteString(t.Block)
-		buf.WriteVarInt(t.Tick)
+	// Pick the default biome: the build index with the most uniform sections.
+	defaultRef, haveDefault := uint32(0), false
+	{
+		var best uint64
+		var bestBuild uint32
+		for build, n := range uniformBiomes {
+			final := biomeRemap[build]
+			if n > best || (n == best && haveDefault && final < defaultRef) {
+				best, bestBuild, haveDefault = n, build, true
+				defaultRef = biomeRemap[bestBuild]
+			}
+		}
+		if haveDefault && defaultRef > 0xFFFF {
+			haveDefault = false // cannot express in flags; store all sections
+		}
 	}
 
-	// Write user data
-	buf.WriteBytes(c.UserData)
+	// Stage C (parallel): canonical section blob bytes per column.
+	blobs := make([]colBlobs, len(inter))
+	parallelFor(len(inter), opts.Workers, func(i int) {
+		blobs[i] = buildColBlobs(&inter[i], blockRemap, biomeRemap, defaultRef, haveDefault)
+	})
+
+	// Stage D (serial): dedup into the blob table, write records.
+	table := newBlobTable()
+	records := &writer{b: make([]byte, 0, 64<<10)}
+	records.uvarint(uint64(len(inter)))
+	var prevX, prevZ int32
+	for i := range inter {
+		records.svarint(int64(inter[i].x) - int64(prevX))
+		records.svarint(int64(inter[i].z) - int64(prevZ))
+		encodeRecordBody(records, &inter[i], &blobs[i], blockRemap, opts.StoreLight, func(w *writer, blob []byte) {
+			w.uvarint(uint64(table.add(blob)))
+		})
+		prevX, prevZ = inter[i].x, inter[i].z
+	}
+
+	// Assemble the body: meta, palettes, blob table, records.
+	body := &writer{b: make([]byte, 0, 128<<10)}
+	body.blob(d.Settings)
+	body.blob(d.UserData)
+	body.blob(d.Markers)
+	body.blob(d.Border)
+	if opts.Stats {
+		var filled int
+		for i := range inter {
+			for _, secs := range inter[i].blockSecs {
+				if secs != nil {
+					filled++
+				}
+			}
+		}
+		stats, err := marshalNBT(map[string]any{
+			"chunks":         int32(len(inter)),
+			"filledSections": int32(filled),
+			"uniqueBlobs":    int32(len(table.blobs)),
+			"blockStates":    int32(len(blockRemap)),
+			"biomes":         int32(len(biomeRemap)),
+		})
+		if err != nil {
+			return fmt.Errorf("pile: encode stats: %w", err)
+		}
+		body.blob(stats)
+	}
+	body.raw(blockPalBytes)
+	body.raw(biomePalBytes)
+	table.encode(body)
+	body.raw(records.bytes())
+
+	flags := uint32(0)
+	if haveDefault {
+		flags |= FlagDefaultBiome | defaultRef<<defaultBiomeShift
+	}
+	if opts.StoreLight {
+		flags |= FlagStoreLight
+	}
+	if opts.Stats {
+		flags |= FlagStats
+	}
+
+	stored := body.bytes()
+	if opts.Compression == CompressionNone {
+		flags |= FlagUncompressed
+	} else {
+		stored = compressBody(stored, opts.Compression, opts.FastCompression)
+	}
+
+	// Header.
+	hdr := &writer{b: make([]byte, 0, headerSize)}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindWorld)
+	hdr.u8(ModeSolid)
+	hdr.u32(flags)
+	hdr.i32(chunk.CurrentBlockVersion)
+
+	// Footer.
+	ftr := &writer{b: make([]byte, 0, footerSize)}
+	ftr.u64(xxhash.Sum64(stored))
+	ftr.u64(0) // directory offset (indexed mode only)
+	ftr.u64(0) // directory length
+	ftr.u64(0) // generation
+	ftr.u64(0) // previous footer offset (indexed mode only)
+	ftr.raw(footerMagic[:])
+
+	for _, part := range [][]byte{hdr.bytes(), stored, ftr.bytes()} {
+		if _, err := out.Write(part); err != nil {
+			return fmt.Errorf("pile: write: %w", err)
+		}
+	}
+	return nil
 }
 
-// encodeSection encodes a Section into a buffer.
-func encodeSection(buf *buffer, s *Section) {
-	// Write block palette
-	buf.WriteVarInt(int64(len(s.BlockPalette)))
-	for _, block := range s.BlockPalette {
-		buf.WriteString(block)
+// validateWorldData rejects content that would encode into a file the
+// decoder refuses to read back (oversized blobs or counts).
+func validateWorldData(d *WorldData) error {
+	for _, b := range []struct {
+		p    []byte
+		what string
+	}{
+		{d.Settings, "world settings blob"},
+		{d.UserData, "world user data"},
+		{d.Markers, "markers blob"},
+		{d.Border, "border blob"},
+	} {
+		if err := checkBlob(b.p, b.what); err != nil {
+			return err
+		}
 	}
-
-	// Write block data
-	buf.WriteVarInt(int64(len(s.BlockData)))
-	for _, val := range s.BlockData {
-		buf.WriteInt64(val)
+	if len(d.Columns) > maxChunks {
+		return fmt.Errorf("pile: %d chunks exceeds limit %d", len(d.Columns), maxChunks)
 	}
-
-	// Write biome palette
-	buf.WriteVarInt(int64(len(s.BiomePalette)))
-	for _, biome := range s.BiomePalette {
-		buf.WriteString(biome)
+	for _, c := range d.Columns {
+		if err := validateColumn(c); err != nil {
+			return err
+		}
 	}
-
-	// Write biome data
-	buf.WriteVarInt(int64(len(s.BiomeData)))
-	for _, val := range s.BiomeData {
-		buf.WriteInt64(val)
-	}
+	return nil
 }
 
-// encodeEmptySection encodes an empty section (all air).
-func encodeEmptySection(buf *buffer) {
-	// Empty block palette
-	buf.WriteVarInt(1)
-	buf.WriteString("minecraft:air")
-	buf.WriteVarInt(0) // No block data needed for single palette entry
-
-	// Empty biome palette
-	buf.WriteVarInt(1)
-	buf.WriteString("minecraft:plains")
-	buf.WriteVarInt(0) // No biome data needed
+// compareNBT orders two compounds by their canonical encodings, giving a
+// total order for entries that are otherwise equal.
+func compareNBT(a, b map[string]any) int {
+	ea, erra := marshalNBT(a)
+	eb, errb := marshalNBT(b)
+	if erra != nil || errb != nil {
+		return 0
+	}
+	return bytes.Compare(ea, eb)
 }
 
-// encodeBlockEntity encodes a BlockEntity into a buffer.
-func encodeBlockEntity(buf *buffer, be *BlockEntity) {
-	buf.WriteByte(be.PackedXZ)
-	buf.WriteInt32(be.Y)
-	buf.WriteString(be.ID)
-	buf.WriteBytes(be.Data)
+// comparePos orders block positions canonically by y, then z, then x.
+func comparePos(a, b cube.Pos) int {
+	if v := cmp.Compare(a.Y(), b.Y()); v != 0 {
+		return v
+	}
+	if v := cmp.Compare(a.Z(), b.Z()); v != 0 {
+		return v
+	}
+	return cmp.Compare(a.X(), b.X())
+}
+
+// AlignedRange reports whether a vertical range is representable: records
+// store a section index and a section count, so the range must start on a
+// 16-block boundary and span whole sections. Every Bedrock dimension does;
+// a custom one that does not must be rejected rather than silently re-based.
+func AlignedRange(r cube.Range) bool {
+	return r[0]%16 == 0 && (r[1]-r[0]+1)%16 == 0 && r[1] > r[0]
+}
+
+// validateColumn rejects a column that would encode into a record the
+// decoder refuses to read back.
+func validateColumn(c Column) error {
+	if err := checkBlob(c.UserData, fmt.Sprintf("chunk (%d,%d) user data", c.X, c.Z)); err != nil {
+		return err
+	}
+	if c.Col == nil || c.Col.Chunk == nil {
+		return fmt.Errorf("pile: chunk (%d,%d) has no chunk data", c.X, c.Z)
+	}
+	if r := c.Col.Chunk.Range(); !AlignedRange(r) {
+		return fmt.Errorf("pile: chunk (%d,%d) has vertical range %v, which is not 16-block aligned and cannot be stored exactly", c.X, c.Z, r)
+	}
+	if n := len(c.Col.Entities); n > maxPerChunk {
+		return fmt.Errorf("pile: chunk (%d,%d) has %d entities, limit %d", c.X, c.Z, n, maxPerChunk)
+	}
+	if n := len(c.Col.BlockEntities); n > maxPerChunk {
+		return fmt.Errorf("pile: chunk (%d,%d) has %d block entities, limit %d", c.X, c.Z, n, maxPerChunk)
+	}
+	if n := len(c.Col.ScheduledBlocks); n > maxPerChunk {
+		return fmt.Errorf("pile: chunk (%d,%d) has %d scheduled ticks, limit %d", c.X, c.Z, n, maxPerChunk)
+	}
+	return nil
+}
+
+// extractColumnRaw converts a column into raw form without touching shared
+// state or mutating the chunk (safe to run in parallel and on columns shared
+// with concurrent readers). Canonicalization that dragonfly's Compact would
+// perform happens during extraction instead: palettes are reduced to used
+// entries and air-only layers are dropped.
+func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32) colRaw {
+	ch := c.Col.Chunk
+	air := chunkAir(ch)
+
+	// Dragonfly builds these slices by ranging maps, so their order varies
+	// between saves of identical content. Sort them canonically: determinism
+	// is a format guarantee, not an accident of the caller's iteration.
+	// Ties are broken on the encoded bytes so the order is total: equal
+	// positions or IDs must not leave the caller's order deciding the file.
+	bes := slices.Clone(c.Col.BlockEntities)
+	slices.SortStableFunc(bes, func(a, b chunk.BlockEntity) int {
+		if v := comparePos(a.Pos, b.Pos); v != 0 {
+			return v
+		}
+		return compareNBT(a.Data, b.Data)
+	})
+	ents := slices.Clone(c.Col.Entities)
+	slices.SortStableFunc(ents, func(a, b chunk.Entity) int {
+		if v := cmp.Compare(a.ID, b.ID); v != 0 {
+			return v
+		}
+		return compareNBT(a.Data, b.Data)
+	})
+	ticks := slices.Clone(c.Col.ScheduledBlocks)
+	slices.SortStableFunc(ticks, func(a, b chunk.ScheduledBlockUpdate) int {
+		if v := comparePos(a.Pos, b.Pos); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.Tick, b.Tick); v != 0 {
+			return v
+		}
+		return cmp.Compare(a.Block, b.Block)
+	})
+
+	// Preserved unknown states, grouped by section and layer.
+	type secLayer struct {
+		sec   int32
+		layer uint8
+	}
+	var unknownBySec map[secLayer][]UnknownBlock
+	if len(c.Unknown) > 0 {
+		unknownBySec = make(map[secLayer][]UnknownBlock)
+		for _, u := range c.Unknown {
+			// Sidecar sections are absolute; entries outside this chunk's
+			// range (after a range change) are dropped.
+			k := secLayer{sec: u.Section, layer: u.Layer}
+			unknownBySec[k] = append(unknownBySec[k], u)
+		}
+	}
+
+	r := ch.Range()
+	subs := ch.Sub()
+	cr := colRaw{
+		x: c.X, z: c.Z,
+		minSection: int32(r[0] >> 4),
+		sectionN:   len(subs),
+		blockSecs:  make([][]rawBlockSec, len(subs)),
+		biomeSecs:  make([]rawBiomeSec, len(subs)),
+		tick:       c.Col.Tick,
+		userData:   c.UserData,
+	}
+	if cr.sectionN > maxSectionCnt {
+		cr.err = fmt.Errorf("chunk has %d sections (limit %d)", cr.sectionN, maxSectionCnt)
+		return cr
+	}
+
+	for i, sub := range subs {
+		layers := sub.Layers()
+		if len(layers) == 0 {
+			continue
+		}
+		if len(layers) > maxLayers {
+			cr.err = fmt.Errorf("section %d has %d layers (limit %d)", i, len(layers), maxLayers)
+			return cr
+		}
+		secs := make([]rawBlockSec, 0, len(layers))
+		for l, storage := range layers {
+			rs := extractBlockRaw(storage)
+			// Inject preserved states first: with a registry where the
+			// placeholder resolves to air, an air-only test before injection
+			// would discard the layer and lose them.
+			if entries := unknownBySec[secLayer{sec: int32(r[0]>>4) + int32(i), layer: uint8(l)}]; len(entries) > 0 {
+				injectUnknown(&rs, entries, placeholder, len(c.UnknownStates))
+			}
+			if len(rs.rids) == 1 && rs.rids[0] == air && (rs.states == nil || rs.states[0] < 0) {
+				// Air-only layer: drop it, shifting later layers down. This
+				// mirrors what dragonfly's own Compact would do.
+				continue
+			}
+			secs = append(secs, rs)
+		}
+		if len(secs) == 0 {
+			continue
+		}
+		cr.blockSecs[i] = secs
+	}
+	cr.unkStates = c.UnknownStates
+
+	if !skipBiomes {
+		// Preserved biome names, keyed by absolute section and index.
+		type bioKey struct {
+			sec int32
+			idx uint16
+		}
+		bioUnknown := make(map[bioKey]uint32, len(c.UnknownBiomes))
+		bioUniform := make(map[int32]uint32, len(c.UnknownBiomes))
+		for _, u := range c.UnknownBiomes {
+			if u.Index == WholeStorage {
+				bioUniform[u.Section] = u.State
+				continue
+			}
+			bioUnknown[bioKey{sec: u.Section, idx: u.Index}] = u.State
+		}
+		plains := plainsBiomeName()
+		for i := range subs {
+			rs := extractBiomeRaw(ch, i)
+			sec := int32(r[0]>>4) + int32(i)
+			if len(c.UnknownBiomes) > 0 {
+				// Re-emit the original name wherever the fallback biome is
+				// still in place.
+				if state, ok := bioUniform[sec]; ok && len(rs.names) == 1 && rs.names[0] == plains {
+					rs.names[0] = c.UnknownBiomeNames[state]
+				} else if len(bioUnknown) > 0 && rs.idx != nil {
+					for j, name := range rs.names {
+						if name != plains {
+							continue
+						}
+						for idx, li := range rs.idx {
+							if int(li) != j {
+								continue
+							}
+							if state, ok := bioUnknown[bioKey{sec: sec, idx: uint16(idx)}]; ok {
+								rs.names[j] = c.UnknownBiomeNames[state]
+								break
+							}
+						}
+					}
+				}
+			}
+			cr.biomeSecs[i] = rs
+		}
+	}
+	if storeLight {
+		cr.light = make([]lightPair, len(subs))
+		for i, sub := range subs {
+			if cr.blockSecs[i] == nil {
+				continue
+			}
+			bl, sk := subLight(sub)
+			cr.light[i] = lightPair{block: cloneBytes(bl), sky: cloneBytes(sk)}
+		}
+	}
+	for _, be := range bes {
+		data := make(map[string]any, len(be.Data))
+		for k, v := range be.Data {
+			if k == "x" || k == "y" || k == "z" {
+				continue // reinjected from the stored position on decode
+			}
+			data[k] = v
+		}
+		blob, err := marshalNBT(data)
+		if err != nil {
+			cr.err = fmt.Errorf("block entity at %v: %w", be.Pos, err)
+			return cr
+		}
+		if err := checkBlob(blob, fmt.Sprintf("block entity NBT at %v", be.Pos)); err != nil {
+			cr.err = err
+			return cr
+		}
+		cr.bes = append(cr.bes, beIntermediate{
+			packedXZ: uint8(be.Pos.X()&0xF) | uint8(be.Pos.Z()&0xF)<<4,
+			y:        int32(be.Pos.Y()),
+			nbt:      blob,
+		})
+	}
+	for _, e := range ents {
+		data := make(map[string]any, len(e.Data)+1)
+		maps.Copy(data, e.Data)
+		data["UniqueID"] = e.ID
+		blob, err := marshalNBT(data)
+		if err != nil {
+			cr.err = fmt.Errorf("entity %d: %w", e.ID, err)
+			return cr
+		}
+		if err := checkBlob(blob, fmt.Sprintf("entity %d NBT", e.ID)); err != nil {
+			cr.err = err
+			return cr
+		}
+		cr.ents = append(cr.ents, blob)
+	}
+	type tickKey struct {
+		pos [3]int32
+		at  int64
+	}
+	tickState := make(map[tickKey]int32, len(c.UnknownTicks))
+	for _, ut := range c.UnknownTicks {
+		if int(ut.State) < len(c.UnknownStates) {
+			tickState[tickKey{pos: ut.Pos, at: ut.At}] = int32(ut.State)
+		}
+	}
+	for _, t := range ticks {
+		st := int32(-1)
+		// Only honour the preserved state while the update still points at
+		// the placeholder: if the server replaced it, the new block wins.
+		k := tickKey{pos: [3]int32{int32(t.Pos.X()), int32(t.Pos.Y()), int32(t.Pos.Z())}, at: t.Tick}
+		if s, ok := tickState[k]; ok && t.Block == placeholder {
+			st = s
+		}
+		cr.ticks = append(cr.ticks, rawTick{
+			packedXZ: uint8(t.Pos.X()&0xF) | uint8(t.Pos.Z()&0xF)<<4,
+			y:        int32(t.Pos.Y()),
+			rid:      t.Block,
+			state:    st,
+			at:       t.Tick,
+		})
+	}
+	return cr
+}
+
+// injectUnknown rewrites positions still holding the placeholder runtime ID
+// to reference their preserved original states, then recompacts the local
+// palette to used entries so the output stays canonical.
+func injectUnknown(rs *rawBlockSec, entries []UnknownBlock, placeholder uint32, nStates int) {
+	// Materialise indices (a uniform storage points everything at slot 0).
+	if rs.idx == nil {
+		rs.idx = make([]uint16, 4096)
+	}
+	if rs.states == nil {
+		rs.states = make([]int32, len(rs.rids))
+		for i := range rs.states {
+			rs.states[i] = -1
+		}
+	}
+	isPlaceholderSlot := func(slot uint16) bool {
+		return rs.states[slot] == -1 && rs.rids[slot] == placeholder
+	}
+	slotFor := func(state uint32) uint16 {
+		for i, st := range rs.states {
+			if st == int32(state) {
+				return uint16(i)
+			}
+		}
+		rs.rids = append(rs.rids, placeholder)
+		rs.states = append(rs.states, int32(state))
+		return uint16(len(rs.rids) - 1)
+	}
+	for _, u := range entries {
+		if int(u.State) >= nStates {
+			continue
+		}
+		if u.Index == WholeStorage {
+			slot := uint16(0)
+			assigned := false
+			for i, li := range rs.idx {
+				if isPlaceholderSlot(li) {
+					if !assigned {
+						slot, assigned = slotFor(u.State), true
+					}
+					rs.idx[i] = slot
+				}
+			}
+			continue
+		}
+		if int(u.Index) >= len(rs.idx) {
+			continue
+		}
+		if li := rs.idx[u.Index]; isPlaceholderSlot(li) {
+			rs.idx[u.Index] = slotFor(u.State)
+		}
+	}
+
+	// Used-only recompaction (injection may have orphaned the placeholder).
+	used := make([]bool, len(rs.rids))
+	for _, li := range rs.idx {
+		used[li] = true
+	}
+	remap := make([]uint16, len(rs.rids))
+	rids := make([]uint32, 0, len(rs.rids))
+	states := make([]int32, 0, len(rs.rids))
+	for i, u := range used {
+		if u {
+			remap[i] = uint16(len(rids))
+			rids = append(rids, rs.rids[i])
+			states = append(states, rs.states[i])
+		}
+	}
+	if len(rids) == 1 {
+		rs.rids, rs.states, rs.idx = rids, states, nil
+		return
+	}
+	for i, li := range rs.idx {
+		rs.idx[i] = remap[li]
+	}
+	rs.rids, rs.states = rids, states
+}
+
+// extractBlockRaw reads a storage into a local runtime ID palette + indices.
+func extractBlockRaw(storage *chunk.PalettedStorage) rawBlockSec {
+	var out rawBlockSec
+	sd := extractStorage(storage, func(v uint32) uint32 {
+		out.rids = append(out.rids, v)
+		return uint32(len(out.rids) - 1)
+	})
+	out.idx = sd.idx
+	return out
+}
+
+// plainsBiomeName is the fallback unresolved biomes decode to.
+func plainsBiomeName() string { return "minecraft:plains" }
+
+// extractBiomeRaw reads one section's biome storage into a local biome name
+// palette + indices.
+func extractBiomeRaw(ch *chunk.Chunk, secIdx int) rawBiomeSec {
+	var out rawBiomeSec
+	sd := extractStorage(chunkBiomeStorage(ch, secIdx), func(id uint32) uint32 {
+		out.names = append(out.names, biomeName(id))
+		return uint32(len(out.names) - 1)
+	})
+	out.idx = sd.idx
+	return out
+}
+
+// resolveColumn maps a raw column's local palettes into the global palette
+// builders. The call order matches the historical serial encoder, keeping
+// palette build order (and therefore output) identical.
+func resolveColumn(cr *colRaw, addBlock func(rid uint32) uint32, addBiome func(name string) uint32, addState func(bs BlockState) uint32) colIntermediate {
+	ci := colIntermediate{
+		x: cr.x, z: cr.z,
+		minSection: cr.minSection,
+		sectionN:   cr.sectionN,
+		blockSecs:  make([][]secData, cr.sectionN),
+		biomeSecs:  make([]secData, cr.sectionN),
+		light:      cr.light,
+		bes:        cr.bes,
+		ents:       cr.ents,
+		tick:       cr.tick,
+		userData:   cr.userData,
+	}
+	for i, secs := range cr.blockSecs {
+		if secs == nil {
+			continue
+		}
+		out := make([]secData, len(secs))
+		for l, rs := range secs {
+			pal := make([]uint32, len(rs.rids))
+			for j, rid := range rs.rids {
+				if rs.states != nil && rs.states[j] >= 0 {
+					pal[j] = addState(cr.unkStates[rs.states[j]])
+					continue
+				}
+				pal[j] = addBlock(rid)
+			}
+			out[l] = secData{pal: pal, idx: rs.idx}
+		}
+		ci.blockSecs[i] = out
+	}
+	for i, bs := range cr.biomeSecs {
+		if bs.names == nil {
+			continue
+		}
+		pal := make([]uint32, len(bs.names))
+		for j, name := range bs.names {
+			pal[j] = addBiome(name)
+		}
+		ci.biomeSecs[i] = secData{pal: pal, idx: bs.idx}
+	}
+	ci.ticks = make([]tickIntermediate, len(cr.ticks))
+	for i, t := range cr.ticks {
+		build := uint32(0)
+		if t.state >= 0 {
+			build = addState(cr.unkStates[t.state])
+		} else {
+			build = addBlock(t.rid)
+		}
+		ci.ticks[i] = tickIntermediate{
+			packedXZ: t.packedXZ, y: t.y, blockBuild: build, at: t.at,
+		}
+	}
+	return ci
+}
+
+// buildColBlobs computes the canonical blob bytes of one column's sections.
+func buildColBlobs(ci *colIntermediate, blockRemap, biomeRemap []uint32, defaultRef uint32, haveDefault bool) colBlobs {
+	cb := colBlobs{
+		block: make([][][]byte, ci.sectionN),
+		biome: make([][]byte, ci.sectionN),
+	}
+	for i, secs := range ci.blockSecs {
+		if secs == nil {
+			continue
+		}
+		out := make([][]byte, len(secs))
+		for l, sd := range secs {
+			out[l] = canonicalBlob(sd, blockRemap)
+		}
+		cb.block[i] = out
+	}
+	for i := range ci.biomeSecs {
+		sd := &ci.biomeSecs[i]
+		if sd.pal == nil {
+			continue
+		}
+		if build, ok := sd.uniform(); ok && haveDefault && biomeRemap[build] == defaultRef {
+			continue // uniformly the world default: absent
+		}
+		cb.biome[i] = canonicalBlob(*sd, biomeRemap)
+	}
+	return cb
+}
+
+// blobSink writes an encoded section blob into a record: solid mode writes a
+// blob table reference, indexed mode inlines the blob bytes.
+type blobSink func(w *writer, blob []byte)
+
+// encodeRecordBody writes a chunk record without position, emitting the
+// precomputed section blobs through sink.
+func encodeRecordBody(w *writer, ci *colIntermediate, cb *colBlobs, blockRemap []uint32, storeLight bool, sink blobSink) {
+	w.svarint(int64(ci.minSection))
+	w.uvarint(uint64(ci.sectionN))
+
+	// Block presence bitset + per-section layer blobs.
+	presence := make([]byte, (ci.sectionN+7)/8)
+	for i, secs := range cb.block {
+		if secs != nil {
+			presence[i/8] |= 1 << (i % 8)
+		}
+	}
+	w.raw(presence)
+	for _, secs := range cb.block {
+		if secs == nil {
+			continue
+		}
+		w.uvarint(uint64(len(secs)))
+		for _, blob := range secs {
+			sink(w, blob)
+		}
+	}
+
+	// Biome presence bitset + per-section blobs.
+	bioBits := make([]byte, (ci.sectionN+7)/8)
+	for i, blob := range cb.biome {
+		if blob != nil {
+			bioBits[i/8] |= 1 << (i % 8)
+		}
+	}
+	w.raw(bioBits)
+	for _, blob := range cb.biome {
+		if blob != nil {
+			sink(w, blob)
+		}
+	}
+
+	if storeLight {
+		for i, secs := range cb.block {
+			if secs == nil {
+				continue
+			}
+			var lp lightPair
+			if i < len(ci.light) {
+				lp = ci.light[i]
+			}
+			var flags uint8
+			if len(lp.block) == 2048 {
+				flags |= 1
+			}
+			if len(lp.sky) == 2048 {
+				flags |= 2
+			}
+			w.u8(flags)
+			if flags&1 != 0 {
+				w.raw(lp.block)
+			}
+			if flags&2 != 0 {
+				w.raw(lp.sky)
+			}
+		}
+	}
+
+	w.uvarint(uint64(len(ci.bes)))
+	for _, be := range ci.bes {
+		w.u8(be.packedXZ)
+		w.svarint(int64(be.y))
+		w.blob(be.nbt)
+	}
+	w.uvarint(uint64(len(ci.ents)))
+	for _, e := range ci.ents {
+		w.blob(e)
+	}
+	w.svarint(ci.tick)
+	w.uvarint(uint64(len(ci.ticks)))
+	for _, t := range ci.ticks {
+		w.u8(t.packedXZ)
+		w.svarint(int64(t.y))
+		w.uvarint(uint64(blockRemap[t.blockBuild]))
+		w.svarint(t.at)
+	}
+	w.blob(ci.userData)
 }

@@ -1,248 +1,592 @@
-# Pile World File Format (v1)
+# Pile File Format, Version 2
 
-This document describes the binary file format used by Pile, a compact single-file world format based on Polar, with several structural and behavioral differences. Pile stores one file per dimension:
-- overworld: overworld.pile
-- nether: nether.pile
-- end: end.pile
+This document is the complete specification of the pile binary format, written
+so the format can be implemented in any language without reference to the Go
+implementation. The Go implementation in this package is the reference; where
+this document and the implementation disagree, the implementation wins and the
+document has a bug.
 
-The format is designed for fast load/store of small worlds and supports streaming, compression, and paletted section storage.
+A pile file stores one Minecraft (Bedrock) dimension (or one structure) in a
+single file. Design goals: minimal size for small worlds, deterministic output
+(identical content ⇒ identical bytes), integrity checking, crash safety, and
+an optional append-oriented mode for large worlds.
 
-Status:
-- Magic number: 0x50696C65 ("Pile")
-- Version: 1
-- Endianness: Big-endian for fixed-size integers; variable-length integers are signed LEB128 (Go encoding/binary Varint)
-- Compression: Zstandard (optional)
-- Streaming saves supported (uncompressed length header may be a placeholder)
-
----
-
-## Binary conventions
-
-- uint8/uint16/uint32/int16/int32/int64: Big-endian
-- varint: Signed LEB128 using Go’s `encoding/binary` Varint. Where counts/lengths are encoded with varint, they must be non-negative (the decoder rejects negative values).
-- string: varint length (bytes), followed by UTF-8 bytes. Maximum length: 1 MiB.
-- bytes: varint length, followed by that many bytes. Maximum length: 16 MiB.
-- bool: encoded as a single byte 0 or 1 (only used internally inside the NBT metadata; the file format itself uses explicit integer and varint fields).
-
-Indexing inside 16x16x16 sections uses a linear index `i` in [0, 4095] mapped as:
-- x = i & 0xF
-- z = (i >> 4) & 0xF
-- y = (i >> 8) & 0xF
-
-In other words, x increases fastest, then z, then y.
+- Header magic: the four bytes `P I L E`
+- Footer magic: the four bytes `E L I P`
+- Version: 2
+- Compression: Zstandard
+- Checksums: xxHash64
 
 ---
 
-## Top-level file layout
+## 1. Primitives and conventions
 
-File = Header + Data
+All fixed-width integers are **little-endian**.
 
-Header (always uncompressed):
-- uint32 magic = 0x50696C65
-- int16 version = 1
-- uint8 compression:
-  - 0 = none
-  - 1 = zstd
-- varint data_length
-  - Intended to be the uncompressed length of the world data (for non-streaming writers).
-  - Readers MUST NOT rely on this value (streaming writers may write 0 as a placeholder). It is safe to ignore.
+| name    | encoding |
+|---------|----------|
+| `u8`, `u16`, `u32`, `u64`, `i32` | fixed-width little-endian |
+| `uvarint` | unsigned LEB128 (Go `binary.PutUvarint`): 7 bits per byte, high bit = continuation. MUST be minimal: decoders reject overlong encodings |
+| `svarint` | zigzag-encoded LEB128 (Go `binary.PutVarint`): value `v` maps to `uvarint((v << 1) ^ (v >> 63))`. MUST be minimal |
+| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 536 (64 KiB) |
+| `blob`   | `uvarint` byte length + raw bytes. Decoders MUST reject lengths > 16 777 216 (16 MiB) |
+| `bitset(n)` | `ceil(n/8)` bytes; bit `i` is bit `i%8` of byte `i/8` (LSB-first). Padding bits above `n` MUST be zero |
 
-Data:
-- If compression == 1: the remainder of the file is a zstd stream that contains the "World data" payload below.
-- If compression == 0: the remainder is the "World data" payload uncompressed.
+**Section-local block index.** A section is a 16×16×16 cube. The linear index
+of local position (x, y, z), each in [0, 15], is:
 
----
+```
+i = (x << 8) | (z << 4) | y        // i in [0, 4095]
+```
 
-## World data payload
+y varies fastest, then z, then x. (This matches dragonfly's storage order.)
 
-World:
-- int32 min_section
-- int32 max_section
-  - Sections are addressed in the half-open range [min_section, max_section). The number of sections is `max_section - min_section`.
-  - `min_section` and `max_section` are derived from the dimension Y-range: `min_section = minY >> 4`, `max_section = maxY >> 4`.
-- bytes world_user_data
-  - Arbitrary world metadata. In Pile this is used to store world settings as an NBT compound (see “World settings metadata”).
-- varint chunk_count (0..1_000_000)
-- chunk[chunk_count]
+**Light nibble arrays.** A light array holds 4096 4-bit values in 2048 bytes.
+Value `i` (same linear index as blocks) lives in byte `i >> 1`; even `i` in the
+low nibble, odd `i` in the high nibble.
 
-Notes:
-- The order of chunks is not specified and should not be relied upon by readers.
+**Morton (Z-order) key.** Chunk ordering uses a 64-bit Morton key over chunk
+coordinates. Each coordinate is first mapped into unsigned space by XOR with
+`0x80000000`, then the 32 bits of x are spread to even bit positions and z to
+odd bit positions:
 
----
+```
+key(x, z) = spread(u32(x) ^ 0x80000000) | spread(u32(z) ^ 0x80000000) << 1
+```
 
-## Chunk record
+where `spread` distributes bit `i` of the input to bit `2i` of the output.
 
-Chunk:
-- int32 x
-- int32 z
-- section[(max_section - min_section)]
-  - Each section is encoded in full; empty sections use a compact “empty section” encoding (see below).
-- varint block_entity_count
-- block_entity[block_entity_count]
-- varint entity_count
-- entity[entity_count]
-- varint scheduled_tick_count
-- scheduled_tick[scheduled_tick_count]
-- bytes chunk_user_data
-  - Reserved for future use. May be empty.
+**NBT.** All NBT blobs are little-endian Bedrock NBT (numbers little-endian,
+string lengths `u16`, array lengths `i32`), a single compound with an empty
+root name. Writers MUST emit compound keys in ascending bytewise order; this
+is what makes NBT-carrying files deterministic. Readers accept any key order.
 
----
-
-## Section encoding
-
-A section is a 16x16x16 cube of blocks and per-block biomes. Data is stored paletted for compactness.
-
-Section:
-- Block palette:
-  - varint block_palette_size = N
-  - string block_name[N] (e.g., "minecraft:stone")
-  - varint block_data_len = Lb
-  - int64 block_data[Lb] (paletted indices, bit-packed)
-- Biome palette:
-  - varint biome_palette_size = M
-  - string biome_name[M] (e.g., "minecraft:plains")
-  - varint biome_data_len = Lm
-  - int64 biome_data[Lm] (paletted indices, bit-packed)
-
-Empty section encoding (canonical):
-- Block palette: size = 1, entry = "minecraft:air", block_data_len = 0
-- Biome palette: size = 1, entry = "minecraft:plains", biome_data_len = 0
-
-### Paletted int64 packing
-
-- Bits per entry `b = ceil(log2(palette_size))`. If `palette_size <= 1`, `b = 0`, and no data words are written (all values are index 0).
-- Values are packed into 64-bit words, least-significant-bits first, with:
-  - values_per_long = floor(64 / b) (if b == 0, array is empty)
-  - For index `i`, the destination word is `long_idx = i / values_per_long`
-  - Bit offset within that word is `bit_offset = (i % values_per_long) * b`
-  - The `b` bits for the palette index are written at that offset in the word’s least significant bits.
-- The linear index `i` uses the (x, z, y) ordering described in “Binary conventions”.
+Decoding NBT into a dynamically typed map cannot distinguish `TAG_List` of a
+numeric type from the corresponding array tag: both become the same host-language
+value. The reference implementation therefore adopts exactly the mapping used
+by the ecosystem's NBT library (gophertunnel), which is what dragonfly's own
+leveldb provider writes: dynamically sized sequences re-encode as `TAG_List`
+of their element type, fixed-size ones as the array tags. A blob that
+originally used `TAG_Byte_Array`/`TAG_Int_Array`/`TAG_Long_Array` therefore
+re-encodes as the equivalent list, and is stable from then on. Implementations
+that can retain the original tag kind are free to do so; they MUST NOT depend
+on the distinction being preserved by others.
+Tag types used: byte(1), short(2), int(3), long(4), float(5), double(6),
+byte_array(7), string(8), list(9), compound(10), int_array(11),
+long_array(12).
 
 ---
 
-## Block entities
+## 2. Container layout
 
-- varint block_entity_count
-- block_entity[block_entity_count]
+```
++--------------------------+
+| Header      (16 bytes)   |  never compressed
++--------------------------+
+| Body                     |  solid: a single unit (§4)
+|                          |  indexed: a sequence of frames (§5)
++--------------------------+
+| Footer      (44 bytes)   |  never compressed
++--------------------------+
+```
 
-block_entity:
-- uint8 packed_xz
-  - x: bits 0..3 (0..15), z: bits 4..7 (0..15)
-  - Only 4 bits are used for each of x and z (local within the 16x16 chunk).
-- int32 y (absolute Y)
-- string id (e.g., "minecraft:chest")
-- bytes data (NBT compound, uninterpreted by the format)
+### 2.1 Header (16 bytes)
 
----
+| offset | type | field | value |
+|--------|------|-------|-------|
+| 0  | 4 bytes | magic | `PILE` |
+| 4  | u16 | version | 2 |
+| 6  | u8  | kind | 0 = world, 1 = structure |
+| 7  | u8  | mode | 0 = solid, 1 = indexed |
+| 8  | u32 | flags | §2.3 |
+| 12 | i32 | blockVersion | the Minecraft block-state version the writer encoded against |
 
-## Entities
+Readers MUST reject unknown versions and unknown flag bits (they may change
+payload meaning).
 
-- varint entity_count
-- entity[entity_count]
+### 2.2 Footer (44 bytes, at end of file)
 
-entity:
-- string identifier (e.g., "minecraft:zombie")
-- string uuid (RFC4122 textual form, e.g., "123e4567-e89b-12d3-a456-426614174000")
-- float32 position_x (big-endian)
-- float32 position_y (big-endian)
-- float32 position_z (big-endian)
-- float32 rotation_yaw (big-endian)
-- float32 rotation_pitch (big-endian)
-- float32 velocity_x (big-endian)
-- float32 velocity_y (big-endian)
-- float32 velocity_z (big-endian)
-- bytes data (NBT compound, optional)
-  - Additional entity attributes (fire duration, age, name tag, etc.). Pile does not enforce a schema; consumers may infer from their runtime.
+| offset | type | field |
+|--------|------|-------|
+| 0  | u64 | bodyHash. Solid: xxHash64 of the stored body bytes (compressed form); indexed: xxHash64 of the stored directory frame bytes |
+| 8  | u64 | dirOffset. Indexed: file offset of the directory frame; solid: 0 |
+| 16 | u64 | dirLength. Indexed: stored length of the directory frame; solid: 0 |
+| 24 | u64 | generation. Indexed: checkpoint counter; solid: 0 |
+| 32 | u64 | prevFooter. Indexed: file offset of the previous checkpoint's footer (0 for the first); solid: 0. Must be older than this footer's own offset |
+| 40 | 4 bytes | magic | `ELIP` |
 
-Notes:
-- The identifier, UUID, position, rotation, and velocity are stored explicitly for fast access and indexing.
-- All positional data is stored as float32.
-- The NBT payload may duplicate some of this data (e.g., for compatibility with other formats) but is not required to.
+The footer magic differs from the header magic so the indexed-mode backward
+recovery scan (§5.6) can never mistake a header for a footer.
 
----
+### 2.3 Flags
 
-## Scheduled ticks
-
-- varint scheduled_tick_count
-- scheduled_tick[scheduled_tick_count]
-
-scheduled_tick:
-- uint8 packed_xz (same 4-bit-per-axis packing as block entities)
-- int32 y (absolute Y)
-- string block (block identifier who owns the tick, e.g., "minecraft:oak_sapling")
-- varint tick (int64; absolute tick time)
-
----
-
-## Chunk user data (reserved)
-
-- bytes chunk_user_data
-  - Reserved for application-defined metadata. May be empty.
+| bit | name | meaning |
+|-----|------|---------|
+| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness |
+| 1 | Stats | the meta block contains a stats compound (§4.2) |
+| 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
+| 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
+| 4 | Uncompressed | the body is stored without compression |
+| 5–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
+| 16–31 | defaultBiomeRef | only meaningful when bit 3 is set, and MUST be zero when it is clear |
 
 ---
 
-## World settings metadata (stored in world_user_data)
+## 3. Shared building blocks
 
-Pile stores world settings inside `world_user_data` as an NBT compound. Keys and types:
+These structures appear in both modes and in structure files.
 
-- name: string
-- spawnX: int32
-- spawnY: int32
-- spawnZ: int32
-- time: int64
-- timeCycle: bool
-- rainTime: int64
-- raining: bool
-- thunderTime: int64
-- thundering: bool
-- weatherCycle: bool
-- currentTick: int64
-- defaultGameMode: int32 (engine-specific enum ID)
-- difficulty: int32 (engine-specific enum ID)
+### 3.1 Global block state palette
 
-Readers should treat this blob as optional; files may omit or leave it empty.
+Every unique block state referenced anywhere in the file, encoded once.
+
+```
+count            uvarint          (≤ 1 048 576)
+entry[count]:
+  name           string           e.g. "minecraft:stone"
+  propN          uvarint          (≤ 64)
+  prop[propN]:                    sorted by key, ascending bytewise
+    key          string
+    type         u8               0 = byte, 1 = int32, 2 = string
+    value        u8 | i32 | string
+```
+
+Bedrock block state properties are exactly these three NBT types, making the
+encoding lossless. In solid mode the palette is sorted by descending reference count, where the
+**reference count is the number of section-local palettes the state appears
+in, plus one per scheduled block update referencing it** (not the number of
+blocks holding it). Ties break by ascending canonical state string
+(`name[key=value,...]`, keys sorted), and any remaining tie by the state's
+length-prefixed identity, so the order is total. In indexed mode the palette
+is first-seen order across segments.
+
+Boolean properties, which a custom block registry may present instead of the
+byte form, are encoded as `type = 0` with value 0 or 1.
+
+Decoding: upgrade each state from the header's `blockVersion` to the runtime's
+block version (Bedrock block state upgrade schema), then resolve it in the
+block registry. Unresolvable states decode as a placeholder block
+(`minecraft:info_update`), falling back to air; the palette entry itself is
+preserved so tooling can report it.
+
+### 3.2 Global biome palette
+
+```
+count            uvarint
+name[count]      string           e.g. "minecraft:plains"
+```
+
+Names, not numeric IDs, so entries stay stable across game versions. Unknown biomes decode as
+`minecraft:plains`.
+
+### 3.3 Section blob
+
+The canonical encoding of one 16³ storage (a block layer or a section's
+biomes). Self-delimiting.
+
+```
+paletteN         uvarint          (1 ≤ paletteN ≤ 65 536)
+ref[paletteN]    uvarint          references into the global palette
+width            u8               0 = uniform, 1 = u8, 2 = u16 (little-endian)
+indices          4096 * width bytes   absent when width = 0
+```
+
+Rules:
+
+- `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
+- `width = 1` requires `paletteN ≤ 256`; `width = 2` requires `paletteN > 256`
+  (the narrowest sufficient width is the only valid one).
+- References MUST ascend strictly, so a section has exactly one encoding and
+  cannot carry duplicate or unused entries.
+- Each index selects a local palette entry; indices ≥ `paletteN` are invalid.
+- **Canonical form** (required from writers *and enforced by decoders*, which
+  reject non-canonical blobs; this enables dedup and determinism):
+  refs sorted ascending; indices remapped accordingly; the palette contains
+  only entries actually used by the indices; a storage whose used palette
+  collapses to one entry MUST be written uniform (width 0).
+- Byte-aligned indices are deliberate: zstd's entropy stage compresses them
+  near-optimally and encode/decode becomes a copy + remap.
+
+### 3.4 Section blob table (solid and structure only)
+
+Deduplication container: every unique section blob stored once, referenced by
+index. Identical bytes MUST share one entry.
+
+```
+count            uvarint          (≤ 16 777 216)
+blob[count]      section blobs, concatenated (self-delimiting)
+```
+
+Blob ids are assigned in first-use order over the (Morton-sorted) record
+stream. Block and biome blobs share the table; a blob's refs are interpreted
+against the block or biome palette according to the use site.
 
 ---
 
-## Compression
+## 4. Solid mode (mode = 0, kind = world)
 
-- compression == 0 (none): The world data payload follows uncompressed.
-- compression == 1 (zstd): The world data payload follows as a Zstandard stream. Encoders may choose different compression levels; readers must accept any valid zstd stream.
+The body is a single unit: compressed as one Zstandard frame unless flag
+`Uncompressed` is set. `footer.bodyHash` covers the stored (compressed) bytes.
 
-Encoders:
-- Non-streaming encoders typically compute and write the uncompressed payload into memory, optionally compress, write header (with `data_length` = length of uncompressed payload), then write the payload.
-- Streaming encoders write the header and then stream the world data chunk-by-chunk (possibly through a streaming zstd encoder). In this case, `data_length` may be 0 or a placeholder and should be ignored by readers.
+Body content, in order:
 
-Readers:
-- MUST ignore `data_length` and read until EOF of the stream.
-- MUST support both compressed and uncompressed payloads.
+```
+meta block       §4.1–4.2
+block palette    §3.1
+biome palette    §3.2
+blob table       §3.4
+chunkN           uvarint          (≤ 1 048 576)
+record[chunkN]   §4.3, sorted by Morton key of (x, z)
+```
+
+Nothing may follow the last record.
+
+### 4.1 Meta block
+
+```
+settings         blob             NBT; world settings (§7.1); may be empty
+userData         blob             application-defined; may be empty
+markers          blob             NBT (§7.2); may be empty
+border           blob             NBT (§7.3); may be empty
+stats            blob             present iff flag Stats; NBT (§4.2)
+```
+
+### 4.2 Stats compound (optional)
+
+NBT compound with at least: `chunks` (int), `filledSections` (int),
+`uniqueBlobs` (int), `blockStates` (int), `biomes` (int). Tools may read it
+via the meta block without decoding chunk data. Readers MUST ignore unknown
+keys.
+
+### 4.3 Chunk record
+
+```
+dx, dz           svarint          chunk position delta from the previous
+                                  record (the first record deltas from (0,0))
+minSection       svarint          lowest section index (blockY = section*16)
+sectionN         uvarint          section count (1 ≤ sectionN ≤ 512)
+blockPresence    bitset(sectionN) bit i set = section i has block data
+present sections, ascending i:
+  layerN         uvarint          storage layers (1 ≤ layerN ≤ 4);
+                                  layer 1 is Bedrock's waterlogging layer
+  blobRef[layerN] uvarint         blob table references
+biomePresence    bitset(sectionN)
+present biome sections, ascending i:
+  blobRef        uvarint
+light            §4.6, present iff flag StoreLight
+beN              uvarint          (≤ 65 536)
+be[beN]          §4.4
+entN             uvarint          (≤ 65 536)
+ent[entN]:
+  nbt            blob             §4.5
+tick             svarint          the column's current tick
+stN              uvarint          (≤ 65 536)
+st[stN]:                          scheduled block updates
+  packedXZ       u8               x = bits 0–3, z = bits 4–7 (chunk-local)
+  y              svarint          absolute block Y
+  blockRef       uvarint          global block palette reference
+  at             svarint          absolute tick of the update
+userData         blob             application-defined chunk metadata
+```
+
+An air-only section is absent (one presence bit); a fully empty chunk record
+(all bits clear, zero counts) costs ~10 bytes and means "exists, is air", which is
+distinct from a chunk that was never stored.
+
+Writers MUST NOT emit a uniform-air block layer; a section is either absent or
+contains at least one non-air-only layer. Decoders treat a uniform-air layer 0
+defensively as absent.
+
+### 4.4 Block entity
+
+```
+packedXZ         u8               x = bits 0–3, z = bits 4–7 (chunk-local)
+y                svarint          absolute block Y
+nbt              blob             NBT compound
+```
+
+The `x`, `y`, `z` keys are stripped from the NBT on write and reinjected (as
+int tags, absolute coordinates) on read; the identifier stays inside the NBT
+(`id` key by Bedrock convention).
+
+### 4.5 Entity
+
+One NBT compound per entity, stored whole: `identifier`, `Pos` (list of 3
+floats), `Rotation`/`Yaw`/`Pitch`, `Motion`, and a `UniqueID` (long) which the
+reference implementation surfaces as the entity's stable id. The format does
+not interpret entity NBT beyond `UniqueID`.
+
+### 4.6 Light (flag StoreLight)
+
+For each **block-present** section, ascending:
+
+```
+flags            u8               bit 0 = block light present, bit 1 = sky light present
+blockLight       2048 bytes       present iff bit 0
+skyLight         2048 bytes       present iff bit 1
+```
+
+Nibble layout per §1. Light is a cache: readers are free to ignore it, and
+consumers that recompute lighting (dragonfly does, unconditionally) gain
+nothing from it.
+
+### 4.7 Default biome
+
+When flag `DefaultBiome` is set, `defaultBiomeRef` (flags bits 16–31) names a
+global biome palette entry. Sections whose biomes are uniformly that biome are
+omitted from `biomePresence`; decoders fill absent sections with the default.
+Writers pick the biome with the most uniform sections. Without the flag,
+absent biome sections decode as biome id 0.
+
+### 4.8 Determinism
+
+Writers targeting deterministic output MUST: sort records by Morton key; sort
+the block palette by reference count (ties: canonical state string, then the
+length-prefixed identity) and the biome palette by reference count (ties:
+name); emit canonical section blobs (§3.3); sort NBT compound keys; and sort
+every per-column collection totally — block entities by (y, z, x) then
+encoded NBT, entities by id then encoded NBT, scheduled updates by position,
+tick and block reference. Structure block entities and entities follow the
+same rule.
+
+Two caveats on file identity:
+
+- The **compressed** bytes are not specified. Zstandard admits many valid
+  encodings of the same content, so a different compressor implementation,
+  version or level produces a different file for identical content. The
+  footer's `bodyHash` covers the stored bytes and is an integrity check, not
+  a content identity.
+- For content identity, hash the **uncompressed body** instead (the reference
+  implementation exposes this as `format.ContentHash`). That value depends
+  only on the world's content and this specification, so it is stable across
+  compressor upgrades and across implementations that follow the canonical
+  rules above. (The reference implementation's "fast compression" option trades
+this away.)
 
 ---
 
-## Limits and validation
+## 5. Indexed mode (mode = 1, kind = world)
 
-- Strings: length <= 1 MiB (decoder rejects larger lengths).
-- Byte arrays: length <= 16 MiB (decoder rejects larger lengths).
-- Counts: chunk_count, block_entity_count, entity_count, scheduled_tick_count must be >= 0. `chunk_count` additionally must be reasonable (the reference decoder rejects > 1,000,000).
-- Paletted arrays:
-  - If `palette_size <= 1`, the corresponding data array length is 0 and all values are the first palette entry.
-  - If packed data is shorter than required, out-of-range indices are treated as 0 (first palette entry) by tolerant consumers.
-- Chunk order is unspecified.
-- Unknown or extra metadata fields should be ignored by consumers.
+An append-only file for large worlds: random access to single chunks with
+only a directory and the palettes resident in memory. Indexed files are
+history-dependent and therefore not deterministic.
+
+### 5.1 Frames
+
+All body content lives in **frames** appended after the header. A frame is a
+byte range `[offset, offset+length)` recorded wherever it is referenced (the
+directory, or the footer for the directory itself). Unless flag
+`Uncompressed` is set, each frame is an independent Zstandard frame.
+
+When a shared dictionary is present (§5.5): record frames, palette segment
+frames and meta frames are compressed with the dictionary; the **directory
+frame and the dictionary frame itself MUST be compressed without it** (they
+are read before the dictionary can be loaded). A dictionary-aware decoder
+handles both (zstd frames carry the dictionary id).
+
+### 5.2 Record frames
+
+One frame per stored chunk. Content = a chunk record as in §4.3 **except**:
+
+- no `dx`/`dz` (position lives in the directory),
+- section blobs are stored **inline** (the section blob bytes of §3.3 appear
+  in place of each `blobRef`); there is no blob table,
+- no default-biome elision (flag DefaultBiome is never set),
+- light follows the header's StoreLight flag.
+
+Palette references point into the cumulative global palettes (§5.3).
+Overwriting a chunk appends a new frame; the old one becomes garbage until
+compaction.
+
+### 5.3 Palette segments
+
+The global palettes grow append-only as **delta segments**. A block segment
+frame is an `i32` Minecraft block version followed by a §3.1-encoded palette;
+a biome segment frame is a §3.2-encoded palette. Segments hold only the
+entries new since the previous checkpoint, and the directory lists them in
+order; entry indices are cumulative across segments. Palette order is
+first-seen; no frequency sorting.
+
+Each block segment carries its own version because a file outlives game
+upgrades: states written before an upgrade must still be upgraded from the
+version they were written at, while states appended afterwards must not be.
+Decoders MUST enforce the palette limits **cumulatively** across segments and
+MUST reject duplicate segment references (both are allocation amplifiers).
+
+### 5.4 Meta frame
+
+`settings`, `userData`, `markers`, `border` blobs, §4.1 layout without the
+stats field. A new meta frame is appended when metadata changes; the directory
+points at the latest.
+
+### 5.5 Directory frame
+
+Written at every checkpoint (always compressed without the dictionary):
+
+Every frame the directory references carries its own xxHash64, so corruption
+in a palette segment, the metadata or the dictionary is detected instead of
+silently changing world content.
+
+```
+frameRef         = off uvarint, len uvarint, hash u64   (len 0 = absent)
+meta             frameRef
+dict             frameRef
+blockSegN        uvarint
+blockSeg[blockSegN]: frameRef
+biomeSegN        uvarint
+biomeSeg[biomeSegN]: frameRef
+chunkN           uvarint          (≤ 1 048 576)
+chunk[chunkN]:                    sorted by Morton key of (x, z)
+  dx, dz         svarint          delta from previous entry
+  offDelta       svarint          frame offset delta from previous entry
+  len            uvarint          stored frame length
+  hash           u64              xxHash64 of the stored frame bytes
+```
+
+Per-record hashes localise corruption to single chunks. The dictionary frame
+contains raw Zstandard dictionary bytes (with an embedded dictionary id); the
+reference implementation trains one during compaction when there are at least
+16 records totalling at least 64 KiB.
+
+### 5.6 Checkpoints and recovery
+
+A **checkpoint** appends, in order: pending palette segment frames, a meta
+frame (if metadata changed) and the directory frame; the file is then
+**fsynced before the footer is written**, so a footer can never refer to
+frames that are not durable. The footer (§2.2) carries `bodyHash` = xxHash64
+of the directory frame's stored bytes, an incremented `generation` and the
+previous footer's offset, and is followed by a second fsync.
+
+Adopting a checkpoint means validating everything it references: the
+directory's hash, then each referenced frame's hash. A checkpoint whose
+shared frames do not validate is rejected in favour of an older one, reached
+either by the backward scan or by following `prevFooter`, so a file remains
+recoverable as long as any complete checkpoint survives.
+
+The footer at EOF is authoritative. If it is invalid (torn write), readers
+scan backwards for the footer magic `ELIP` and validate each candidate:
+structural fields in bounds, `prevFooter` older than the candidate, directory
+hash matching, and the full directory contents (palette segments, metadata,
+dictionary) loading successfully. The newest candidate that validates
+completely is adopted; a candidate whose referenced frames fail validation
+falls back to the next older one. Everything after the adopted checkpoint is
+garbage; appending simply continues at EOF. A torn write therefore loses at
+most the work since the last checkpoint.
+
+Recovery trusts in-band data: an attacker who both authors world content and
+can induce truncation could embed a forged checkpoint inside record bytes.
+Treat files from untrusted sources as untrusted content.
+
+Compaction rewrites the live records (Morton order) into a fresh file and
+atomically renames it over the original.
 
 ---
 
-## Versioning
+## 6. Structure files (kind = 1, mode = 0)
 
-- File header contains a version (int16). The current and maximum supported version is 1.
-- Readers should reject files with a version greater than supported.
-- Backward-compatible additions should be done by extending reserved/user data sections or by adding fields that can be safely skipped by older readers.
+A structure is a free-standing box of blocks with a paste anchor. The body is
+a single unit like solid mode:
+
+```
+meta block       §4.1 (settings/markers/border empty; userData usable; no stats)
+block palette    §3.1
+biome palette    §3.2 with count = 0   (structures store no biomes)
+blob table       §3.4
+sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576)
+originX,Y,Z      svarint × 3      paste anchor offset
+cellPresence     bitset(cells)
+present cells:
+  layerN         uvarint  (≤ 4)
+  blobRef[layerN] uvarint
+beN              uvarint
+be[beN]:
+  x, y, z        uvarint × 3      structure-local position
+  nbt            blob             x/y/z stripped as in §4.4
+entN             uvarint
+ent[entN]:
+  nbt            blob             Pos is structure-local
+```
+
+The box is covered by 16³ **cells**: `cells{X,Y,Z} = ceil(size/16)`. The cell
+at cell-coordinates (cx, cy, cz) has index
+
+```
+(cx * cellsZ + cz) * cellsY + cy
+```
+
+(x-major, then z, then y). Edge cells are zero-padded with air; positions
+inside a cell use the standard section index (§1). Absent cells are all air.
 
 ---
 
-## Implementation notes
+## 7. Metadata compounds
 
-- Section indexing across Y: The i-th section in a chunk corresponds to Y-section index `(min_section + i)`. Within a section, block Y is the relative 0..15 value described under “Binary conventions.”
-- Local X/Z are always 0..15 and packed into `packed_xz` with 4 bits per axis.
-- Lighting data is not stored in the format. Consumers should recalculate lighting when loading worlds.
-- When writing empty sections, prefer the canonical empty-section encoding described above.
+These NBT schemas are conventions of the reference implementation; readers
+should treat all fields as optional.
+
+### 7.1 Settings
+
+`name` (string), `spawnX/spawnY/spawnZ` (int), `time` (long), `timeCycle`
+(byte), `rainTime` (long), `raining` (byte), `thunderTime` (long),
+`thundering` (byte), `weatherCycle` (byte), `requiredSleepTicks` (long),
+`currentTick` (long), `defaultGameMode` (int), `difficulty` (int),
+`tickRange` (int).
+
+### 7.2 Markers
+
+Compound `{markers: [compound]}`; each marker has `name` (string), `kind`
+(string), `pos` (list of 3 doubles), plus arbitrary extra keys. Sorted by
+name.
+
+### 7.3 Border
+
+Compound `{min: int_array[2], max: int_array[2]}`: the inclusive XZ block
+bounds of the playable area. Advisory.
+
+---
+
+## 8. Limits
+
+Decoders MUST enforce (reference values):
+
+| item | limit |
+|------|-------|
+| string length | 64 KiB |
+| blob length | 16 MiB |
+| chunks per file / structure cells | 1 048 576 |
+| global palette entries | 1 048 576 |
+| blob table entries | 16 777 216 |
+| state properties per palette entry | 64 |
+| sections per chunk | 512 |
+| layers per section | 4 |
+| entities / block entities / ticks per chunk | 65 536 each |
+
+Decoders MUST NOT panic on any input; every violation is a clean error. Sizes
+derived from untrusted counts must be validated before allocation.
+
+---
+
+## 9. Implementation guidance
+
+- **Reading a solid file**: validate header and footer, verify `bodyHash`,
+  decompress, then parse the body sequentially. Trailing bytes after the last
+  record are an error.
+- **Metadata-only access** needs only the meta block at the start of the body
+  (stream-decompress and stop).
+- **Unknown block states**: keep the palette entry, substitute a placeholder
+  at runtime, and re-emit the original entry (at every position still holding
+  the placeholder) when writing back: a load/save round trip must not destroy
+  data the runtime doesn't understand. The reference implementation carries a
+  per-column sidecar of (section, layer, index, state), where the section is
+  an **absolute** section Y so the entry stays valid if the column is re-based
+  onto a different vertical range; scheduled block updates carry an equivalent
+  sidecar.
+- **Bounded decompression**: a compressed frame declares its decompressed
+  size and decompressors typically preallocate it, so cap the accepted
+  decompressed size per payload type (the reference implementation uses
+  512 MiB for a solid body and 64 MiB for an indexed frame) rather than
+  relying on the input being small.
+- **Writing**: always write to a temporary file and atomically rename; fsync
+  before renaming.
+- The dedup + canonical-blob machinery is where solid mode's size wins come
+  from: flat or repetitive worlds collapse to a handful of unique blobs.
