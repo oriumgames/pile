@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -85,7 +86,10 @@ type IndexedWorld struct {
 	metaRef            frameRef
 	settings, userData []byte
 	markers, border    []byte
-	metaDirty          bool
+	// paletteErr holds the first rejected palette entry seen while resolving
+	// a column, since the palette callbacks cannot return an error.
+	paletteErr error
+	metaDirty  bool
 
 	// Global block palette: segments on disk plus pending entries.
 	blockSegs       []frameRef
@@ -337,8 +341,15 @@ func (w *IndexedWorld) load() error {
 	}
 	// The directory prologue is authoritative and has now been applied; make
 	// sure the physical header agrees, and record it when it does not.
-	if !bytes.Equal(w.hdrBytes, headerImage(KindWorld, ModeIndexed, w.headerFlags, w.headerBlockVersion)) {
+	if img := headerImage(KindWorld, ModeIndexed, w.headerFlags, w.headerBlockVersion); !bytes.Equal(w.hdrBytes, img) {
 		w.headerDamaged = true
+		// Adopt the canonical image as the preimage for everything written
+		// from here on. The directory prologue is authoritative, so a
+		// checkpoint written after recovery must be verifiable from it;
+		// hashing against the damaged bytes instead would tie the world to
+		// its own corruption and make repairing the header invalidate the
+		// newest data.
+		w.hdrBytes = img
 	}
 	w.opts.StoreLight = w.headerFlags&FlagStoreLight != 0
 	return nil
@@ -776,7 +787,8 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		return err
 	}
 	var px, pz, poff int64
-	for range chunkN {
+	var prevKey uint64
+	for i := range chunkN {
 		dx, err := r.svarint()
 		if err != nil {
 			return err
@@ -798,6 +810,22 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 			return err
 		}
 		px, pz, poff = px+dx, pz+dz, poff+doff
+		// Accumulate in 64 bits and range-check: narrowing a wrapped sum would
+		// let two different byte sequences denote the same chunk position.
+		if px < math.MinInt32 || px > math.MaxInt32 || pz < math.MinInt32 || pz > math.MaxInt32 {
+			return corruptf("directory entry position (%d,%d) out of int32 range", px, pz)
+		}
+		// Entries are Morton-ordered and positions are unique, so keys
+		// strictly ascend. Anything else is either a duplicate (no defined
+		// meaning) or a reordering (a second encoding of one directory).
+		if key := mortonKey(int32(px), int32(pz)); i > 0 && key <= prevKey {
+			return corruptf("directory entry (%d,%d) is out of order or duplicated", px, pz)
+		} else {
+			prevKey = key
+		}
+		if length > maxFrameLen {
+			return corruptf("directory entry (%d,%d) length %d exceeds limit %d", px, pz, length, uint64(maxFrameLen))
+		}
 		e := dirEntry{off: poff, length: uint32(length), hash: binary.LittleEndian.Uint64(hb)}
 		if e.off < headerSize || e.off+int64(e.length) > w.end {
 			return corruptf("directory entry (%d,%d) out of file bounds", px, pz)
@@ -937,13 +965,20 @@ func (w *IndexedWorld) readFrame(ref frameRef) ([]byte, error) {
 // appendFrame compresses and appends a frame at EOF, returning its location
 // and the stored bytes.
 func (w *IndexedWorld) appendFrame(body []byte) (frameRef, []byte, error) {
-	return w.appendFrameWith(body, false)
+	return w.appendFrameWith(body, false, maxDecodedFrame)
 }
 
 // appendFrameWith appends a frame; plain forces compression without the
 // shared dictionary (required for the directory frame, which is read before
 // the dictionary it references can be loaded, and for the dictionary itself).
-func (w *IndexedWorld) appendFrameWith(body []byte, plain bool) (frameRef, []byte, error) {
+func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (frameRef, []byte, error) {
+	// Every frame the reader decompresses is capped, and the stored length is
+	// carried in a uint32. A writer that passes either ceiling produces a file
+	// it cannot reopen, which in indexed mode means silently rolling back to
+	// an older checkpoint.
+	if len(body) > limit {
+		return frameRef{}, nil, fmt.Errorf("pile: frame is %d bytes, limit %d", len(body), limit)
+	}
 	stored := body
 	if w.compressed {
 		if w.dictEnc != nil && !plain {
@@ -951,6 +986,9 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool) (frameRef, []byt
 		} else {
 			stored = sharedEncoder(w.opts.Compression, false).EncodeAll(body, make([]byte, 0, len(body)/2))
 		}
+	}
+	if uint64(len(stored)) > maxFrameLen {
+		return frameRef{}, nil, fmt.Errorf("pile: stored frame is %d bytes, limit %d", len(stored), uint64(maxFrameLen))
 	}
 	ref := frameRef{off: w.end, length: uint32(len(stored)), hash: xxhash.Sum64(stored)}
 	if _, err := w.f.WriteAt(stored, w.end); err != nil {
@@ -966,6 +1004,9 @@ func (w *IndexedWorld) addState(bs BlockState) uint32 {
 	key := stateIdentity(bs.Name, bs.Properties) + "@" + strconv.Itoa(int(bs.Version))
 	if idx, ok := w.stateIdx[key]; ok {
 		return idx
+	}
+	if err := w.reservePaletteEntry(checkState(bs.Name, bs.Properties)); err != nil {
+		return 0
 	}
 	idx := uint32(len(w.rids))
 	w.stateIdx[key] = idx
@@ -996,6 +1037,9 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	if !found {
 		name, props = "minecraft:air", nil
 	}
+	if err := w.reservePaletteEntry(checkState(name, props)); err != nil {
+		return 0
+	}
 	idx := uint32(len(w.rids))
 	w.blockIdx[rid] = idx
 	w.rids = append(w.rids, rid)
@@ -1005,6 +1049,22 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	encodeProps(&w.pendingBlock, props)
 	w.pendingBlkN++
 	return idx
+}
+
+// reservePaletteEntry records the first reason a new block palette entry
+// cannot be admitted, without mutating anything. Solid mode validates states
+// when it finalizes its palette; indexed mode appends entries as they arrive
+// and has no such moment, so the same rules are applied at admission. The
+// error is sticky and surfaces from Store, because addBlock and addState sit
+// behind resolveColumn's callback signature and cannot return one.
+func (w *IndexedWorld) reservePaletteEntry(err error) error {
+	if err == nil && len(w.rids) >= maxPalette {
+		err = fmt.Errorf("pile: %d block states exceeds limit %d", len(w.rids)+1, maxPalette)
+	}
+	if err != nil && w.paletteErr == nil {
+		w.paletteErr = err
+	}
+	return err
 }
 
 // addBiome assigns (or returns) the palette index of a biome name.
@@ -1049,6 +1109,11 @@ func (w *IndexedWorld) Store(c Column) error {
 		return fmt.Errorf("pile: encode chunk (%d,%d): %w", c.X, c.Z, cr.err)
 	}
 	ci := resolveColumn(&cr, w.addBlock, w.addBiome, w.addState)
+	if w.paletteErr != nil {
+		err := w.paletteErr
+		w.paletteErr = nil
+		return fmt.Errorf("pile: chunk (%d,%d): %w", c.X, c.Z, err)
+	}
 	cb := buildColBlobs(&ci, w.identity, w.biomeIdent, 0, false)
 	body := &writer{b: make([]byte, 0, 8<<10)}
 	encodeRecordBody(body, &ci, &cb, w.identity, w.opts.StoreLight, func(bw *writer, blob []byte) {
@@ -1188,15 +1253,28 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error
 	for _, b := range []struct {
 		p    []byte
 		what string
+		nbt  bool
 	}{
-		{settings, "world settings blob"},
-		{userData, "world user data"},
-		{markers, "markers blob"},
-		{border, "border blob"},
+		{settings, "world settings blob", true},
+		{userData, "world user data", false},
+		{markers, "markers blob", true},
+		{border, "border blob", true},
 	} {
 		if err := checkBlob(b.p, b.what); err != nil {
 			return err
 		}
+		// checkBlob only bounds the length. The reader also demands canonical
+		// NBT of the designated blobs, and a checkpoint that fails to reopen
+		// rolls the world back to an older one, losing every chunk stored
+		// since, so the check belongs here rather than at write time.
+		if b.nbt && len(b.p) > 0 {
+			if err := validateNBT(b.p); err != nil {
+				return fmt.Errorf("pile: %s: %w", b.what, err)
+			}
+		}
+	}
+	if err := checkBorderBlob(border); err != nil {
+		return err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1376,7 +1454,7 @@ func (w *IndexedWorld) checkpointLocked() error {
 	if len(d.bytes()) > maxDecodedDirectory {
 		return fmt.Errorf("pile: directory is %d bytes, limit %d", len(d.bytes()), maxDecodedDirectory)
 	}
-	dirRef, stored, err := w.appendFrameWith(d.bytes(), true)
+	dirRef, stored, err := w.appendFrameWith(d.bytes(), true, maxDecodedDirectory)
 	if err != nil {
 		return err
 	}

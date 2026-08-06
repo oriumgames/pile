@@ -144,6 +144,18 @@ type lightPair struct {
 	block, sky []byte
 }
 
+// beSortable and entSortable pair an entry's ordering key with the exact
+// bytes that will be written, so the sort and the output agree.
+type beSortable struct {
+	pos cube.Pos
+	nbt []byte
+}
+
+type entSortable struct {
+	id  int64
+	nbt []byte
+}
+
 type beIntermediate struct {
 	packedXZ uint8
 	y        int32
@@ -306,6 +318,11 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 		flags |= FlagStats
 	}
 
+	// The decoder caps a decompressed body at maxDecodedBody, so a writer that
+	// sails past it produces a file it cannot read back.
+	if n := body.len(); n > maxDecodedBody {
+		return fmt.Errorf("pile: body is %d bytes, limit %d", n, maxDecodedBody)
+	}
 	stored := body.bytes()
 	if opts.Compression == CompressionNone {
 		flags |= FlagUncompressed
@@ -368,12 +385,48 @@ func validateWorldData(d *WorldData) error {
 			}
 		}
 	}
+	if err := checkBorderBlob(d.Border); err != nil {
+		return err
+	}
 	if len(d.Columns) > maxChunks {
 		return fmt.Errorf("pile: %d chunks exceeds limit %d", len(d.Columns), maxChunks)
 	}
+	// Chunk positions are unique. Two columns at one position have equal
+	// Morton keys, so their record order would be decided by the caller's
+	// slice order rather than by the content, and a reader has no defined way
+	// to choose between them.
+	seen := make(map[[2]int32]struct{}, len(d.Columns))
 	for _, c := range d.Columns {
+		if _, dup := seen[[2]int32{c.X, c.Z}]; dup {
+			return fmt.Errorf("pile: duplicate chunk (%d,%d)", c.X, c.Z)
+		}
+		seen[[2]int32{c.X, c.Z}] = struct{}{}
 		if err := validateColumn(c); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkBorderBlob enforces the border schema of the specification: min and max
+// are two-element int arrays, not lists. Structural NBT validation cannot catch
+// this, and a decoder into a dynamically typed map cannot tell the two apart
+// after the fact, so the tags have to be right on the way in.
+func checkBorderBlob(b []byte) error {
+	if len(b) == 0 {
+		return nil
+	}
+	m, err := unmarshalNBT(b)
+	if err != nil {
+		return fmt.Errorf("pile: border blob: %w", err)
+	}
+	for _, k := range []string{"min", "max"} {
+		v, ok := m[k]
+		if !ok {
+			return fmt.Errorf("pile: border blob: missing %q", k)
+		}
+		if _, ok := v.([2]int32); !ok {
+			return fmt.Errorf("pile: border blob: %q is %T, want a two-element int array", k, v)
 		}
 	}
 	return nil
@@ -433,6 +486,68 @@ func validateColumn(c Column) error {
 	return nil
 }
 
+// projectCollections marshals a column's block entities and entities exactly
+// as they will be written, then puts them in canonical order.
+//
+// Dragonfly builds these slices by ranging maps, so their order varies between
+// saves of identical content. Determinism is a format guarantee, not an
+// accident of the caller's iteration, so the order is imposed here.
+//
+// Ties break on the bytes that will actually be written, which is why each
+// entry is projected and marshalled before the sort rather than after.
+// Ordering on the caller's map instead would let discarded values decide the
+// file: a block entity's x/y/z are stripped on encode and an entity's UniqueID
+// is overwritten with its authoritative ID, yet both are still present in the
+// data the caller handed over.
+func projectCollections(c Column) ([]beSortable, []entSortable, error) {
+	bes := make([]beSortable, 0, len(c.Col.BlockEntities))
+	for _, be := range c.Col.BlockEntities {
+		data := make(map[string]any, len(be.Data))
+		for k, v := range be.Data {
+			if k == "x" || k == "y" || k == "z" {
+				continue // reinjected from the stored position on decode
+			}
+			data[k] = v
+		}
+		blob, err := marshalNBT(data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("block entity at %v: %w", be.Pos, err)
+		}
+		if err := checkBlob(blob, fmt.Sprintf("block entity NBT at %v", be.Pos)); err != nil {
+			return nil, nil, err
+		}
+		bes = append(bes, beSortable{pos: be.Pos, nbt: blob})
+	}
+	slices.SortFunc(bes, func(a, b beSortable) int {
+		if v := comparePos(a.pos, b.pos); v != 0 {
+			return v
+		}
+		return bytes.Compare(a.nbt, b.nbt)
+	})
+
+	ents := make([]entSortable, 0, len(c.Col.Entities))
+	for _, e := range c.Col.Entities {
+		data := make(map[string]any, len(e.Data)+1)
+		maps.Copy(data, e.Data)
+		data["UniqueID"] = e.ID
+		blob, err := marshalNBT(data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("entity %d: %w", e.ID, err)
+		}
+		if err := checkBlob(blob, fmt.Sprintf("entity %d NBT", e.ID)); err != nil {
+			return nil, nil, err
+		}
+		ents = append(ents, entSortable{id: e.ID, nbt: blob})
+	}
+	slices.SortFunc(ents, func(a, b entSortable) int {
+		if v := cmp.Compare(a.id, b.id); v != 0 {
+			return v
+		}
+		return bytes.Compare(a.nbt, b.nbt)
+	})
+	return bes, ents, nil
+}
+
 // extractColumnRaw converts a column into raw form without touching shared
 // state or mutating the chunk (safe to run in parallel and on columns shared
 // with concurrent readers). Canonicalization that dragonfly's Compact would
@@ -442,25 +557,7 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 	ch := c.Col.Chunk
 	air := chunkAir(ch)
 
-	// Dragonfly builds these slices by ranging maps, so their order varies
-	// between saves of identical content. Sort them canonically: determinism
-	// is a format guarantee, not an accident of the caller's iteration.
-	// Ties are broken on the encoded bytes so the order is total: equal
-	// positions or IDs must not leave the caller's order deciding the file.
-	bes := slices.Clone(c.Col.BlockEntities)
-	slices.SortStableFunc(bes, func(a, b chunk.BlockEntity) int {
-		if v := comparePos(a.Pos, b.Pos); v != 0 {
-			return v
-		}
-		return compareNBT(a.Data, b.Data)
-	})
-	ents := slices.Clone(c.Col.Entities)
-	slices.SortStableFunc(ents, func(a, b chunk.Entity) int {
-		if v := cmp.Compare(a.ID, b.ID); v != 0 {
-			return v
-		}
-		return compareNBT(a.Data, b.Data)
-	})
+	bes, ents, projErr := projectCollections(c)
 	// Scheduled updates are ordered by position and firing tick here; ties
 	// are broken later by the final palette reference (see sortTicks), which
 	// is registry-independent. Sorting by runtime ID at this point would make
@@ -499,6 +596,10 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 		biomeSecs:  make([]rawBiomeSec, len(subs)),
 		tick:       c.Col.Tick,
 		userData:   c.UserData,
+	}
+	if projErr != nil {
+		cr.err = projErr
+		return cr
 	}
 	if cr.sectionN > maxSectionCnt {
 		cr.err = fmt.Errorf("chunk has %d sections (limit %d)", cr.sectionN, maxSectionCnt)
@@ -595,42 +696,14 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 		}
 	}
 	for _, be := range bes {
-		data := make(map[string]any, len(be.Data))
-		for k, v := range be.Data {
-			if k == "x" || k == "y" || k == "z" {
-				continue // reinjected from the stored position on decode
-			}
-			data[k] = v
-		}
-		blob, err := marshalNBT(data)
-		if err != nil {
-			cr.err = fmt.Errorf("block entity at %v: %w", be.Pos, err)
-			return cr
-		}
-		if err := checkBlob(blob, fmt.Sprintf("block entity NBT at %v", be.Pos)); err != nil {
-			cr.err = err
-			return cr
-		}
 		cr.bes = append(cr.bes, beIntermediate{
-			packedXZ: uint8(be.Pos.X()&0xF) | uint8(be.Pos.Z()&0xF)<<4,
-			y:        int32(be.Pos.Y()),
-			nbt:      blob,
+			packedXZ: uint8(be.pos.X()&0xF) | uint8(be.pos.Z()&0xF)<<4,
+			y:        int32(be.pos.Y()),
+			nbt:      be.nbt,
 		})
 	}
 	for _, e := range ents {
-		data := make(map[string]any, len(e.Data)+1)
-		maps.Copy(data, e.Data)
-		data["UniqueID"] = e.ID
-		blob, err := marshalNBT(data)
-		if err != nil {
-			cr.err = fmt.Errorf("entity %d: %w", e.ID, err)
-			return cr
-		}
-		if err := checkBlob(blob, fmt.Sprintf("entity %d NBT", e.ID)); err != nil {
-			cr.err = err
-			return cr
-		}
-		cr.ents = append(cr.ents, blob)
+		cr.ents = append(cr.ents, e.nbt)
 	}
 	type tickKey struct {
 		pos [3]int32

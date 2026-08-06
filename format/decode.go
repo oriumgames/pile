@@ -223,6 +223,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1))
 	src := tableBlobSource(blobs)
 	var prevX, prevZ int64
+	var prevKey uint64
 	for range chunkN {
 		dx, err := r.svarint()
 		if err != nil {
@@ -239,6 +240,16 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 			return nil, corruptf("chunk position (%d,%d) out of int32 range", sx, sz)
 		}
 		x, z := int32(sx), int32(sz)
+		// Records are ordered by Morton key and positions are unique, so keys
+		// strictly ascend. Enforcing it rejects both duplicate chunks (which
+		// have no defined meaning: a reader would have to pick one) and
+		// reordered records (which would be a second encoding of the same
+		// world).
+		if key := mortonKey(x, z); len(raws) > 0 && key <= prevKey {
+			return nil, corruptf("chunk (%d,%d) is out of order or duplicated", x, z)
+		} else {
+			prevKey = key
+		}
 		rr, err := parseRecordBody(r, src, haveLight, x, z)
 		if err != nil {
 			return nil, err

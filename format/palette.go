@@ -1,6 +1,7 @@
 package format
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"slices"
@@ -22,7 +23,8 @@ const (
 // blockPaletteBuilder accumulates the unique block states referenced by a file
 // and assigns them global palette indices. Entries are collected in
 // first-seen order, then finalized into the canonical order: descending
-// reference count, ties broken by canonical state string.
+// reference count, ties broken by the entry's encoded bytes and then by its
+// state version.
 type blockPaletteBuilder struct {
 	reg   world.BlockRegistry
 	idx   map[uint32]uint32 // runtime ID → build-order index
@@ -34,7 +36,7 @@ type blockPaletteEntry struct {
 	rid     uint32
 	name    string
 	props   map[string]any
-	key     string // canonical state string, for deterministic ordering
+	key     string // dedup key while building; ordering uses the encoded bytes
 	count   uint64
 	version int32 // 0 = the palette's own version
 }
@@ -85,31 +87,78 @@ func (b *blockPaletteBuilder) addState(bs BlockState) uint32 {
 
 // finalize sorts entries into canonical order and returns the encoded palette
 // along with a remap table from build-order indices to final indices.
+//
+// The sort key is the entry's own encoded bytes. That is exactly what the
+// file carries, so an implementation in any language reproduces the order
+// without first having to agree on a host-language string form. The readable
+// state key cannot serve: preserved states are keyed with their version and
+// registry states are not, so the two key spaces would be compared against
+// each other and the resulting order would follow neither rule.
 func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err error) {
-	order := make([]uint32, len(b.ent))
+	// Encode every entry once, up front. Entries that encode identically at
+	// the same version are the same state and are merged: leaving both in
+	// would put two indistinguishable entries in the palette whose relative
+	// order nothing could decide.
+	type unique struct {
+		key     []byte
+		version int32
+		count   uint64
+	}
+	var uniq []unique
+	seen := make(map[string]uint32, len(b.ent))
+	remap = make([]uint32, len(b.ent))
+	for i := range b.ent {
+		e := &b.ent[i]
+		if err := checkState(e.name, e.props); err != nil {
+			return nil, nil, err
+		}
+		kw := &writer{}
+		kw.str(e.name)
+		encodeProps(kw, e.props)
+		key := kw.bytes()
+		dedup := string(key) + "@" + strconv.Itoa(int(e.version))
+		if j, ok := seen[dedup]; ok {
+			uniq[j].count += e.count
+			remap[i] = j
+			continue
+		}
+		j := uint32(len(uniq))
+		seen[dedup] = j
+		uniq = append(uniq, unique{key: key, version: e.version, count: e.count})
+		remap[i] = j
+	}
+	if len(uniq) > maxPalette {
+		return nil, nil, fmt.Errorf("pile: %d block states exceeds limit %d", len(uniq), maxPalette)
+	}
+
+	order := make([]uint32, len(uniq))
 	for i := range order {
 		order[i] = uint32(i)
 	}
 	slices.SortFunc(order, func(x, y uint32) int {
-		ex, ey := &b.ent[x], &b.ent[y]
+		ex, ey := &uniq[x], &uniq[y]
 		if ex.count != ey.count {
 			if ex.count > ey.count {
 				return -1
 			}
 			return 1
 		}
-		// The readable key can collide, so fall back to the collision-free
-		// identity: ordering must be a total order or output is not
-		// deterministic.
-		if v := strings.Compare(ex.key, ey.key); v != 0 {
+		if v := bytes.Compare(ex.key, ey.key); v != 0 {
 			return v
 		}
-		return strings.Compare(stateIdentity(ex.name, ex.props), stateIdentity(ey.name, ey.props))
+		return cmp.Compare(ex.version, ey.version)
 	})
-	if len(order) > maxPalette {
-		return nil, nil, fmt.Errorf("pile: %d block states exceeds limit %d", len(order), maxPalette)
+
+	// remap currently points at unique entries in build order; compose it
+	// with the sort so callers get final palette indices directly.
+	final := make([]uint32, len(uniq))
+	for f, u := range order {
+		final[u] = uint32(f)
 	}
-	remap = make([]uint32, len(b.ent))
+	for i := range remap {
+		remap[i] = final[remap[i]]
+	}
+
 	w := &writer{}
 	w.uvarint(uint64(len(order)))
 	type override struct {
@@ -117,16 +166,11 @@ func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err er
 		version int32
 	}
 	var overrides []override
-	for final, build := range order {
-		remap[build] = uint32(final)
-		e := &b.ent[build]
-		if err := checkState(e.name, e.props); err != nil {
-			return nil, nil, err
-		}
-		w.str(e.name)
-		encodeProps(w, e.props)
+	for f, u := range order {
+		e := &uniq[u]
+		w.raw(e.key)
 		if e.version != 0 {
-			overrides = append(overrides, override{index: uint64(final), version: e.version})
+			overrides = append(overrides, override{index: uint64(f), version: e.version})
 		}
 	}
 	// Sparse version overrides: entries whose states are expressed at a
@@ -146,8 +190,8 @@ func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err er
 // stateIdentity builds a collision-free identity for a block state: every
 // field is length-prefixed, so no combination of names, keys and values can
 // produce the same bytes as a different state. stateKey (below) is a
-// human-readable form used only for ordering and reporting, where a
-// collision merely means an arbitrary but stable tie-break.
+// human-readable form used for build-time dedup and for reporting, never for
+// ordering: the canonical order is defined on the encoded palette entry.
 func stateIdentity(name string, props map[string]any) string {
 	keys := make([]string, 0, len(props))
 	for k := range props {
@@ -190,7 +234,7 @@ func stateIdentity(name string, props map[string]any) string {
 	return sb.String()
 }
 
-// stateKey builds the canonical string form of a block state, used only for
+// stateKey builds the readable string form of a block state, used only for
 // deterministic ordering: name[key=value,...] with keys sorted.
 func stateKey(name string, props map[string]any) string {
 	if len(props) == 0 {

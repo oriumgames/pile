@@ -1,9 +1,11 @@
 package format
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"github.com/df-mc/dragonfly/server/world"
@@ -234,25 +236,15 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 			rec.uvarint(uint64(table.add(canonicalBlob(sd, blockRemap))))
 		}
 	}
-	// Canonical order: the caller's slice order must not reach the file.
-	bes := slices.Clone(s.BlockEntities)
-	slices.SortStableFunc(bes, func(a, b StructureBlockEntity) int {
-		if v := cmp.Compare(a.Pos[1], b.Pos[1]); v != 0 {
-			return v
-		}
-		if v := cmp.Compare(a.Pos[2], b.Pos[2]); v != 0 {
-			return v
-		}
-		if v := cmp.Compare(a.Pos[0], b.Pos[0]); v != 0 {
-			return v
-		}
-		return compareNBT(a.Data, b.Data)
-	})
-	ents := slices.Clone(s.Entities)
-	slices.SortStableFunc(ents, compareNBT)
-
-	rec.uvarint(uint64(len(bes)))
-	for _, be := range bes {
+	// Canonical order: the caller's slice order must not reach the file. Each
+	// entry is marshalled before the sort so ties break on the bytes that get
+	// written, not on the x/y/z keys that are stripped on the way out.
+	type structBE struct {
+		pos [3]int32
+		nbt []byte
+	}
+	bes := make([]structBE, 0, len(s.BlockEntities))
+	for _, be := range s.BlockEntities {
 		data := make(map[string]any, len(be.Data))
 		for k, v := range be.Data {
 			if k == "x" || k == "y" || k == "z" {
@@ -267,10 +259,29 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		if err := checkBlob(blob, fmt.Sprintf("block entity NBT at %v", be.Pos)); err != nil {
 			return err
 		}
-		for i := range 3 {
-			rec.uvarint(uint64(be.Pos[i]))
+		bes = append(bes, structBE{pos: be.Pos, nbt: blob})
+	}
+	slices.SortFunc(bes, func(a, b structBE) int {
+		if v := cmp.Compare(a.pos[1], b.pos[1]); v != 0 {
+			return v
 		}
-		rec.blob(blob)
+		if v := cmp.Compare(a.pos[2], b.pos[2]); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.pos[0], b.pos[0]); v != 0 {
+			return v
+		}
+		return bytes.Compare(a.nbt, b.nbt)
+	})
+	ents := slices.Clone(s.Entities)
+	slices.SortStableFunc(ents, compareNBT)
+
+	rec.uvarint(uint64(len(bes)))
+	for _, be := range bes {
+		for i := range 3 {
+			rec.uvarint(uint64(be.pos[i]))
+		}
+		rec.blob(be.nbt)
 	}
 	rec.uvarint(uint64(len(ents)))
 	for i, e := range ents {
@@ -402,6 +413,12 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		v, err := r.svarint()
 		if err != nil {
 			return nil, err
+		}
+		// The paste anchor is an int32. Narrowing silently would make two
+		// different byte sequences decode to the same structure, so an
+		// out-of-range origin is a corrupt file rather than a wrapped one.
+		if v < math.MinInt32 || v > math.MaxInt32 {
+			return nil, corruptf("structure origin %d is outside int32", v)
 		}
 		s.Origin[i] = int32(v)
 	}

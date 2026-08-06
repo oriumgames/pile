@@ -5,8 +5,8 @@ indexed_zstd 994449013c98f342
 structure c26a0330a6beee3c
 structure_zstd 8c0a52b537b95f70
 world_all 028e886667bb926e
-world_dense c6b4c2e1c03ef8da
-world_dense_zstd 1d9171111457f222
+world_dense 458bc921c4133255
+world_dense_zstd 2fa14012ef6908b1
 world_light 56a478f17fa3d99b
 world_nobiomes e19390f1680f9656
 world_plain 1d38405cc9dbec9e

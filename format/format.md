@@ -64,24 +64,26 @@ just writer conventions, because duplicate keys are ambiguous and a fixed
 order is what lets independent writers produce identical bytes for identical
 content. Decoders MUST reject blobs that violate them.
 
-Decoding NBT into a dynamically typed map cannot distinguish `TAG_List` of a
-numeric type from the corresponding array tag: both become the same
-host-language value. Because two writers must produce identical bytes for
-identical content, the normalisation is normative rather than optional:
+`TAG_List` of a numeric type and the corresponding array tag carry the same
+values but are different tags, and both occur in vanilla content. Decoders
+MUST keep them apart, and encoders MUST re-emit each value with the tag it was
+decoded from:
 
 - In **opaque** NBT (entity and block-entity blobs, chunk and world user
-  data), `TAG_Byte_Array`, `TAG_Int_Array` and `TAG_Long_Array` are valid on
-  input, but a value obtained by decoding one MUST re-encode as `TAG_List` of
-  the element type. The array tag therefore does not survive a round trip,
-  and implementations MUST NOT rely on it doing so. Since every conforming
-  implementation normalises identically, re-encoding a given file yields the
-  same bytes everywhere.
+  data), `TAG_Byte_Array`, `TAG_Int_Array` and `TAG_Long_Array` round trip as
+  themselves. Collapsing them into lists would be lossy in a way the game
+  notices, since Bedrock stores UUIDs and similar fields as int arrays.
+  A decoder that lowers every array into the same host-language value as a
+  list cannot produce byte-identical output and is not conforming.
 - In the **metadata compounds this document specifies** (§7), the tag of each
   field is fixed by that section and MUST be emitted exactly: the world
-  border's `min` and `max` are `TAG_Int_Array`, not lists.
+  border's `min` and `max` are `TAG_Int_Array`, not lists. Writers MUST reject
+  a metadata blob whose fields carry the wrong tag, because a reader cannot
+  tell afterwards.
 
-This keeps byte identity achievable across implementations without requiring
-a decoder that retains tag kinds.
+Byte identity across implementations therefore requires a decoder that retains
+tag kinds. That is a smaller demand than lossy normalisation, which would have
+to be specified for every tag pair and would still corrupt vanilla data.
 Tag types used: byte(1), short(2), int(3), long(4), float(5), double(6),
 byte_array(7), string(8), list(9), compound(10), int_array(11),
 long_array(12).
@@ -203,13 +205,28 @@ override, and from the palette's version otherwise. Indexed palette segments
 carry the same table after their entries.
 
 Bedrock block state properties are exactly these three NBT types, making the
-encoding lossless. In solid mode the palette is sorted by descending reference count, where the
-**reference count is the number of section-local palettes the state appears
-in, plus one per scheduled block update referencing it** (not the number of
-blocks holding it). Ties break by ascending canonical state string
-(`name[key=value,...]`, keys sorted), and any remaining tie by the state's
-length-prefixed identity, so the order is total. In indexed mode the palette
-is first-seen order across segments.
+encoding lossless.
+
+In solid mode the palette is sorted by:
+
+1. **descending reference count**, where the reference count is the number of
+   section-local palettes the state appears in, plus one per scheduled block
+   update referencing it (not the number of blocks holding it);
+2. then **ascending bytewise comparison of the entry's own encoded bytes**,
+   that is the length-prefixed `name` followed by the encoded property block
+   exactly as written above (so the name's length prefix leads, and a shorter
+   name sorts before a longer one);
+3. then **ascending `version`**, taking the palette's own version for entries
+   with no override.
+
+The tie-break is defined on the encoded bytes rather than on any readable
+form, so an implementation in any language reproduces the order without first
+having to agree on a string representation. It is also the reason the order is
+total: two entries that compare equal at every step encode identical bytes at
+the same version and are therefore the same state, which writers MUST merge
+into one entry whose reference count is the sum.
+
+In indexed mode the palette is first-seen order across segments.
 
 Boolean properties, which a custom block registry may present instead of the
 byte form, are encoded as `type = 0` with value 0 or 1.
@@ -291,6 +308,13 @@ blob table       §3.4
 chunkN           uvarint          (≤ 4 294 967 296, §8)
 record[chunkN]   §4.3, sorted by Morton key of (x, z)
 ```
+
+Chunk positions are unique and Morton keys therefore **strictly** ascend.
+Writers MUST reject a world holding two columns at one position, and readers
+MUST reject a file whose record keys do not strictly ascend: a duplicate has no
+defined meaning, since nothing tells a reader which of the two records wins,
+and a non-ascending file is a second encoding of a world that already has one.
+The same rule applies to indexed directory entries (§5.4).
 
 Nothing may follow the last record.
 
@@ -523,6 +547,14 @@ header (the reference implementation exposes `HeaderDamaged`; rewriting the
 file repairs it). Only the magic and version in the physical header are
 required to be intact for a file to be recognised at all.
 
+Because the prologue is the authority, a writer that has opened a file with a
+damaged physical header MUST hash **new** checkpoints against the canonical
+header image rebuilt from the semantic fields, never against the damaged bytes
+it found on disk. Hashing the damaged bytes would tie the world to its own
+corruption: repairing the header, or opening the file with a reader that
+trusts the prologue as specified, would invalidate the newest checkpoint and
+roll the world back.
+
 Per-record hashes localise corruption to single chunks. The dictionary frame
 contains raw Zstandard dictionary bytes (with an embedded dictionary id); the
 reference implementation trains one during compaction when there are at least
@@ -588,7 +620,8 @@ block palette    §3.1
 biome palette    §3.2 with count = 0   (structures store no biomes)
 blob table       §3.4
 sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576)
-originX,Y,Z      svarint × 3      paste anchor offset
+originX,Y,Z      svarint × 3      paste anchor offset; each MUST be in int32
+                                  range, so that one value has one encoding
 cellPresence     bitset(cells)
 present cells:
   layerN         uvarint  (≤ 256)
@@ -680,10 +713,19 @@ remain, not from these ceilings.
 | entities / block entities / ticks per chunk | 1 048 576 each |
 | stored frame length (indexed) | 4 294 967 295 |
 
-Writers MUST additionally refuse content that their own readers would reject:
-a record whose decompressed size exceeds the reader's frame ceiling, or NBT
-nested deeper than the reader accepts, is data loss even though every
-individual field is within limits.
+Writers MUST additionally refuse content that their own readers would reject.
+This applies to the **aggregate** ceilings, not only the per-field ones: a
+solid body assembled from individually legal blobs can still pass 512 MiB, and
+an indexed metadata frame built from four legal 16 MiB blobs already exceeds
+the 64 MiB frame ceiling. Every completed body and every appended frame is
+therefore checked against its own limit before compression, along with the
+stored frame length against the 32-bit field that carries it. A record whose
+decompressed size exceeds the reader's frame ceiling, or NBT nested deeper
+than the reader accepts, is data loss even though every individual field is
+within limits. In indexed mode it is worse than data loss: a checkpoint that
+cannot be reopened rolls the world back to an older one, discarding every
+chunk stored since, so metadata is validated when it is handed to the writer
+rather than when it is finally written.
 
 Decoders MUST NOT panic on any input; every violation is a clean error. Sizes
 derived from untrusted counts must be validated before allocation.
