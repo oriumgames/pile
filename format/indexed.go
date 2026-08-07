@@ -23,12 +23,20 @@ import (
 // worth its overhead.
 const (
 	dictMinSamples = 16
+	dictMinBytes   = 64 << 10
 	// dictMaxSamples and dictMaxSampleBytes bound what training holds at once.
-	// The output is capped at 16 KiB, so the samples only have to be
-	// representative, not exhaustive.
+	// Training used to read every live record's decompressed body and keep them
+	// all until the trainer returned, which is around 0.19 GiB for a thousand
+	// chunks and 192 GiB for a million; Provider.Close compacts automatically
+	// once garbage passes half the file, so shutting a large world down was an
+	// out-of-memory event. The dictionary itself can never exceed 16 KiB, so
+	// nothing about the result justified the corpus.
 	dictMaxSamples     = 256
 	dictMaxSampleBytes = 8 << 20
-	dictMinBytes       = 64 << 10
+	// dictSampleBytes caps a single record's contribution. Spending the budget
+	// on whole records would exhaust it on whichever ones the sample visits
+	// first; capping each one keeps the corpus spread across the world.
+	dictSampleBytes = dictMaxSampleBytes / dictMaxSamples
 )
 
 // ErrNoColumn is returned by IndexedWorld.Column for positions that have no
@@ -160,6 +168,18 @@ func buildDictionary(samples [][]byte, level CompressionLevel) (d []byte, err er
 		ZstdDictID:  0x504C4531, // fixed for reproducible compaction
 		ZstdLevel:   zstdLevel(level),
 	})
+}
+
+// dictSampleStride returns the step between the live records that train a
+// shared dictionary. Compaction visits records in Morton order, so the first
+// dictMaxSamples of them are one corner of the world; a stride spreads the
+// sample over the whole of it instead, which is what makes the trained
+// dictionary describe the records it will actually be used to compress.
+func dictSampleStride(n int) int {
+	if n <= dictMaxSamples {
+		return 1
+	}
+	return (n + dictMaxSamples - 1) / dictMaxSamples
 }
 
 // paletteOverride records a pending palette entry whose block version
@@ -1924,13 +1944,17 @@ func (w *IndexedWorld) Compact() error {
 	// enough material for it to pay off.
 	var trained []byte
 	if opts.Compression != CompressionNone && len(keys) >= dictMinSamples {
-		samples := make([][]byte, 0, len(keys))
+		stride := dictSampleStride(len(keys))
+		samples := make([][]byte, 0, min(len(keys), dictMaxSamples))
 		total := 0
-		for _, k := range keys {
-			e := w.dir[k]
+		for i := 0; i < len(keys) && total < dictMaxSampleBytes; i += stride {
+			e := w.dir[keys[i]]
 			body, err := w.readFrame(frameRef{off: e.off, length: e.length})
 			if err != nil {
 				continue
+			}
+			if len(body) > dictSampleBytes {
+				body = body[:dictSampleBytes]
 			}
 			samples = append(samples, body)
 			total += len(body)

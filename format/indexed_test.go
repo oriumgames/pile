@@ -366,6 +366,35 @@ func TestIndexedDictionary(t *testing.T) {
 	compareColumns(t, buildTestColumn(t, reg, 99, 0), got2)
 }
 
+// TestDictSampleStride: training a dictionary must never hold more than
+// dictMaxSamples record bodies, and the ones it does hold have to be spread
+// across the world rather than taken from the front of Morton order, or the
+// dictionary describes one corner of the map and nothing else.
+func TestDictSampleStride(t *testing.T) {
+	for _, n := range []int{1, 16, 255, 256, 257, 1000, 1 << 20} {
+		stride := dictSampleStride(n)
+		if stride < 1 {
+			t.Fatalf("n=%d: stride %d", n, stride)
+		}
+		taken, last := 0, -1
+		for i := 0; i < n; i += stride {
+			taken++
+			last = i
+		}
+		if taken > dictMaxSamples {
+			t.Fatalf("n=%d: %d samples exceeds the %d cap", n, taken, dictMaxSamples)
+		}
+		if n >= dictMinSamples && taken < dictMinSamples {
+			t.Fatalf("n=%d: only %d samples, below the %d training minimum", n, taken, dictMinSamples)
+		}
+		// The last sample sits within one stride of the end, so the far side of
+		// the world is represented too.
+		if n > 0 && last < n-stride {
+			t.Fatalf("n=%d stride=%d: sampling stopped at %d", n, stride, last)
+		}
+	}
+}
+
 // TestIndexedHostileFooter covers the overflow in the footer's directory
 // bounds check: a tiny file must not drive a huge allocation.
 func TestIndexedHostileFooter(t *testing.T) {
