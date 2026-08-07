@@ -3112,53 +3112,71 @@ func TestRejectsCumulativePaletteOverflow(t *testing.T) {
 	}
 }
 
+// structureFile wraps a structure body in a header and an authenticated
+// footer, the way solidFile does for a world.
+func structureFile(flags uint32, body []byte) []byte {
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindStructure)
+	hdr.u8(ModeSolid)
+	hdr.u32(flags)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), body, tail.bytes()))
+	ftr.raw(tail.bytes())
+	return append(append(hdr.bytes(), body...), ftr.bytes()...)
+}
+
+// structBody prefixes what the caller writes with the part of a structure body
+// that precedes the biome palette: four metadata blobs, an empty block palette
+// and no version overrides. meta supplies the four blobs, so a test that needs
+// one non-empty can say so.
+func structBody(meta [4][]byte, rest func(*writer)) []byte {
+	w := &writer{}
+	for _, b := range meta {
+		w.blob(b)
+	}
+	w.uvarint(0) // block palette
+	w.uvarint(0) // version overrides
+	rest(w)
+	return w.bytes()
+}
+
 // TestRejectsStructureEnvelopeViolations: a structure has exactly one valid
 // envelope. Round-tripping a legal one cannot show the rejections going.
 func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	reg := testRegistry(t)
-	base := func() *writer {
-		w := &writer{}
-		w.blob(nil) // settings
-		w.blob(nil) // user data
-		w.blob(nil) // markers
-		w.blob(nil) // border
-		w.uvarint(0)
-		w.uvarint(0)
-		return w
+	var noMeta [4][]byte
+	// tail writes everything from the blob table to the end of the body, with
+	// the size and origin the caller chooses.
+	tail := func(size [3]uint64, origin [3]int64) func(*writer) {
+		return func(w *writer) {
+			w.uvarint(0) // blob table
+			for _, v := range size {
+				w.uvarint(v)
+			}
+			for _, v := range origin {
+				w.svarint(v)
+			}
+			w.u8(0)      // cell presence: the one cell is absent
+			w.uvarint(0) // block entities
+			w.uvarint(0) // entities
+		}
 	}
-	build := func(flags uint32, edit func(*writer)) []byte {
-		body := base()
-		edit(body)
-		hdr := &writer{}
-		hdr.raw(headerMagic[:])
-		hdr.u16(Version)
-		hdr.u8(KindStructure)
-		hdr.u8(ModeSolid)
-		hdr.u32(flags)
-		hdr.i32(chunk.CurrentBlockVersion)
-		tail := &writer{}
-		tail.u64(0)
-		tail.u64(0)
-		tail.u64(0)
-		tail.u64(0)
-		tail.raw(footerMagic[:])
-		ftr := &writer{}
-		ftr.u64(checkpointHash(hdr.bytes(), body.bytes(), tail.bytes()))
-		ftr.raw(tail.bytes())
-		return append(append(hdr.bytes(), body.bytes()...), ftr.bytes()...)
-	}
+	unit := [3]uint64{1, 1, 1}
 	rest := func(w *writer) {
 		w.uvarint(0) // biome palette
-		w.uvarint(0) // blob table
-		w.uvarint(1) // sizes
-		w.uvarint(1)
-		w.uvarint(1)
-		w.svarint(0) // origins
-		w.svarint(0)
-		w.svarint(0)
-		w.u8(0)      // cell presence
-		w.uvarint(0) // block entities
-		w.uvarint(0) // entities
+		tail(unit, [3]int64{0, 0, 0})(w)
+	}
+	build := func(flags uint32, rest func(*writer)) []byte {
+		return structureFile(flags, structBody(noMeta, rest))
 	}
 	if _, err := ReadStructure(build(FlagUncompressed, rest), reg); err != nil {
 		t.Fatalf("a legal envelope was rejected: %v", err)
@@ -3171,50 +3189,83 @@ func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	if _, err := ReadStructure(build(FlagUncompressed, func(w *writer) {
 		w.uvarint(1)
 		w.str("minecraft:plains")
-		w.uvarint(0)
-		w.uvarint(1)
-		w.uvarint(1)
-		w.uvarint(1)
-		w.svarint(0)
-		w.svarint(0)
-		w.svarint(0)
-		w.u8(0)
-		w.uvarint(0)
-		w.uvarint(0)
+		tail(unit, [3]int64{0, 0, 0})(w)
 	}), reg); err == nil {
 		t.Error("a structure with a biome palette was accepted")
 	}
-	// Non-empty settings.
+	// Non-empty settings. The reader tests settings, markers and border in
+	// one condition, so one of the three drives it.
 	settings, err := marshalNBT(map[string]any{"name": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	withSettings := &writer{}
-	withSettings.blob(settings)
-	withSettings.blob(nil)
-	withSettings.blob(nil)
-	withSettings.blob(nil)
-	withSettings.uvarint(0)
-	withSettings.uvarint(0)
-	rest(withSettings)
-	hdr := &writer{}
-	hdr.raw(headerMagic[:])
-	hdr.u16(Version)
-	hdr.u8(KindStructure)
-	hdr.u8(ModeSolid)
-	hdr.u32(FlagUncompressed)
-	hdr.i32(chunk.CurrentBlockVersion)
-	tail := &writer{}
-	tail.u64(0)
-	tail.u64(0)
-	tail.u64(0)
-	tail.u64(0)
-	tail.raw(footerMagic[:])
-	ftr := &writer{}
-	ftr.u64(checkpointHash(hdr.bytes(), withSettings.bytes(), tail.bytes()))
-	ftr.raw(tail.bytes())
-	if _, err := ReadStructure(append(append(hdr.bytes(), withSettings.bytes()...), ftr.bytes()...), reg); err == nil {
+	withSettings := structBody([4][]byte{settings, nil, nil, nil}, rest)
+	if _, err := ReadStructure(structureFile(FlagUncompressed, withSettings), reg); err == nil {
 		t.Error("a structure carrying settings was accepted")
+	}
+
+	// The size components. Zero and anything past the ceiling are refused, and
+	// the ceiling itself is legal, so the bound is on the value and not on
+	// whatever the allocation happens to survive.
+	for _, c := range []struct {
+		name string
+		size [3]uint64
+		ok   bool
+	}{
+		{"one block", [3]uint64{1, 1, 1}, true},
+		{"the ceiling on one axis", [3]uint64{maxStructureSize, 1, 1}, true},
+		{"zero on X", [3]uint64{0, 1, 1}, false},
+		{"zero on Y", [3]uint64{1, 0, 1}, false},
+		{"zero on Z", [3]uint64{1, 1, 0}, false},
+		{"one past the ceiling", [3]uint64{maxStructureSize + 1, 1, 1}, false},
+	} {
+		// A size of 1048576 on one axis is 65536 cells, so its presence
+		// bitset is 8192 bytes rather than the single byte a unit box needs.
+		cells := int(((c.size[0]+15)/16)*((c.size[1]+15)/16)*((c.size[2]+15)/16)) + 7
+		if c.size[0] == 0 || c.size[1] == 0 || c.size[2] == 0 {
+			cells = 8
+		}
+		file := build(FlagUncompressed, func(w *writer) {
+			w.uvarint(0) // biome palette
+			w.uvarint(0) // blob table
+			for _, v := range c.size {
+				w.uvarint(v)
+			}
+			w.svarint(0)
+			w.svarint(0)
+			w.svarint(0)
+			w.raw(make([]byte, cells/8)) // cell presence, every cell absent
+			w.uvarint(0)                 // block entities
+			w.uvarint(0)                 // entities
+		})
+		_, err := ReadStructure(file, reg)
+		if (err == nil) != c.ok {
+			t.Errorf("size %s %v: err = %v, want ok = %v", c.name, c.size, err, c.ok)
+		}
+	}
+
+	// The origin components. The paste anchor is an int32, and an svarint that
+	// does not fit one would be narrowed silently, so two byte sequences would
+	// decode to one structure.
+	for _, c := range []struct {
+		name   string
+		origin [3]int64
+		ok     bool
+	}{
+		{"zero", [3]int64{0, 0, 0}, true},
+		{"the int32 extremes", [3]int64{math.MinInt32, 0, math.MaxInt32}, true},
+		{"one past the top", [3]int64{math.MaxInt32 + 1, 0, 0}, false},
+		{"one below the bottom", [3]int64{0, math.MinInt32 - 1, 0}, false},
+		{"far past the top on Z", [3]int64{0, 0, 1 << 40}, false},
+	} {
+		file := build(FlagUncompressed, func(w *writer) {
+			w.uvarint(0) // biome palette
+			tail(unit, c.origin)(w)
+		})
+		_, err := ReadStructure(file, reg)
+		if (err == nil) != c.ok {
+			t.Errorf("origin %s %v: err = %v, want ok = %v", c.name, c.origin, err, c.ok)
+		}
 	}
 }
 
@@ -3534,56 +3585,172 @@ func TestRejectsDuplicateCollectionEntries(t *testing.T) {
 	}), reg, Options{Compression: CompressionNone}); err == nil {
 		t.Error("a duplicate scheduled update was written")
 	}
+
+	// The reader half. A writer that refuses to emit a duplicate says nothing
+	// about the files a reader accepts, and the rule is about files: two
+	// entries a reader cannot tell apart leave their order decided by nothing.
+	read := func(bes, ticks []func(*writer)) error {
+		_, err := ReadWorld(solidFile(collectionBody(bes, ticks)), reg)
+		return err
+	}
+	be := blockEntityAt(0x11, 5)
+	if err := read([]func(*writer){be, be}, nil); err == nil {
+		t.Error("two block entities at one position were read")
+	}
+	// The key is the position alone, so entries differing only in their NBT
+	// are still one key and still refused.
+	other := func(w *writer) {
+		w.u8(0x11)
+		w.svarint(5)
+		nbt, err := marshalNBT(map[string]any{"id": "minecraft:chest"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.blob(nbt)
+	}
+	if err := read([]func(*writer){be, other}, nil); err == nil {
+		t.Error("two block entities at one position with different NBT were read")
+	}
+	// A scheduled update's key is its position, firing tick and block
+	// reference together: identical in all three is a duplicate, and the
+	// single-entry palette means the reference cannot differ here.
+	tick := scheduledAt(0x11, 5, 0, 7)
+	if err := read(nil, []func(*writer){tick, tick}); err == nil {
+		t.Error("a duplicate scheduled update was read")
+	}
+	// Two updates at one position that differ in their firing tick are
+	// distinct keys and must be accepted, or the rejections above would say
+	// nothing more than "one update per position".
+	if err := read(nil, []func(*writer){tick, scheduledAt(0x11, 5, 0, 9)}); err != nil {
+		t.Errorf("two updates at one position firing at different ticks were refused: %v", err)
+	}
+}
+
+// TestStructureRejectsBlockEntityOutsideBox: a structure's block entities are
+// subject to §4.8's key rule and must additionally lie inside the declared
+// box, which is the only part of that sentence a structure reader can check
+// on its own coordinates. A coordinate at or past a size component is both
+// outside the structure and an int32 conversion waiting to wrap.
+func TestStructureRejectsBlockEntityOutsideBox(t *testing.T) {
+	reg := testRegistry(t)
+	// A 2x2x2 box, so a coordinate of 1 is the last legal one and 2 is past
+	// the end on every axis.
+	file := func(pos [3]uint64) []byte {
+		var noMeta [4][]byte
+		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
+			w.uvarint(0) // biome palette
+			w.uvarint(0) // blob table
+			w.uvarint(2) // size: one cell, two blocks on a side
+			w.uvarint(2)
+			w.uvarint(2)
+			w.svarint(0) // origin
+			w.svarint(0)
+			w.svarint(0)
+			w.u8(0)      // cell presence: the one cell is absent
+			w.uvarint(1) // one block entity
+			w.uvarint(pos[0])
+			w.uvarint(pos[1])
+			w.uvarint(pos[2])
+			w.blob(emptyCompound())
+			w.uvarint(0) // entities
+		}))
+	}
+	if _, err := ReadStructure(file([3]uint64{1, 1, 1}), reg); err != nil {
+		t.Fatalf("a block entity in the far corner of the box was rejected: %v", err)
+	}
+	for axis := range 3 {
+		pos := [3]uint64{1, 1, 1}
+		pos[axis] = 2
+		if _, err := ReadStructure(file(pos), reg); err == nil {
+			t.Errorf("a block entity outside the box on axis %d was accepted", axis)
+		}
+	}
 }
 
 // Round 25: rules the table claimed readers enforced, which readers did not.
 
+// collectionBody assembles a solid world body whose one record carries the
+// given block entities and scheduled updates and nothing else. The block
+// palette holds one entry so a scheduled update has a reference to name.
+func collectionBody(bes, ticks []func(*writer)) []byte {
+	w := &writer{}
+	w.blob(nil) // settings
+	w.blob(nil) // user data
+	w.blob(nil) // markers
+	w.blob(nil) // border
+	w.uvarint(1)
+	w.str("minecraft:stone")
+	w.uvarint(0)
+	w.uvarint(0) // overrides
+	w.uvarint(0) // biome palette
+	w.uvarint(0) // blob table
+	w.uvarint(1) // one record
+	w.svarint(0)
+	w.svarint(0)
+	rec := &writer{}
+	rec.svarint(0) // minSection
+	rec.uvarint(1) // sectionN
+	rec.u8(0)      // no block sections
+	rec.u8(0)      // no biome sections
+	rec.uvarint(uint64(len(bes)))
+	for _, f := range bes {
+		f(rec)
+	}
+	rec.uvarint(0) // entities
+	rec.svarint(0) // column tick
+	rec.uvarint(uint64(len(ticks)))
+	for _, f := range ticks {
+		f(rec)
+	}
+	rec.blob(nil)
+	w.raw(rec.bytes())
+	return w.bytes()
+}
+
+// blockEntityAt and scheduledAt write one collection entry in the record
+// layout of §4. Callers keep Y inside the record's declared span of 0..15.
+func blockEntityAt(packedXZ uint8, y int64) func(*writer) {
+	return func(w *writer) { w.u8(packedXZ); w.svarint(y); w.blob(emptyCompound()) }
+}
+
+func scheduledAt(packedXZ uint8, y int64, ref uint64, at int64) func(*writer) {
+	return func(w *writer) { w.u8(packedXZ); w.svarint(y); w.uvarint(ref); w.svarint(at) }
+}
+
 // TestReaderEnforcesCollectionOrder: the order is on the wire, so a reader can
 // check it, and a file whose collections are reordered is a second encoding of
-// the same chunk. The writer-side test cannot see this half go.
+// the same chunk. The writer-side test cannot see this half go. Block entities
+// and scheduled updates sort on different keys through different comparisons,
+// so each needs its own pair: an earlier version of this test drove only the
+// block-entity half and left the tick comparison free to be deleted.
 func TestReaderEnforcesCollectionOrder(t *testing.T) {
 	reg := testRegistry(t)
-	body := func(swap bool) []byte {
-		w := &writer{}
-		w.blob(nil)
-		w.blob(nil)
-		w.blob(nil)
-		w.blob(nil)
-		w.uvarint(0) // block palette
-		w.uvarint(0) // overrides
-		w.uvarint(0) // biome palette
-		w.uvarint(0) // blob table
-		w.uvarint(1) // one record
-		w.svarint(0)
-		w.svarint(0)
-		rec := &writer{}
-		rec.svarint(0) // minSection
-		rec.uvarint(1) // sectionN
-		rec.u8(0)      // no block sections
-		rec.u8(0)      // no biome sections
-		rec.uvarint(2) // two block entities
-		// Inside the record's declared span of 0..15.
-		lo := func(bw *writer) { bw.u8(0x11); bw.svarint(5); bw.blob(emptyCompound()) }
-		hi := func(bw *writer) { bw.u8(0x22); bw.svarint(5); bw.blob(emptyCompound()) }
-		if swap {
-			hi(rec)
-			lo(rec)
-		} else {
-			lo(rec)
-			hi(rec)
-		}
-		rec.uvarint(0) // entities
-		rec.svarint(0) // column tick
-		rec.uvarint(0) // scheduled ticks
-		rec.blob(nil)
-		w.raw(rec.bytes())
-		return w.bytes()
+	read := func(bes, ticks []func(*writer)) error {
+		_, err := ReadWorld(solidFile(collectionBody(bes, ticks)), reg)
+		return err
 	}
-	if _, err := ReadWorld(solidFile(body(false)), reg); err != nil {
+	beLo, beHi := blockEntityAt(0x11, 5), blockEntityAt(0x22, 5)
+	if err := read([]func(*writer){beLo, beHi}, nil); err != nil {
 		t.Fatalf("ordered block entities were rejected: %v", err)
 	}
-	if _, err := ReadWorld(solidFile(body(true)), reg); err == nil {
-		t.Fatal("out-of-order block entities were accepted")
+	if err := read([]func(*writer){beHi, beLo}, nil); err == nil {
+		t.Error("out-of-order block entities were accepted")
+	}
+	// Scheduled updates order on (y, z, x) and then on the firing tick and
+	// the block reference, which no block-entity fixture can reach.
+	for _, c := range []struct {
+		name   string
+		lo, hi func(*writer)
+	}{
+		{"position", scheduledAt(0x11, 5, 0, 7), scheduledAt(0x22, 5, 0, 7)},
+		{"firing tick", scheduledAt(0x11, 5, 0, 7), scheduledAt(0x11, 5, 0, 9)},
+	} {
+		if err := read(nil, []func(*writer){c.lo, c.hi}); err != nil {
+			t.Errorf("scheduled updates ordered by %s were rejected: %v", c.name, err)
+		}
+		if err := read(nil, []func(*writer){c.hi, c.lo}); err == nil {
+			t.Errorf("scheduled updates out of order by %s were accepted", c.name)
+		}
 	}
 }
 

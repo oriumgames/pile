@@ -326,6 +326,7 @@ var invariants = []Invariant{
 		Name: "a structure has one envelope", Category: Presence, Enforce: Decoded,
 		Rules: []string{"5789390a", "7b480f2f"},
 		Tests: []string{"TestStructureOriginExtremes", "TestRejectsStructureEnvelopeViolations"},
+		Note:  "The envelope is the header flags, the three metadata blobs, the empty biome palette, the size components and the origin range. The size and origin bounds are stated in §6's layout table rather than a sentence of their own, and a round trip of a legal structure cannot show either going.",
 	},
 	{
 		Name: "cell padding is air", Category: Normalisation, Enforce: WriterOnly,
@@ -401,8 +402,8 @@ var invariants = []Invariant{
 	{
 		Name: "collection keys are unique", Category: Presence, Enforce: Decoded,
 		Rules: []string{"c5770076", "0528d6ba"},
-		Tests: []string{"TestRejectsDuplicateCollectionEntries"},
-		Note:  "The orders of §4.8 are total only because their keys are unique, so uniqueness is a rule rather than an assumption.",
+		Tests: []string{"TestRejectsDuplicateCollectionEntries", "TestStructureRejectsBlockEntityOutsideBox"},
+		Note:  "The orders of §4.8 are total only because their keys are unique, so uniqueness is a rule rather than an assumption. In a chunk record the reader enforces it through the strict ascent of the order itself: a sequence whose consecutive keys all ascend repeats nothing, and a seen-set that duplicated the rule could not fail. A structure's block entities are covered only for the box they must lie in; nothing on either side of the format rejects two of them at one position.",
 	},
 	{
 		Name: "StoreLight matches its content", Category: Omission, Enforce: Decoded,

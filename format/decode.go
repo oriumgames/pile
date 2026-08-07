@@ -713,24 +713,21 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 	// sub chunk array with int16(y) and no bounds check, so an out-of-range
 	// value panics the server at world load rather than failing the decode.
 	loY, hiY := rr.minSection*16, (rr.minSection+int64(rr.sectionN))*16-1
-	seenBE := make(map[beKey]struct{}, len(rr.bes))
 	var prevBE *beKey
 	for _, be := range rr.bes {
-		// At most one block entity per position: two a reader cannot tell
-		// apart leave their order decided by nothing, which is what §4.8's
-		// totality argument rests on.
 		if be.y < loY || be.y > hiY {
 			return Column{}, corruptf("block entity at Y %d is outside the chunk's span %d..%d", be.y, loY, hiY)
 		}
 		k := beKey{packedXZ: be.packedXZ, y: be.y}
-		if _, dup := seenBE[k]; dup {
-			return Column{}, corruptf("two block entities at one position in chunk (%d,%d)", x, z)
-		}
-		seenBE[k] = struct{}{}
 		// The order is on the wire, so a reader can check it, and a file whose
 		// collections are reordered is a second encoding of the same chunk.
+		// The ascent is strict, which is also how §4.8's uniqueness rule is
+		// enforced: at most one block entity per position, because a sequence
+		// whose consecutive keys all ascend has no repeat in it anywhere. A
+		// separate seen-set held that rule for a while and could not fail,
+		// since every input it would have caught descends first.
 		if prevBE != nil && !beAscends(*prevBE, k) {
-			return Column{}, corruptf("block entities are out of order in chunk (%d,%d)", x, z)
+			return Column{}, corruptf("block entities are out of order or repeat a position in chunk (%d,%d)", x, z)
 		}
 		cur := k
 		prevBE = &cur
@@ -762,24 +759,21 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		col.Col.Entities = append(col.Col.Entities, chunk.Entity{ID: id, Data: data})
 	}
 	col.Col.Tick = rr.tick
-	seenTick := make(map[tickKey]struct{}, len(rr.ticks))
 	var prevTick *tickKey
 	for _, t := range rr.ticks {
 		if int(t.ref) >= len(rids) {
 			return Column{}, corruptf("scheduled tick block reference %d out of range", t.ref)
 		}
-		// Two updates identical in position, firing tick and block reference
-		// are indistinguishable, so their order is decided by nothing.
 		if t.y < loY || t.y > hiY {
 			return Column{}, corruptf("scheduled update at Y %d is outside the chunk's span %d..%d", t.y, loY, hiY)
 		}
 		k := tickKey{packedXZ: t.packedXZ, y: t.y, at: t.at, ref: t.ref}
-		if _, dup := seenTick[k]; dup {
-			return Column{}, corruptf("duplicate scheduled update in chunk (%d,%d)", x, z)
-		}
-		seenTick[k] = struct{}{}
+		// The tick order runs over the whole key, so its strict ascent carries
+		// uniqueness too: two updates identical in position, firing tick and
+		// block reference are indistinguishable, and the sequence they would
+		// have to appear in is not ascending.
 		if prevTick != nil && !tickAscends(*prevTick, k) {
-			return Column{}, corruptf("scheduled updates are out of order in chunk (%d,%d)", x, z)
+			return Column{}, corruptf("scheduled updates are out of order or repeat a key in chunk (%d,%d)", x, z)
 		}
 		curTick := k
 		prevTick = &curTick
