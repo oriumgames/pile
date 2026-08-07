@@ -178,6 +178,10 @@ type IndexedWorld struct {
 	// after the last of them would look like a world with nothing to save.
 	checkpointPending bool
 
+	// recoveryCharged records that one directory has already been parsed, so
+	// the budget below applies from the second candidate onward. See
+	// maxRecoveryEntries.
+	recoveryCharged bool
 	// recoveryLeft is how many more directory entries this open may parse,
 	// summed over every checkpoint candidate it tries. adoptCheckpoint sets it
 	// and finishDirectory spends it; see maxRecoveryEntries.
@@ -617,8 +621,26 @@ const maxCheckpointChain = 256
 // an attacker pays about 200 bytes per distinct frame to evade it. That buys a
 // number, not a bound.
 //
-// 2^24 is four directories at the entry ceiling, which is where a legitimate
-// recovery lives: a torn checkpoint's directory frame usually fails its hash
+// 2^24 was four directories at the entry ceiling when that ceiling was 2^22.
+// maxChunks is 2^26 now, so 2^24 is a *quarter* of one directory, and a budget
+// spent before the newest checkpoint finished parsing would refuse to open any
+// world above 16.7 million columns -- turning a limit on hostile work into a
+// second, lower world-size ceiling, which is exactly what raising maxChunks
+// was meant to remove.
+//
+// The fix is not a bigger number. It is that the budget bounds the *fallback*
+// walk and not the first candidate: opening a file costs one directory,
+// always, however large that directory is, and everything after the newest
+// checkpoint is what this budget pays for. That keeps the attack bounded --
+// the forged-chain case is precisely the one where candidate after candidate
+// must be parsed -- while leaving a healthy open, which parses exactly one
+// directory, unable to reach the limit at any world size. The first
+// candidate's own cost is bounded instead by the caller's decode budget,
+// which charges the directory at open.
+//
+// What follows is the reasoning for the number itself, which stands:
+// 2^24 is four directories at the old entry ceiling, which is where a
+// legitimate recovery lives: a torn checkpoint's directory frame usually fails its hash
 // and costs nothing, and the crash model of DURABILITY.md leaves either the
 // old checkpoint or the new one, so one fallback is the ordinary case and four
 // full parses is generous for the stacked-crash case. Measured on one machine,
@@ -627,7 +649,8 @@ const maxCheckpointChain = 256
 // the cost no longer multiplies. The other half of the choice is what it does
 // *not* restrict: 256 x 65,536 is exactly 2^24, so any world of 65,536 chunks
 // or fewer keeps every one of its 256 candidates and this limit can never be
-// what refuses it.
+// what refuses it -- and with the first candidate exempt, no world of any size
+// is refused for a checkpoint that is intact.
 const maxRecoveryEntries = 1 << 24
 
 // adoptCheckpoint walks footer candidates newest-first and adopts the first
@@ -661,7 +684,7 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 	// One budget for the whole pass, spent by finishDirectory. Bounding the
 	// candidates or the directory alone leaves their product unbounded, which
 	// is where the cost actually is.
-	w.recoveryLeft = maxRecoveryEntries
+	w.recoveryLeft, w.recoveryCharged = maxRecoveryEntries, false
 	if w.recoveryBudget > 0 {
 		w.recoveryLeft = w.recoveryBudget
 	}
@@ -1029,12 +1052,22 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 	}
 	// Charge the whole table against the recovery budget before parsing any of
 	// it, so a candidate that cannot be afforded costs nothing rather than the
-	// remainder of the budget. Recovery is the only path that sets the budget;
-	// an ordinary open sets it too, and one directory at the entry ceiling is a
-	// quarter of it.
-	if w.recoveryLeft -= chunkN; w.recoveryLeft < 0 {
-		return fmt.Errorf("%w: directory of %d entries", errRecoveryBudget, chunkN)
+	// remainder of the budget.
+	//
+	// The first candidate is exempt. A healthy open parses exactly one
+	// directory, and that one must succeed at any legal world size or this
+	// bound becomes a second, lower ceiling on how large a world may be --
+	// which is the thing maxChunks moving to 2^26 was meant to remove. What
+	// the budget is for is the fallback walk, where a forged chain makes
+	// candidate after candidate cost a full parse. The first candidate's own
+	// cost is bounded instead by the caller's decode budget, charged just
+	// below.
+	if w.recoveryCharged {
+		if w.recoveryLeft -= chunkN; w.recoveryLeft < 0 {
+			return fmt.Errorf("%w: directory of %d entries", errRecoveryBudget, chunkN)
+		}
 	}
+	w.recoveryCharged = true
 	// And against the caller's ceiling, for the same reason and in the same
 	// place: a directory this handle cannot afford should cost nothing to
 	// refuse. This is what makes the ceiling bite at open rather than at the

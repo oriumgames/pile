@@ -206,10 +206,19 @@ func newReadConfig(opts []ReadOption) readConfig {
 	return c
 }
 
-// decodedByteCeiling resolves the caller's ceiling against §8's, which is the
-// one direction the clamp works in.
+// decodedByteCeiling resolves the caller's ceiling. Passing nothing selects
+// defaultDecodedBytes, which is a policy and sits well below what §8 permits;
+// passing a value clamps it to decodedBytesCeiling, which is what §8 permits
+// and is the one direction the clamp works in.
+//
+// So the option moves in both directions from the default: down, for a caller
+// opening files it did not write, and up, for a caller that genuinely holds a
+// world larger than the default admits.
 func (c readConfig) decodedByteCeiling() int64 {
-	if c.maxDecodedBytes <= 0 || c.maxDecodedBytes > decodedBytesCeiling {
+	switch {
+	case c.maxDecodedBytes <= 0:
+		return defaultDecodedBytes
+	case c.maxDecodedBytes > decodedBytesCeiling:
 		return decodedBytesCeiling
 	}
 	return c.maxDecodedBytes
@@ -279,7 +288,21 @@ const (
 	// holding a single block consumes one of the 4,194,304 decoded storages of
 	// maxDecodedStorages, so a world with more content-bearing columns than
 	// this was already invalid. What this ceiling adds is the empty ones.
-	maxChunks  = 1 << 22
+	//
+	// 2^22 turned out to be the wrong number, and it is 2^26 now. 2048x2048
+	// chunks is 32,768 blocks square, and Minecraft's own limit is +-30 million
+	// blocks: a long-running survival server that explores past 32k blocks in
+	// one direction produces a world this format would have refused to decode.
+	// The number had been inherited from the indexed directory's existing
+	// ceiling and justified as "400x a real overworld", which is true of a
+	// lobby and false of the big worlds this format also claims to serve.
+	// 2^26 is 8192x8192 chunks, or 131,072 blocks square, which covers any
+	// world a server realistically produces while still being a ceiling.
+	//
+	// Raising it does not raise what an ordinary decode may cost, because the
+	// default decode budget is no longer derived from it: see
+	// defaultDecodedBytes below.
+	maxChunks  = 1 << 26
 	maxPalette = 1 << 20
 	maxBlobs   = 1 << 24
 	// maxPerChunk bounds entities, block entities and scheduled ticks per
@@ -373,15 +396,37 @@ const (
 	// objects".
 	storageBytes = 128
 	// decodedBytesCeiling is the most a decode can cost under this model while
-	// still obeying §8, and so the value a caller's ceiling is clamped to.
+	// still obeying §8, and so the value a caller's ceiling is clamped to. A
+	// caller may raise its budget to this and no further: a reader that accepts
+	// what a conforming reader must refuse forks the format as surely as one
+	// that refuses what it must accept.
 	//
 	// The trailing columnBytes is one column of headroom, and it is load
-	// bearing rather than decorative. An indexed handle spends this ceiling
-	// once on its directory and then gives each record decode whatever is left
-	// (see IndexedWorld.recordBudget), so without the headroom a directory at
-	// the entry ceiling would leave a remainder one column short of what §8
-	// still permits a single record to reach. The default ceiling has to be
-	// unreachable, not nearly unreachable: the zero value must accept exactly
-	// the files a reader without this option accepts.
+	// bearing rather than decorative. An indexed handle spends its budget once
+	// on its directory and then gives each record decode whatever is left (see
+	// IndexedWorld.recordBudget), so without the headroom a directory at the
+	// entry ceiling would leave a remainder one column short of what §8 still
+	// permits a single record to reach.
 	decodedBytesCeiling = int64(maxChunks)*columnBytes + int64(maxDecodedStorages)*storageBytes + columnBytes
+
+	// defaultDecodedBytes is the budget a caller gets by passing no option. It
+	// is deliberately far below decodedBytesCeiling, and that is a departure
+	// worth stating plainly: **the default can now refuse a conforming file.**
+	//
+	// It could not before, and the reason it can now is that maxChunks moved
+	// from 2^22 to 2^26 so that genuinely large worlds are representable. Had
+	// the default followed it, the worst case an unconfigured reader accepts
+	// would have gone from about 4.8 GB to about 69 GB -- which would mean
+	// raising a ceiling for big-world support had quietly made every reader
+	// that never asked for it sixteen times cheaper to attack. Those are two
+	// different questions and they now have two different answers: what the
+	// format can represent, and what a caller spends by default.
+	//
+	// The consequence is a real cost, not a free win. A world above 2^22
+	// columns is valid and will not open until its caller raises the budget,
+	// and it fails with ErrDecodeBudget naming the option rather than with a
+	// corruption error. That is the trade: an operator with a four-million-
+	// column world has to say so once, and everyone else keeps a default that
+	// a hostile file cannot inflate.
+	defaultDecodedBytes = int64(1<<22)*columnBytes + int64(maxDecodedStorages)*storageBytes + columnBytes
 )
