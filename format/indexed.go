@@ -794,7 +794,6 @@ func (w *IndexedWorld) parseSegRefs(r *reader, what string, validRef func(frameR
 			return nil, corruptf("segment count %d exceeds input", n)
 		}
 		segs := make([]frameRef, 0, n)
-		seen := make(map[frameRef]struct{}, n)
 		var total uint64
 		for range n {
 			off, err := r.uvarint()
@@ -819,12 +818,21 @@ func (w *IndexedWorld) parseSegRefs(r *reader, what string, validRef func(frameR
 			if err := validRef(ref, what); err != nil {
 				return nil, err
 			}
-			// Repeating a segment reference would multiply its entries into
-			// the cumulative palette from a tiny file.
-			if _, dup := seen[ref]; dup {
-				return nil, corruptf("duplicate %s reference at offset %d", what, ref.off)
+			// §5.3: the directory lists segments in the order they were
+			// written, because entry indices are cumulative across segments and
+			// reordering the list renumbers every palette reference in the
+			// file. Frames are only ever appended, so write order is ascending
+			// offset and the rule is visible on the wire rather than a claim
+			// about the writer's history.
+			//
+			// The ascent is strict, which is how the sentence's other half --
+			// no duplicate references, which would multiply a segment's entries
+			// into the cumulative palette from a tiny file -- is enforced too:
+			// a sequence whose offsets all ascend cannot repeat one. A seen-set
+			// beside this could not fail, so there is not one.
+			if len(segs) > 0 && ref.off <= segs[len(segs)-1].off {
+				return nil, corruptf("%s reference at offset %d is out of order or repeats an earlier one", what, ref.off)
 			}
-			seen[ref] = struct{}{}
 			// The stored frames must plausibly fit in the file.
 			total += uint64(ref.length)
 			if total > uint64(w.end) {

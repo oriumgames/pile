@@ -53,9 +53,20 @@ Nothing below is optional. Each line names its exit criterion.
       missing from the file.*
 - [ ] No test in the suite passes with its subject reverted. *Exit: a
       recorded negative-control result per canonicality test.*
-- [ ] The structure decoder enforces the rules the world decoder does:
-      duplicate block-entity positions, unreferenced blob-table entries,
-      all-air section and trailing-air-layer canonicality, out-of-box padding.
+- [x] The structure decoder enforces the rules the world decoder does:
+      duplicate block-entity positions and their order, unreferenced
+      blob-table entries, blob id first-use order, all-air section and
+      trailing-air-layer canonicality. *Exit: `TestDecodersAgreeOnValidity`
+      renders one shape into both containers and requires both decoders to
+      reach the same verdict, so the next divergence fails a test rather than
+      waiting for someone to read both loops.*
+      Out-of-box cell padding is deliberately **not** in that list. It is the
+      one structure rule a reader cannot enforce, because padding lies outside
+      the declared box by definition and a file carrying it decodes to exactly
+      the same structure as one that cleared it. `format/invariants.go` files
+      it as `WriterOnly` for that reason and it is verified by re-encoding;
+      this line used to name it as a decoder precondition and the two
+      documents disagreed.
 - [ ] The specification's normative rules are all claimed
       (`TestEveryRuleIsClaimed`) and all claims name live tests
       (`TestEveryInvariantNamesALiveTest`).

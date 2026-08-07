@@ -337,8 +337,8 @@ var invariants = []Invariant{
 	{
 		Name: "palette limits are cumulative", Category: Bound, Enforce: Decoded,
 		Rules: []string{"ba81d481", "89ca9097"},
-		Tests: []string{"TestRejectsDuplicateSegmentReference", "TestRejectsCumulativePaletteOverflow"},
-		Note:  "Duplicate references and the frame-total bound have fixtures. The million-entry ceiling itself is reachable only by fuzzing, since no fixture builds a palette that large; that is stated rather than papered over with a test that would pass either way.",
+		Tests: []string{"TestRejectsDuplicateSegmentReference", "TestRejectsUnorderedSegmentReferences", "TestRejectsCumulativePaletteOverflow"},
+		Note:  "Duplicate references, the segment order and the frame-total bound have fixtures. The order is checkable because frames are only appended, so the order they were written in is ascending offset; its strict ascent is also what refuses a duplicate, since two references to one frame share an offset, and the ordering fixture uses distinct descending offsets because a duplicate check cannot see those. The million-entry ceiling itself is reachable only by fuzzing, since no fixture builds a palette that large; that is stated rather than papered over with a test that would pass either way.",
 	},
 
 	// -- Structures (§6) --------------------------------------------------

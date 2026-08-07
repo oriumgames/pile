@@ -2565,7 +2565,10 @@ func TestRejectsLayerCountInRecords(t *testing.T) {
 // TestRejectsDuplicateSegmentReference: repeating a palette segment reference
 // multiplies its entries into the cumulative palette from a tiny file, which
 // is why the rule exists. The test that used to be named for it exercised
-// neither the duplicate nor the cumulative half.
+// neither the duplicate nor the cumulative half. What refuses a repeat now is
+// the strict ascent of the segment order, since two references to one frame
+// share an offset; the ordering half has its own fixture below, because
+// descending distinct offsets are an input a duplicate check cannot see.
 func TestRejectsDuplicateSegmentReference(t *testing.T) {
 	w := &IndexedWorld{end: 1 << 20}
 	// A validator that accepts anything, so the duplicate rule is what decides
@@ -2606,6 +2609,33 @@ func TestRejectsDuplicateSegmentReference(t *testing.T) {
 	empty.u64(1234)           // hash
 	if _, err := w.parseSegRefs(&reader{b: empty.bytes()}, "segment", ok); err == nil {
 		t.Fatal("a zero-length segment reference was accepted")
+	}
+}
+
+// TestRejectsUnorderedSegmentReferences: §5.3 requires the directory to list
+// segments in the order they were written, because palette entry indices are
+// cumulative across segments and reordering the list renumbers every palette
+// reference in the file -- a silent reinterpretation of the whole world, not a
+// decode failure. Frames are only appended, so write order is ascending offset
+// and a reader can check it, which nothing did.
+func TestRejectsUnorderedSegmentReferences(t *testing.T) {
+	w := &IndexedWorld{end: 1 << 20}
+	ok := func(frameRef, string) error { return nil }
+	list := func(offs ...uint64) []byte {
+		bw := &writer{}
+		bw.uvarint(uint64(len(offs)))
+		for _, off := range offs {
+			bw.uvarint(off)
+			bw.uvarint(8)
+			bw.u64(1234)
+		}
+		return bw.bytes()
+	}
+	if _, err := w.parseSegRefs(&reader{b: list(headerSize, headerSize+8)}, "segment", ok); err != nil {
+		t.Fatalf("segments listed in the order they were written were rejected: %v", err)
+	}
+	if _, err := w.parseSegRefs(&reader{b: list(headerSize+8, headerSize)}, "segment", ok); err == nil {
+		t.Fatal("segments listed out of the order they were written were accepted")
 	}
 }
 
