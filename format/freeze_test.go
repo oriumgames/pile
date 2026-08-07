@@ -5428,3 +5428,57 @@ func TestRejectsTrailingBytesInFrames(t *testing.T) {
 		}
 	}
 }
+
+// TestRejectsStructureOriginOutsideInt32 drives §6's origin range rule.
+//
+// The origin is three svarints, so the wire can express values a structure's
+// own int32 fields cannot hold. A reader that truncates one hands its caller a
+// paste anchor the caller's coordinate type cannot address, and — because two
+// wire values would then fold onto one origin — gives one anchor two
+// encodings.
+//
+// TestStructureOriginExtremes covers the other half by round-tripping
+// MinInt32 and MaxInt32, which must stay accepted: the rule is a range, and a
+// test that only proved rejection would be satisfied by a decoder that refused
+// every origin.
+func TestRejectsStructureOriginOutsideInt32(t *testing.T) {
+	reg := testRegistry(t)
+	file := func(origin [3]int64) []byte {
+		var noMeta [4][]byte
+		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
+			w.uvarint(0) // biome palette
+			w.uvarint(0) // blob table
+			w.uvarint(1) // sizeX
+			w.uvarint(1) // sizeY
+			w.uvarint(1) // sizeZ
+			for _, v := range origin {
+				w.svarint(v)
+			}
+			w.raw(make([]byte, 1)) // cellPresence: the one cell is absent
+			w.uvarint(0)           // block entities
+			w.uvarint(0)           // entities
+		}))
+	}
+	for _, c := range []struct {
+		name   string
+		origin [3]int64
+	}{
+		{"x one past the top", [3]int64{math.MaxInt32 + 1, 0, 0}},
+		{"y one below the bottom", [3]int64{0, math.MinInt32 - 1, 0}},
+		{"z far outside", [3]int64{0, 0, math.MaxInt64}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := ReadStructure(file(c.origin), reg)
+			if err == nil {
+				t.Fatal("an origin outside int32 was accepted")
+			}
+			if !strings.Contains(err.Error(), "outside int32") {
+				t.Fatalf("rejected for the wrong reason: %v", err)
+			}
+		})
+	}
+	// The boundary itself stays legal, so the check is a range and not a ban.
+	if _, err := ReadStructure(file([3]int64{math.MinInt32, 0, math.MaxInt32}), reg); err != nil {
+		t.Fatalf("a legal extreme origin was rejected: %v", err)
+	}
+}

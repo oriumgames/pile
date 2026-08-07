@@ -189,7 +189,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "version overrides mean a different version", Category: Omission, Enforce: Decoded,
-		Rules: []string{"2062adb1"},
+		Rules: []string{"2062adb1", "871174ff"},
 		Tests: []string{"TestVersionZeroRoundTrips", "TestRejectsRedundantVersionOverride"},
 		Note:  "An override equal to the palette's own version is redundant and grows a round trip that changed nothing.",
 	},
@@ -273,6 +273,13 @@ var invariants = []Invariant{
 		Name: "light entries describe something", Category: Presence, Enforce: Decoded,
 		Rules: []string{"929864f4"},
 		Tests: []string{"TestRejectsLightEntryFlags"},
+	},
+	{
+		Name: "light entries set no reserved bits", Category: Presence, Enforce: Decoded,
+		Rules: []string{"2ce6e9db"},
+		Tests: []string{"TestRejectsLightEntryFlags"},
+		Note: "Separate from the entry above because the inputs are distinguishable: flags == 0 is an entry carrying nothing, flags == 0x04 is an entry carrying block light and a bit this version does not define. One check would answer both and neither could fail alone. " +
+			"Like the ascent rule, this lived only as an annotation inside a layout fence, so nothing pinned it while the reader enforced it. TestNoNormativeTextInFences now refuses that shape.",
 	},
 	{
 		Name: "UniqueID is stored verbatim", Category: Normalisation, Enforce: Decoded,
@@ -365,6 +372,13 @@ var invariants = []Invariant{
 	},
 
 	// -- Structures (§6) --------------------------------------------------
+	{
+		Name: "a structure origin fits its own type", Category: Bound, Enforce: Decoded,
+		Rules: []string{"6a0a223a"},
+		Tests: []string{"TestRejectsStructureOriginOutsideInt32", "TestStructureOriginExtremes"},
+		Note: "The origin is three svarints and the field it lands in is an int32, so the wire can express values the structure cannot hold. Narrowing silently would fold two wire values onto one origin, which is the canonicality failure, not merely a wrong coordinate. " +
+			"Two tests because the rule is a range: one proves the outside is refused, the other that MinInt32 and MaxInt32 are still accepted. Without the second, a decoder that rejected every origin would satisfy the first.",
+	},
 	{
 		Name: "a structure has one envelope", Category: Presence, Enforce: Decoded,
 		Rules: []string{"5789390a", "7b480f2f"},

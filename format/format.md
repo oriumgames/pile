@@ -261,13 +261,17 @@ override[overrideN]:             indices strictly ascending
   indexDelta     uvarint          delta from the previous overridden index;
                                   the first entry deltas from 0, so a first
                                   delta of 0 means index 0. Every later delta
-                                  MUST be non-zero, since indices strictly
-                                  ascend, and decoders MUST reject a zero one
-  version        i32              MUST be non-zero and MUST differ from the
-                                  palette's own version: an override that
-                                  repeats it says nothing, so it would be a
-                                  second encoding of an entry with none
+                                  is non-zero, since indices strictly ascend
+  version        i32              non-zero, and different from the palette's
+                                  own version: an override that repeats it
+                                  says nothing, so it would be a second
+                                  encoding of an entry with none
 ```
+
+An override's `version` MUST be non-zero and MUST differ from the palette's
+own version, and decoders MUST reject either: zero already means "the
+palette's own version", and an override that repeats that version says
+nothing, so both are second encodings of an entry with no override.
 
 The override indices MUST strictly ascend, and decoders MUST reject a table
 whose running index does not increase, including one whose accumulated sum
@@ -602,10 +606,14 @@ lightPresence    bitset(sectionN)   bit i set = section i carries light
 per set bit, ascending:
   flags          u8                 bit 0 = block light present,
                                     bit 1 = sky light present,
-                                    bits 2-7 MUST be zero
+                                    bits 2-7 are zero
   blockLight     2048 bytes         present iff bit 0
   skyLight       2048 bytes         present iff bit 1
 ```
+
+Bits 2-7 of `flags` MUST be zero, and decoders MUST reject a light entry that
+sets one, for the reason every reserved field has: a bit an old reader
+ignores is a bit that changes the bytes without changing the content.
 
 Light presence is **independent of block presence**: a section with no blocks
 still carries light (a fully open column has full sky light throughout), so
@@ -788,8 +796,8 @@ in a palette segment, the metadata or the dictionary is detected instead of
 silently changing world content.
 
 ```
-kind             u8               1 = structure, 0 = world; MUST be 0
-mode             u8               MUST be 1 (indexed)
+kind             u8               1 = structure, 0 = world; always 0 here
+mode             u8               always 1 (indexed)
 flags            u32              as in the header (§2.3)
 blockVersion     i32              as in the header
 frameRef         = off uvarint, len uvarint, hash u64   (len 0 = absent)
@@ -893,8 +901,8 @@ biome palette    §3.2 with count = 0   (structures store no biomes)
 blob table       §3.4
 sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576 each,
                                   and see the cell ceiling below, which binds first)
-originX,Y,Z      svarint × 3      paste anchor offset; each MUST be in int32
-                                  range, so that one value has one encoding
+originX,Y,Z      svarint × 3      paste anchor offset; each in int32 range,
+                                  so that one value has one encoding
 cellPresence     bitset(cells)
 present cells:
   layerN         uvarint  (1 ≤ layerN ≤ 255)
@@ -907,6 +915,11 @@ entN             uvarint
 ent[entN]:
   nbt            blob             Pos is structure-local
 ```
+
+Each of `originX`, `originY` and `originZ` MUST be within int32 range, and
+decoders MUST reject a structure whose origin falls outside it, so that one
+anchor has one encoding and a reader is never handed a coordinate its own
+array cannot address.
 
 A structure header MUST set no flags other than `Uncompressed`, its settings,
 markers and border blobs MUST be empty, and its biome palette MUST have zero

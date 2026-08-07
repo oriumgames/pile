@@ -16,6 +16,7 @@
 2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
 2a4c2ef2 The override indices MUST strictly ascend, and decoders MUST reject a table whose running index does not increase, including one whose accumulated sum wraps.
 2b1d7218 MUST be zero (indexed dictionary presence is signalled by the directory, §5.5)
+2ce6e9db Bits 2-7 of `flags` MUST be zero, and decoders MUST reject a light entry that sets one, for the reason every reserved field has:
 2e70d107 **The column ceiling is one number for both modes.** Decoders MUST refuse a solid body declaring more chunk records than the ceiling above, and an indexed directory declaring more entries, and the two are deliberately the same value:
 2ed66e73 it is pure garbage that two writers could differ on, and decoders MUST reject one.
 2fcb9dbf Values 3–7 are reserved and MUST be rejected.
@@ -38,6 +39,7 @@
 62b04284 a structure is always solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value of either field this table does not list.
 648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
 673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
+6a0a223a Each of `originX`, `originY` and `originZ` MUST be within int32 range, and decoders MUST reject a structure whose origin falls outside it, so that one anchor has one encoding and a reader is never handed a coordinate its own array cannot address.
 6dd8dd9c only meaningful when bit 3 is set, and MUST be zero when it is clear
 6fbfdbc2 **The NBT container budget charges every container nested inside another.** Decoders MUST charge a compound or a list that is an element of a list, and a compound or a list that is a field of a compound, and MUST NOT charge the blob's own root compound, which is the blob rather than something inside it.
 70802cc1 Decoders MUST therefore bound the **result** as well as the input, and the decoded ceilings above exist for exactly that.
@@ -48,6 +50,7 @@
 7b6bfb2d Readers MUST refuse a frame that asks for more.
 7c4f5f2c record frames, palette segment frames and meta frames are compressed with the dictionary; the **directory frame and the dictionary frame itself MUST be compressed without it** (they are read before the dictionary can be loaded).
 80e86ca1 A caller-supplied ceiling MUST NOT raise any limit in this section; it may only tighten one.
+871174ff An override's `version` MUST be non-zero and MUST differ from the palette's own version, and decoders MUST reject either:
 8745186e - The **window size** MUST NOT exceed 8 MiB.
 89ca9097 The directory MUST list the segments in the order they were written, since entry indices are cumulative across segments and reordering the list renumbers every palette reference in the file.
 8e623ce0 Writers MUST store `UniqueID` as a long and readers MUST take it verbatim.

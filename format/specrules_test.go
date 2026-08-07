@@ -263,3 +263,40 @@ func testNames(t *testing.T) map[string]bool {
 	}
 	return names
 }
+
+// TestNoNormativeTextInFences keeps normative rules where the extractor can
+// see them.
+//
+// extractSpecRules strips fenced blocks before looking for MUST, because a
+// fence holds a layout diagram rather than prose. The consequence is that a
+// rule written inside one is pinned by nothing, claimed by nothing, and
+// invisible to TestEveryRuleIsClaimed — it looks enforced because it is
+// written down, and the harness that exists to catch exactly that cannot see
+// it.
+//
+// That is not hypothetical. §3.1's "the override indices strictly ascend"
+// lived in a fence, so nothing required a test for it, and the index chain
+// turned out to accept a delta that wrapped onto a lower index — a second
+// encoding of one palette, in a format whose whole doctrine is that there is
+// exactly one. It was found by a hostile-input pass days before the freeze,
+// and closing it after would have needed a version bump. Three more rules
+// were fence-only when this test was written: the light entry's reserved
+// bits, an override's version constraints, and the structure origin's range.
+// All three were enforced in code and pinned by nothing.
+//
+// So: state the rule in prose, and let the fence describe the bytes.
+func TestNoNormativeTextInFences(t *testing.T) {
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fence := range fenceRe.FindAllString(string(raw), -1) {
+		for line := range strings.SplitSeq(fence, "\n") {
+			if mustRe.MatchString(line) {
+				t.Errorf("normative text inside a fenced block, where no rule is pinned:\n\t%s\n"+
+					"State it in prose after the fence and describe the bytes here instead.",
+					strings.TrimSpace(line))
+			}
+		}
+	}
+}
