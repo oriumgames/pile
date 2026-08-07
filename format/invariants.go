@@ -228,7 +228,8 @@ var invariants = []Invariant{
 		Tests: []string{"TestRejectsDuplicateChunks", "TestReaderRejectsUnorderedRecords"},
 	},
 	{
-		Name: "the section span is never trimmed", Category: Presence, Enforce: Decoded,
+		Name: "the section span is never trimmed", Category: Presence, Enforce: WriterOnly,
+		Note:  "A reader cannot know the span a dimension intended, only the one the record declares, so a trimmed record is indistinguishable from an honest one. Verified by re-encoding.",
 		Rules: []string{"fcf0a219"},
 		Tests: []string{"TestEmptyChunkKeepsFullSpan"},
 	},
@@ -241,7 +242,7 @@ var invariants = []Invariant{
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission, Enforce: Decoded,
 		Rules: []string{"a9ee3ac1", "673fb00d", "12bc11b2", "90e4364e"},
-		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives"},
+		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives", "TestRejectsNonCanonicalSections"},
 		Note:  "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block.",
 	},
 	{
@@ -256,10 +257,10 @@ var invariants = []Invariant{
 		Note:  "Zero is legal; rewriting it breaks encode, decode, encode.",
 	},
 	{
-		Name: "the default biome flag is not optional", Category: Omission, Enforce: Decoded,
+		Name: "the default biome flag is not optional", Category: Omission, Enforce: WriterOnly,
 		Rules: []string{"13221d37", "7984f33b"},
 		Tests: []string{"TestUnknownDefaultBiomePreserved", "TestDefaultBiomeFlagIsSet"},
-		Note:  "Declining the flag is a second encoding of the same world.",
+		Note:  "Declining the flag is a second encoding of the same world, but a file that declined it decodes to that world all the same and nothing in it says which sections were uniform before the writer chose. Verified by re-encoding.",
 	},
 	{
 		Name: "the biome fallback is version stable", Category: Normalisation, Enforce: Decoded,
@@ -326,10 +327,10 @@ var invariants = []Invariant{
 		Tests: []string{"TestStructureOriginExtremes", "TestRejectsStructureEnvelopeViolations"},
 	},
 	{
-		Name: "cell padding is air", Category: Normalisation, Enforce: Decoded,
+		Name: "cell padding is air", Category: Normalisation, Enforce: WriterOnly,
 		Rules: []string{"c176f73b"},
 		Tests: []string{"TestMaxLayerCellPadding"},
-		Note:  "The box need not be a multiple of 16, so edge cells have padding that is not part of the structure.",
+		Note:  "The box need not be a multiple of 16, so edge cells have padding that is not part of the structure. A reader could in principle check it, but padding is outside the structure by definition, so a file carrying it decodes to the same structure either way. Verified by re-encoding.",
 	},
 
 	// -- Limits and writer obligations (§8) -------------------------------
@@ -357,7 +358,7 @@ var invariants = []Invariant{
 		Note:  "xxHash64 takes a seed and nothing else in the format implies which. An implementation that guesses differently agrees with this one on nothing.",
 	},
 	{
-		Name: "the biome palette order is defined", Category: Ordering, Enforce: WriterOnly,
+		Name: "the biome palette order is defined", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"33a5a48c", "230b214c"},
 		Tests: []string{"TestBiomePaletteOrder", "TestRejectsDuplicatePaletteEntries"},
 	},
@@ -388,7 +389,7 @@ var invariants = []Invariant{
 	{
 		Name: "stats fields are optional but typed", Category: Presence, Enforce: Decoded,
 		Rules: []string{"e23c42de", "fa104a93"},
-		Tests: []string{"TestStatsMissingKeyAccepted", "TestStatsPreservesUnknownKeys"},
+		Tests: []string{"TestStatsMissingKeyAccepted", "TestStatsPreservesUnknownKeys", "TestRejectsStatsSchemaViolations"},
 	},
 	{
 		Name: "enforcement is stated for every rule", Category: Presence, Enforce: WriterOnly,

@@ -598,8 +598,11 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		if err := budget.charge(layerN); err != nil {
 			return nil, err
 		}
-		sub := chunk.NewSubChunk(air)
-		for l := range layerN {
+		// Resolve the cell's layers first, so the canonical rules a world
+		// section obeys can be applied to the cell that is a structure's
+		// equivalent of one.
+		cellBlobs := make([]decBlob, 0, layerN)
+		for range layerN {
 			ref, err := r.uvarint()
 			if err != nil {
 				return nil, err
@@ -607,12 +610,19 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 			if int(ref) >= len(blobs) {
 				return nil, corruptf("cell blob reference %d out of range", ref)
 			}
+			cellBlobs = append(cellBlobs, blobs[ref])
+		}
+		if err := checkSectionCanonical(cellBlobs, rids, unknown, air, int32(i)); err != nil {
+			return nil, err
+		}
+		sub := chunk.NewSubChunk(air)
+		for l, cb := range cellBlobs {
 			report := func(idx uint16, state uint32) {
 				s.Unknown = append(s.Unknown, UnknownBlock{
 					Section: int32(i), Layer: uint8(l), Index: idx, State: state,
 				})
 			}
-			if err := applyBlockBlob(sub, uint8(l), blobs[ref], rids, air, unknown, report); err != nil {
+			if err := applyBlockBlob(sub, uint8(l), cb, rids, air, unknown, report); err != nil {
 				return nil, err
 			}
 		}

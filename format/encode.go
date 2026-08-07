@@ -320,6 +320,9 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 		if err != nil {
 			return fmt.Errorf("pile: encode stats: %w", err)
 		}
+		if err := checkStatsBlob(stats); err != nil {
+			return err
+		}
 		body.blob(stats)
 	}
 	body.raw(blockPalBytes)
@@ -488,6 +491,35 @@ func checkSettingsBlob(b []byte) error {
 		}
 		if got := fmt.Sprintf("%T", v); got != want {
 			return fmt.Errorf("pile: settings blob: %q is %s, want %s", k, got, want)
+		}
+	}
+	return nil
+}
+
+// statsSchema fixes the tag of every field §4.2 names. As in §7, presence is a
+// convention and spelling is a rule: a summary missing a counter is valid, one
+// carrying a counter as an int is a second encoding of the same number.
+var statsSchema = map[string]string{
+	"chunks": "int64", "filledSections": "int64", "uniqueBlobs": "int64",
+	"blockStates": "int64", "biomes": "int64",
+}
+
+// checkStatsBlob enforces the stats schema of §4.2.
+func checkStatsBlob(b []byte) error {
+	if len(b) == 0 {
+		return nil
+	}
+	m, err := unmarshalNBT(b)
+	if err != nil {
+		return fmt.Errorf("pile: stats blob: %w", err)
+	}
+	for k, want := range statsSchema {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		if got := fmt.Sprintf("%T", v); got != want {
+			return fmt.Errorf("pile: stats blob: %q is %s, want %s", k, got, want)
 		}
 	}
 	return nil

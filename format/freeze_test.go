@@ -3752,3 +3752,65 @@ func TestDictionarySamplingIsBounded(t *testing.T) {
 		t.Fatalf("the sample byte ceiling %d is below the floor %d", dictMaxSampleBytes, dictMinBytes)
 	}
 }
+
+// TestRejectsNonCanonicalSections: a section is present when it has content
+// and absent when every layer is uniform air, so a present section holding
+// only air is a second encoding of an absent one. A trailing all-air layer is
+// the same rule one level down: a layer past the last stored one already reads
+// as air.
+func TestRejectsNonCanonicalSections(t *testing.T) {
+	reg := testRegistry(t)
+	air := reg.AirRuntimeID()
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	// Global palette: air at 0, stone at 1.
+	rids := []uint32{air, stone}
+	uniform := func(ref uint64) decBlob {
+		return decBlob{refs: []uint32{uint32(ref)}, width: widthUniform}
+	}
+	for _, c := range []struct {
+		name   string
+		layers []decBlob
+		ok     bool
+	}{
+		{"one stone layer", []decBlob{uniform(1)}, true},
+		{"air under stone", []decBlob{uniform(0), uniform(1)}, true},
+		// An all-air section has an all-air last layer, so one test covers
+		// both rules and there is no input that separates them.
+		{"only air", []decBlob{uniform(0)}, false},
+		{"all layers air", []decBlob{uniform(0), uniform(0)}, false},
+		{"trailing air", []decBlob{uniform(1), uniform(0)}, false},
+	} {
+		err := checkSectionCanonical(c.layers, rids, nil, air, 0)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: err = %v, want ok = %v", c.name, err, c.ok)
+		}
+	}
+	// A preserved state stands in the palette as the placeholder, which may
+	// itself be air, and is content regardless.
+	if err := checkSectionCanonical([]decBlob{uniform(0)}, rids, []int32{0, -1}, air, 0); err != nil {
+		t.Errorf("a layer holding a preserved state was called air: %v", err)
+	}
+}
+
+// TestRejectsStatsSchemaViolations: §4.2 fixes the tag of every counter, on
+// the same split §7 uses. A counter absent is valid; one carried as an int is
+// a second encoding of the same number.
+func TestRejectsStatsSchemaViolations(t *testing.T) {
+	ok, err := marshalNBT(map[string]any{"chunks": int64(1), "biomes": int64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStatsBlob(ok); err != nil {
+		t.Fatalf("a well-typed stats compound was rejected: %v", err)
+	}
+	if err := checkStatsBlob(nil); err != nil {
+		t.Fatalf("an absent stats compound was rejected: %v", err)
+	}
+	bad, err := marshalNBT(map[string]any{"chunks": int32(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStatsBlob(bad); err == nil {
+		t.Fatal("a counter carried as an int was accepted")
+	}
+}

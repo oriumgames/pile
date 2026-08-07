@@ -151,6 +151,9 @@ func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border
 		if err != nil {
 			return
 		}
+		if err = checkStatsBlob(stats); err != nil {
+			return
+		}
 	}
 	// The §7 schemas are validity rules, not writer conventions, so the reader
 	// applies exactly what the writer refuses to produce. Without this a file
@@ -625,7 +628,16 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		if rr.presence[i/8]&(1<<(i%8)) == 0 {
 			continue
 		}
-		for l, blob := range rr.layers[blockCur] {
+		// A section is present when it has content and absent when every layer
+		// is uniform air, so a present section that is all air is a second
+		// encoding of an absent one. The last layer carries the same rule for
+		// the same reason: a layer past the last stored one already reads as
+		// air, so a trailing all-air layer says nothing.
+		layers := rr.layers[blockCur]
+		if err := checkSectionCanonical(layers, rids, unknown, air, int32(rr.minSection)+int32(i)); err != nil {
+			return Column{}, err
+		}
+		for l, blob := range layers {
 			var report func(idx uint16, state uint32)
 			if unknown != nil {
 				report = func(idx uint16, state uint32) {
@@ -910,6 +922,36 @@ type tickKey struct {
 	y        int64
 	at       int64
 	ref      uint64
+}
+
+// checkSectionCanonical rejects a present section whose last stored layer is
+// air: a layer past the last one already reads as air, so a trailing all-air
+// layer says nothing, and a section whose layers are all air is an absent
+// section written the long way. A layer holding a preserved unresolved state
+// is never "nothing", whatever its placeholder happens to resolve to.
+func checkSectionCanonical(layers []decBlob, rids []uint32, unknown []int32, air uint32, sec int32) error {
+	// One test covers both rules. A section whose layers are all air has an
+	// all-air last layer, so rejecting a trailing one rejects it too; a
+	// separate all-air check would have no input that reaches it, which is
+	// exactly the kind of unenforceable check this table exists to catch.
+	if uniformAirBlob(layers[len(layers)-1], rids, unknown, air) {
+		return corruptf("section %d ends in an all-air layer, so it is either absent or shorter", sec)
+	}
+	return nil
+}
+
+// uniformAirBlob reports whether a blob resolves to air everywhere.
+func uniformAirBlob(b decBlob, rids []uint32, unknown []int32, air uint32) bool {
+	if len(b.refs) != 1 {
+		return false
+	}
+	ref := b.refs[0]
+	if int(ref) >= len(rids) || rids[ref] != air {
+		return false
+	}
+	// A preserved state stands in the palette as the placeholder, which may
+	// itself be air; it is content regardless.
+	return unknown == nil || unknown[ref] < 0
 }
 
 // beKey identifies a block entity by the position the record stores.
