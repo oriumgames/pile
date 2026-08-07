@@ -735,6 +735,23 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 	}
 
 	readSegs := func(what string) ([]frameRef, error) {
+		return w.parseSegRefs(r, what, validRef)
+	}
+	if w.blockSegs, err = readSegs("block palette segment"); err != nil {
+		return err
+	}
+	if w.biomeSegs, err = readSegs("biome palette segment"); err != nil {
+		return err
+	}
+	return w.finishDirectory(r)
+}
+
+// parseSegRefs reads a palette segment reference list. It is a method rather
+// than a closure so the rules it enforces can be exercised directly: repeating
+// a reference multiplies its entries into the cumulative palette from a tiny
+// file, and the frames have to plausibly fit.
+func (w *IndexedWorld) parseSegRefs(r *reader, what string, validRef func(frameRef, string) error) ([]frameRef, error) {
+	{
 		n, err := r.count(1<<20, "segment")
 		if err != nil {
 			return nil, err
@@ -783,12 +800,10 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		}
 		return segs, nil
 	}
-	if w.blockSegs, err = readSegs("block palette segment"); err != nil {
-		return err
-	}
-	if w.biomeSegs, err = readSegs("biome palette segment"); err != nil {
-		return err
-	}
+}
+
+// finishDirectory reads the chunk entry table that follows the segment lists.
+func (w *IndexedWorld) finishDirectory(r *reader) error {
 
 	chunkN, err := r.count(maxDirEntries, "directory chunk")
 	if err != nil {
@@ -1172,6 +1187,13 @@ func (w *IndexedWorld) reservePaletteEntry(err error) error {
 	if err == nil && len(w.rids) >= maxPalette {
 		err = fmt.Errorf("pile: %d block states exceeds limit %d", len(w.rids)+1, maxPalette)
 	}
+	return w.noteErr(err)
+}
+
+// noteErr records a rejection without asserting anything about capacity. The
+// block and biome palettes have separate limits and separate references, so a
+// biome must not be refused because the block palette is full.
+func (w *IndexedWorld) noteErr(err error) error {
 	if err != nil && w.paletteErr == nil {
 		w.paletteErr = err
 	}
@@ -1183,15 +1205,15 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 	if idx, ok := w.biomeIdx[name]; ok {
 		return idx
 	}
-	if err := w.reservePaletteEntry(checkString(name, "biome name")); err != nil {
+	if err := w.noteErr(checkString(name, "biome name")); err != nil {
 		return 0
 	}
 	if !strings.Contains(name, ":") {
-		w.reservePaletteEntry(fmt.Errorf("pile: biome name %q is not namespaced", name))
+		w.noteErr(fmt.Errorf("pile: biome name %q is not namespaced", name))
 		return 0
 	}
 	if len(w.biomeNames) >= maxPalette {
-		w.reservePaletteEntry(fmt.Errorf("pile: %d biomes exceeds limit %d", len(w.biomeNames)+1, maxPalette))
+		w.noteErr(fmt.Errorf("pile: %d biomes exceeds limit %d", len(w.biomeNames)+1, maxPalette))
 		return 0
 	}
 	idx := uint32(len(w.biomeNames))
@@ -1478,6 +1500,16 @@ func (w *IndexedWorld) Meta() (settings, userData, markers, border []byte) {
 	return cloneBytes(w.settings), cloneBytes(w.userData), cloneBytes(w.markers), cloneBytes(w.border)
 }
 
+// metaFrameLen returns the encoded size of a metadata frame, so the aggregate
+// can be checked where the blobs arrive rather than where they are written.
+func metaFrameLen(blobs ...[]byte) int {
+	w := &writer{}
+	for _, b := range blobs {
+		w.blob(b)
+	}
+	return w.len()
+}
+
 // SetMeta replaces the metadata blobs, persisted on the next checkpoint. It
 // rejects blobs the decoder would refuse, so a checkpoint can never write a
 // file that fails to reopen (which would silently roll back to an older
@@ -1508,6 +1540,13 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error
 	}
 	if err := checkMetaSchemas(settings, markers, border); err != nil {
 		return err
+	}
+	// The four blobs go into one frame, and the frame has its own ceiling: four
+	// individually legal 16 MiB blobs already exceed it. Checking only the
+	// parts leaves SetMeta reporting success and every later checkpoint
+	// failing, which is the rollback this call exists to prevent.
+	if n := metaFrameLen(settings, userData, markers, border); n > maxDecodedFrame {
+		return fmt.Errorf("pile: metadata frame is %d bytes, limit %d", n, maxDecodedFrame)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

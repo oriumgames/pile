@@ -48,13 +48,23 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 	if p.conf.skip&SkipChunkUserData != 0 {
 		userData = nil
 	}
+	// Publish only once the store has succeeded. The indexed writer winds its
+	// palettes back when a store fails, and the provider has to match that: a
+	// rejected call that left an explicit sidecar in unkCache would hand it to
+	// the next ordinary store, whose nil sidecar should have inherited what is
+	// actually on disk. Two providers with identical files and identical
+	// successful calls would then write different bytes because one saw a
+	// rejected call in between.
+	if err := ds.iw.Store(format.Column{
+		X: pos[0], Z: pos[1], Col: c, UserData: userData,
+		Unknown: cur.unknown, UnknownTicks: cur.ticks, UnknownStates: cur.states,
+		UnknownBiomes: cur.bioUnknown, UnknownBiomeNames: cur.bioNames,
+	}); err != nil {
+		return err
+	}
 	ds.udCache[key] = userData
 	ds.unkCache[key] = cur
 	ds.cache.drop(key)
 	ds.dirty = true
-	return ds.iw.Store(format.Column{
-		X: pos[0], Z: pos[1], Col: c, UserData: userData,
-		Unknown: cur.unknown, UnknownTicks: cur.ticks, UnknownStates: cur.states,
-		UnknownBiomes: cur.bioUnknown, UnknownBiomeNames: cur.bioNames,
-	})
+	return nil
 }

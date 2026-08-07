@@ -1,7 +1,9 @@
 package pile
 
 import (
+	"bytes"
 	"encoding/binary"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 	"os"
 	"path/filepath"
 	"testing"
@@ -336,4 +338,72 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestRejectedAppendStoreLeavesNoState: the indexed writer winds its palettes
+// back when a store fails, and the provider has to match. A rejected call that
+// published its sidecar into the cache would hand it to the next ordinary
+// store, whose nil sidecar should have inherited what is on disk, so two
+// providers with identical files and identical successful calls would write
+// different bytes because one saw a rejected call in between.
+func TestRejectedAppendStoreLeavesNoState(t *testing.T) {
+	reg := testRegistry(t)
+	run := func(offerRejected bool) []byte {
+		dir := t.TempDir()
+		p, err := Open(dir, AppendMode())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos := world.ChunkPos{0, 0}
+		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg)); err != nil {
+			t.Fatal(err)
+		}
+		if offerRejected {
+			// A column the indexed writer refuses, carrying an explicit
+			// sidecar the provider would otherwise remember.
+			c := testColumn(t, reg)
+			for i := range 6 {
+				c.Entities = append(c.Entities, chunk.Entity{
+					ID:   int64(2000 + i),
+					Data: map[string]any{"identifier": "minecraft:cow", "pad": make([]byte, 12<<20)},
+				})
+			}
+			// The sidecar has to be observable: a preserved state only
+			// reaches the palette when an entry references it, so the entry
+			// comes too, aimed at a position holding the placeholder.
+			side := &sidecar{
+				states: []format.BlockState{{Name: "audit:poison", Version: 1}},
+				unknown: []format.UnknownBlock{{
+					Section: -4, Layer: 0, Index: 0, State: 0,
+				}},
+			}
+			if err := p.storeColumn(pos, world.Overworld, c, side); err == nil {
+				t.Fatal("the oversized column was accepted")
+			}
+		}
+		// The placeholder is what a preserved state attaches to, so the final
+		// column carries one at the position the sidecar names.
+		final := testColumn(t, reg)
+		info, ok := reg.StateToRuntimeID("minecraft:info_update", map[string]any{})
+		if !ok {
+			t.Skip("this registry has no placeholder block")
+		}
+		final.Chunk.SetBlock(0, -64, 0, 0, info)
+		if err := p.StoreColumn(pos, world.Overworld, final); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Close(); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(DimPath(dir, world.Overworld))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	poisoned, clean := run(true), run(false)
+	if !bytes.Equal(poisoned, clean) {
+		t.Fatalf("a rejected store changed what a later successful one wrote: %d vs %d bytes",
+			len(poisoned), len(clean))
+	}
 }

@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -64,14 +65,40 @@ func TestRejectsReservedFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := buf.Bytes()
-	for _, bit := range []uint32{1 << 2, 1 << 5, 1 << 15} {
+	setFlags := func(b []byte, flags uint32) {
+		binary.LittleEndian.PutUint32(b[8:12], flags)
+		// Rehash, or the checksum rejects the file and the flag rule is never
+		// reached: the test would pass with the rule deleted.
+		rehashSolid(b)
+	}
+	base := binary.LittleEndian.Uint32(file[8:12])
+
+	// Bit 2 is reserved, bits 8-15 are reserved, and the high half is the
+	// default-biome reference, meaningless without its flag.
+	for _, bit := range []uint32{1 << 2, 1 << 8, 1 << 15, 1 << 16} {
 		bad := bytes.Clone(file)
-		flags := uint32(bad[8]) | uint32(bad[9])<<8 | uint32(bad[10])<<16 | uint32(bad[11])<<24
-		flags |= bit
-		bad[8], bad[9], bad[10], bad[11] = byte(flags), byte(flags>>8), byte(flags>>16), byte(flags>>24)
+		setFlags(bad, base|bit)
 		if _, err := ReadWorld(bad, reg); err == nil {
 			t.Errorf("reserved flag bit 0x%X accepted", bit)
 		}
+	}
+	// Bits 5-7 are the dimension, not reserved: bit 5 is Nether and must be
+	// accepted as such.
+	nether := bytes.Clone(file)
+	setFlags(nether, base|uint32(Nether)<<dimensionShift)
+	d, err := ReadWorld(nether, reg)
+	if err != nil {
+		t.Fatalf("the nether dimension bit was rejected: %v", err)
+	}
+	if d.Dimension != Nether {
+		t.Fatalf("dimension = %v, want nether", d.Dimension)
+	}
+	// An unknown version is refused before anything else is read.
+	badVer := bytes.Clone(file)
+	binary.LittleEndian.PutUint16(badVer[4:6], Version+1)
+	rehashSolid(badVer)
+	if _, err := ReadWorld(badVer, reg); !errors.Is(err, ErrUnsupportedVersion) {
+		t.Errorf("unsupported version: err = %v, want ErrUnsupportedVersion", err)
 	}
 }
 
@@ -2158,4 +2185,255 @@ func metaBody(t *testing.T, markers []byte) []byte {
 	w.blob(markers)
 	w.blob(nil) // border
 	return w.bytes()
+}
+
+// Tests replacing invariant claims that a round-21 review found vacuous: each
+// named a test that stayed green with its rule removed.
+
+// TestRejectsOversizedBlob exercises the format's blob primitive, which the
+// NBT validator's own length tests never touch: they bound lengths inside an
+// NBT payload, not the length prefix the container uses.
+func TestRejectsOversizedBlob(t *testing.T) {
+	// Reader side: a length past the ceiling is refused by the ceiling, not by
+	// running out of input. Both produce an error, so the message is what
+	// distinguishes them: asserting only that an error happened would leave
+	// this test green with the bound removed.
+	w := &writer{}
+	w.uvarint(maxBlobLen + 1)
+	_, err := (&reader{b: w.bytes()}).blob()
+	if err == nil {
+		t.Fatal("a blob length past the ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("a length past the ceiling was refused by %v, not by the ceiling", err)
+	}
+	// The largest legal length passes the ceiling and fails only on input.
+	w = &writer{}
+	w.uvarint(maxBlobLen)
+	_, err = (&reader{b: w.bytes()}).blob()
+	if err == nil {
+		t.Fatal("a truncated blob was accepted")
+	}
+	if strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("the largest legal length hit the ceiling: %v", err)
+	}
+	// Writer side: opaque user data is bounded too.
+	reg := testRegistry(t)
+	d := testWorld(t, reg)
+	d.UserData = make([]byte, maxBlobLen+1)
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
+		t.Error("an oversized user-data blob was written")
+	}
+}
+
+// TestRejectsBitsetPadding: a presence bitset's bits above the count carry no
+// meaning, so a set one is a second encoding. The rule has to be checked
+// through the parsers that read them, not through the helper they call: a
+// parser that stopped calling it would leave the helper's own test green.
+func TestRejectsBitsetPadding(t *testing.T) {
+	// A one-section record: bits 1-7 of each presence byte are padding.
+	record := func(blockPresence, biomePresence byte) []byte {
+		w := &writer{}
+		w.svarint(0) // minSection
+		w.uvarint(1) // sectionN
+		w.u8(blockPresence)
+		w.u8(biomePresence)
+		w.uvarint(0) // block entities
+		w.uvarint(0) // entities
+		w.svarint(0) // column tick
+		w.uvarint(0) // scheduled ticks
+		w.blob(nil)  // user data
+		return w.bytes()
+	}
+	if _, err := parseRecordBody(&reader{b: record(0, 0)}, tableBlobSource(nil), false, 0, 0); err != nil {
+		t.Fatalf("a clean record was rejected: %v", err)
+	}
+	if _, err := parseRecordBody(&reader{b: record(1<<7, 0)}, tableBlobSource(nil), false, 0, 0); err == nil {
+		t.Error("block presence padding was accepted")
+	}
+	if _, err := parseRecordBody(&reader{b: record(0, 1<<7)}, tableBlobSource(nil), false, 0, 0); err == nil {
+		t.Error("biome presence padding was accepted")
+	}
+
+	// Structure cells use their own parser and their own presence bitset.
+	reg := testRegistry(t)
+	data, err := NewStructureData([3]int32{1, 1, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	file := buf.Bytes()
+	body := file[headerSize : len(file)-footerSize]
+	// The empty structure's body is short and fixed: four empty metadata
+	// blobs, an empty block palette with no overrides, an empty biome
+	// palette, an empty blob table, the three sizes, the three origins, then
+	// the cell presence byte.
+	const cellPresenceAt = 4 + 2 + 1 + 1 + 3 + 3
+	if body[cellPresenceAt] != 0 {
+		t.Fatalf("cell presence is not where this test expects it (found 0x%02X)", body[cellPresenceAt])
+	}
+	bad := bytes.Clone(file)
+	bad[headerSize+cellPresenceAt] = 1 << 7
+	rehashSolid(bad)
+	if _, err := ReadStructure(bad, reg); err == nil {
+		t.Error("structure cell presence padding was accepted")
+	}
+}
+
+// TestRejectsNonCanonicalNBT: compound keys are unique and ascending and the
+// root is unnamed. The empty-list test named for this rule covers none of
+// those three.
+func TestRejectsNonCanonicalNBT(t *testing.T) {
+	compound := func(root string, keys ...string) []byte {
+		w := &writer{}
+		w.u8(tagCompound)
+		w.b = append(w.b, byte(len(root)), 0)
+		w.raw([]byte(root))
+		for _, k := range keys {
+			w.u8(tagByte)
+			w.b = append(w.b, byte(len(k)), 0)
+			w.raw([]byte(k))
+			w.u8(1)
+		}
+		w.u8(tagEnd)
+		return w.bytes()
+	}
+	if err := validateNBT(compound("", "a", "b")); err != nil {
+		t.Fatalf("a canonical compound was rejected: %v", err)
+	}
+	if err := validateNBT(compound("", "b", "a")); err == nil {
+		t.Error("out-of-order compound keys accepted")
+	}
+	if err := validateNBT(compound("", "a", "a")); err == nil {
+		t.Error("duplicate compound keys accepted")
+	}
+	if err := validateNBT(compound("named", "a")); err == nil {
+		t.Error("a named root compound accepted")
+	}
+}
+
+// TestRejectsLayerCountInRecords puts the unaddressable layer count where a
+// record and a cell actually carry it, so the rule survives a parser that
+// stops consulting the shared bound.
+func TestRejectsLayerCountInRecords(t *testing.T) {
+	// A record whose one present section claims 256 layers.
+	w := &writer{}
+	w.svarint(0)
+	w.uvarint(1)
+	w.u8(1)         // section 0 present
+	w.uvarint(256)  // layerN, one past what an 8-bit index can name
+	for range 256 { // blob references, so the parser has input to consume
+		w.uvarint(0)
+	}
+	w.u8(0)      // biome presence
+	w.uvarint(0) // block entities
+	w.uvarint(0) // entities
+	w.svarint(0) // column tick
+	w.uvarint(0) // scheduled ticks
+	w.blob(nil)  // user data
+	if _, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource([]decBlob{{}}), false, 0, 0); err == nil {
+		t.Error("a record claiming 256 layers was accepted")
+	}
+}
+
+// TestRejectsDuplicateSegmentReference: repeating a palette segment reference
+// multiplies its entries into the cumulative palette from a tiny file, which
+// is why the rule exists. The test that used to be named for it exercised
+// neither the duplicate nor the cumulative half.
+func TestRejectsDuplicateSegmentReference(t *testing.T) {
+	w := &IndexedWorld{end: 1 << 20}
+	// A validator that accepts anything, so the duplicate rule is what decides
+	// the outcome rather than a hash or bounds check reached first.
+	ok := func(frameRef, string) error { return nil }
+	refs := func(n int) []byte {
+		bw := &writer{}
+		bw.uvarint(uint64(n))
+		for range n {
+			bw.uvarint(headerSize) // offset
+			bw.uvarint(8)          // length
+			bw.u64(1234)           // hash
+		}
+		return bw.bytes()
+	}
+	if _, err := w.parseSegRefs(&reader{b: refs(1)}, "segment", ok); err != nil {
+		t.Fatalf("a single segment reference was rejected: %v", err)
+	}
+	if _, err := w.parseSegRefs(&reader{b: refs(2)}, "segment", ok); err == nil {
+		t.Fatal("a repeated segment reference was accepted")
+	}
+
+	// The frames also have to plausibly fit in the file.
+	small := &IndexedWorld{end: 4}
+	if _, err := small.parseSegRefs(&reader{b: refs(1)}, "segment", ok); err == nil {
+		t.Fatal("a segment larger than the file was accepted")
+	}
+}
+
+// TestSetMetaChecksAggregateFrame: the four metadata blobs share one frame,
+// and the frame has its own ceiling. Checking only the parts leaves SetMeta
+// reporting success and every later checkpoint failing, which is the rollback
+// this call exists to prevent.
+func TestSetMetaChecksAggregateFrame(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// Four blobs, each just inside the per-blob ceiling, together past the
+	// frame ceiling. Only the opaque one can be arbitrary bytes; the rest are
+	// canonical compounds padded with an unlisted byte array.
+	// Exactly at the per-blob ceiling, so the four together pass the frame
+	// ceiling by their length prefixes alone. The NBT wrapper's size is not
+	// worth predicting, so the payload is adjusted until the blob lands.
+	pad := func() []byte {
+		payload := maxBlobLen - 32
+		for range 4 {
+			b, err := marshalNBT(map[string]any{"pad": make([]byte, payload)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(b) == maxBlobLen {
+				return b
+			}
+			payload += maxBlobLen - len(b)
+		}
+		t.Fatal("could not size a blob to the ceiling")
+		return nil
+	}
+	big := pad()
+	if err := w.SetMeta(big, make([]byte, maxBlobLen), big, big); err == nil {
+		t.Fatal("metadata totalling more than one frame was accepted")
+	}
+	// One blob of the same size is fine, so the frame ceiling is what rejected
+	// the set rather than any per-blob rule.
+	if err := w.SetMeta(big, nil, nil, nil); err != nil {
+		t.Fatalf("a single legal blob was rejected: %v", err)
+	}
+}
+
+// TestBiomeAdmissionIgnoresBlockCapacity: the block and biome palettes have
+// separate limits and separate references, so a biome must not be refused
+// because the block palette is full.
+func TestBiomeAdmissionIgnoresBlockCapacity(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	// Pretend the block palette is full. The biome palette is untouched.
+	w.rids = make([]uint32, maxPalette)
+	if idx := w.addBiome("minecraft:ocean"); w.paletteErr != nil {
+		t.Fatalf("a biome was refused because the block palette is full: %v", w.paletteErr)
+	} else if idx != 0 {
+		t.Fatalf("first biome got index %d, want 0", idx)
+	}
 }

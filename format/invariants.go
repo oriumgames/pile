@@ -69,18 +69,19 @@ var invariants = []Invariant{
 	{
 		Name: "blobs are bounded", Category: Bound,
 		Rules: []string{"f930c4ef"},
-		Test:  "TestNBTValidatorRejectsHostileLengths",
+		Test:  "TestRejectsOversizedBlob",
+		Note:  "The blob primitive, not the lengths inside an NBT payload: the validator's own tests never reach the container's length prefix.",
 	},
 	{
 		Name: "bitset padding is zero", Category: Normalisation,
 		Rules: []string{"cf8e4eb4"},
-		Test:  "TestRejectsNonCanonicalBlob",
-		Note:  "Bits above the count carry no meaning, so a set one is a second encoding.",
+		Test:  "TestRejectsBitsetPadding",
+		Note:  "Bits above the count carry no meaning, so a set one is a second encoding. Checked through every parser that reads a bitset, not through the helper they call: a parser that stopped calling it would leave the helper's own test green.",
 	},
 	{
 		Name: "NBT compounds are canonical", Category: Ordering,
 		Rules: []string{"2811e0b4", "e01f257a"},
-		Test:  "TestEmptyNBTListCanonical",
+		Test:  "TestRejectsNonCanonicalNBT",
 		Note:  "Unique keys in ascending order is what lets independent writers agree.",
 	},
 	{
@@ -209,8 +210,8 @@ var invariants = []Invariant{
 	{
 		Name: "layer counts are addressable", Category: Bound,
 		Rules: []string{"af4b369f"},
-		Test:  "TestRejectsUnaddressableLayerCount",
-		Note:  "A 256th layer wedges any implementation that indexes layers with a byte.",
+		Test:  "TestRejectsLayerCountInRecords",
+		Note:  "A 256th layer wedges any implementation that indexes layers with a byte. Placed where a record actually carries the count, so the rule survives a parser that stops consulting the shared bound.",
 	},
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission,
@@ -288,12 +289,13 @@ var invariants = []Invariant{
 	{
 		Name: "a dictionary needs compression", Category: Presence,
 		Rules: []string{"fd0cd567"},
-		Test:  "TestIndexedRejectsDictionaryWhenUncompressed",
+		Test:  "TestRejectsDirectoryStorageMismatch",
+		Note:  "Defence in depth rather than an independently reachable rule: a real file cannot carry a compressed dictionary while claiming to be uncompressed without its directory frame tripping the storage-form rule first, which is what this test drives.",
 	},
 	{
 		Name: "palette limits are cumulative", Category: Bound,
 		Rules: []string{"ba81d481", "1983135b"},
-		Test:  "TestIndexedSegmentVersioning",
+		Test:  "TestRejectsDuplicateSegmentReference",
 	},
 
 	// -- Structures (§6) --------------------------------------------------

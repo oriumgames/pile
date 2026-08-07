@@ -173,6 +173,36 @@ func TestPropertyMutationIsRejectedOrVisible(t *testing.T) {
 	t.Logf("%d of 400 mutations decoded and were caught by re-encoding", survived)
 }
 
+// aliasWidthCase builds a section whose local palette holds one more slot than
+// the one-byte index width allows, where exactly one pair of slots are aliases
+// of a single state. Folding them before the width is chosen keeps the section
+// at the narrower width; choosing first would widen every index in it.
+func aliasWidthCase(t *testing.T) boundaryCase {
+	t.Helper()
+	reg := newAliasRegistry(testRegistry(t))
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	placeholder := placeholderRid(reg)
+	c := Column{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}
+
+	// 255 distinct preserved states, plus both aliases of one real state:
+	// 257 slots that fold to 256.
+	for i := range 255 {
+		x, z := uint8(i%16), uint8((i/16)%16)
+		ch.SetBlock(x, -64, z, 0, placeholder)
+		c.UnknownStates = append(c.UnknownStates, BlockState{
+			Name: fmt.Sprintf("audit:w%03d", i), Version: 1,
+		})
+		c.Unknown = append(c.Unknown, UnknownBlock{
+			Section: -4, Layer: 0,
+			Index: uint16(x)<<8 | uint16(z)<<4, State: uint32(i),
+		})
+	}
+	ch.SetBlock(0, -63, 0, 0, reg.alias-1)
+	ch.SetBlock(1, -63, 0, 0, reg.alias)
+	return boundaryCase{name: "alias_at_width_boundary",
+		world: &WorldData{Columns: []Column{c}}}
+}
+
 // boundaryCase is one generated world with a name describing which corner it
 // occupies.
 type boundaryCase struct {
@@ -293,6 +323,25 @@ func boundaryCases(t *testing.T, reg world.BlockRegistry) []boundaryCase {
 		}}}
 		cases = append(cases, boundaryCase{name: "dimension_" + dim.String(), world: d})
 	}
+
+	// Section spans other than the vanilla 24. A 24-section chunk makes every
+	// presence bitset a whole number of bytes, so the padding rules are never
+	// exercised by the matrix; the smallest and largest legal spans are.
+	for _, span := range []cube.Range{{0, 15}, {-64, 111}, {-2048 * 16, -2048*16 + 16*100 - 1}} {
+		ch := chunk.New(reg, span)
+		ch.SetBlock(0, int16(span[0]), 0, 0, stone)
+		cases = append(cases, boundaryCase{
+			name: fmt.Sprintf("span_%d_%d", span[0], span[1]),
+			world: &WorldData{Columns: []Column{{X: 0, Z: 0,
+				Col: &chunk.Column{Chunk: ch}}}},
+		})
+	}
+
+	// A local palette that crosses the index-width boundary only after alias
+	// folding: 257 slots resolving to 256 entries must still choose the
+	// one-byte width. Registry-independent generation cannot produce this, so
+	// it needs the aliasing registry.
+	cases = append(cases, aliasWidthCase(t))
 
 	// Chunk coordinates at both int32 extremes and adjacent, so Morton keys and
 	// position deltas are exercised at the ends of their domain.
