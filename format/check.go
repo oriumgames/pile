@@ -80,8 +80,14 @@ func unresolvedOf(entries []parsedState, reg world.BlockRegistry, blockVersion i
 // not depend on the compressor's version or settings, so it is the value to
 // use for "is this the same map" comparisons, cache keys and map versioning.
 //
-// Two files with the same ContentHash hold the same world; a compressor
-// upgrade changes file bytes but not this value.
+// It identifies the body, not the file. The dimension is header state that
+// decoding does not resolve into the body, so two files holding the same
+// chunks in different dimensions have the same ContentHash — a real collision
+// for the small, near-empty worlds this format is aimed at. Callers that span
+// dimensions must key on the dimension alongside this value rather than treat
+// it as a whole-file identity. Within one dimension, two files with the same
+// ContentHash hold the same world, and a compressor upgrade changes the file's
+// bytes but not this value.
 func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
 	h, _, err := parseFrame(file)
 	if err != nil {
@@ -101,10 +107,14 @@ func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
 	}
 	// Decode and re-encode into the canonical projection: derived and
 	// advisory content (the stats block, cached light) is excluded, while
-	// header state that changes how the world decodes (the block version and
-	// the default-biome interpretation, which decoding resolves into the
-	// biome sections) is included by construction. Hashing the stored body
-	// directly would do the opposite on both counts.
+	// header state that decoding resolves into the body (the block version,
+	// and the default-biome interpretation, which becomes the biome sections)
+	// is included by construction. Hashing the stored body directly would do
+	// the opposite on both counts. Header state that decoding does *not*
+	// resolve into the body is excluded by the same construction — the
+	// dimension is the one such field, and the doc comment says so rather
+	// than this being repaired here, because ContentHash is the format's
+	// declared identity and moving it moves every recorded hash.
 	d, err := ReadWorld(file, reg)
 	if err != nil {
 		return 0, err

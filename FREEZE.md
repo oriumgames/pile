@@ -31,7 +31,12 @@ That makes three things permanent:
   content. A different compressor, level, or version may produce different
   frames for the same body, and that is not a format change. This is why file
   identity is `format.ContentHash` (decode, re-encode uncompressed) rather
-  than a hash of the stored bytes.
+  than a hash of the stored bytes. `ContentHash` identifies the body and not
+  the file: the dimension lives in the header and decoding does not resolve it
+  into the body, so files holding the same chunks in different dimensions
+  share a hash. That is settled deliberately in favour of leaving the value
+  where it is — it is frozen along with everything else, and callers spanning
+  dimensions key on the dimension separately.
 - **Indexed-mode byte layout over time.** Indexed files are history-dependent
   by design: the same content stored in a different order produces different
   files. Their identity is also `ContentHash`.
