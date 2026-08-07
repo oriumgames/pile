@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -119,6 +118,14 @@ type IndexedWorld struct {
 	biomeIdent   []uint32
 	pendingBiome writer
 	pendingBioN  int
+
+	// Journal of the palette map keys the Store in progress inserted, so a
+	// failed one can delete exactly those. The slices are reset at the start of
+	// every Store and are therefore as long as the column's contribution, not
+	// as long as the palette.
+	newBlockKeys []uint32
+	newStateKeys []string
+	newBiomeKeys []string
 
 	recordsDirty bool
 	// recovered records that the newest checkpoint did not validate and an
@@ -459,6 +466,9 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.blockIdx = map[uint32]uint32{}
 	w.stateIdx = map[string]uint32{}
 	w.biomeIdx = map[string]uint32{}
+	// The journal names keys in the maps just replaced; carrying it across
+	// would have a later failed Store delete entries it never inserted.
+	w.newBlockKeys, w.newStateKeys, w.newBiomeKeys = nil, nil, nil
 	w.rids, w.identity = nil, nil
 	w.unknown, w.unkStates = nil, nil
 	w.biomeIDs, w.biomeNames, w.biomeIdent = nil, nil, nil
@@ -1209,6 +1219,7 @@ func (w *IndexedWorld) addState(bs BlockState) uint32 {
 	}
 	idx := uint32(len(w.rids))
 	w.stateIdx[key] = idx
+	w.newStateKeys = append(w.newStateKeys, key)
 	w.rids = append(w.rids, placeholderRid(w.reg))
 	w.unknown = append(w.unknown, int32(len(w.unkStates)))
 	w.unkStates = append(w.unkStates, bs)
@@ -1243,6 +1254,7 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	key := preservedStateKey(name, props, 0)
 	if idx, ok := w.stateIdx[key]; ok {
 		w.blockIdx[rid] = idx
+		w.newBlockKeys = append(w.newBlockKeys, rid)
 		return idx
 	}
 	if err := w.reservePaletteEntry(checkState(name, props)); err != nil {
@@ -1251,6 +1263,8 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	idx := uint32(len(w.rids))
 	w.blockIdx[rid] = idx
 	w.stateIdx[key] = idx
+	w.newBlockKeys = append(w.newBlockKeys, rid)
+	w.newStateKeys = append(w.newStateKeys, key)
 	w.rids = append(w.rids, rid)
 	w.unknown = append(w.unknown, -1)
 	w.identity = append(w.identity, idx)
@@ -1301,6 +1315,7 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 	}
 	idx := uint32(len(w.biomeNames))
 	w.biomeIdx[name] = idx
+	w.newBiomeKeys = append(w.newBiomeKeys, name)
 	w.biomeNames = append(w.biomeNames, name)
 	w.biomeIdent = append(w.biomeIdent, idx)
 	// A name the runtime cannot resolve decodes as the fallback, and the entry
@@ -1324,14 +1339,17 @@ func (w *IndexedWorld) addBiome(name string) uint32 {
 
 // paletteSnapshot records how far the palettes had grown, so a failed Store
 // can wind them back. Every palette structure is append-only within a
-// checkpoint, so lengths are enough to undo one; the maps are the exception
-// and their new keys are removed by name.
+// checkpoint, so lengths are enough to undo one; the maps are the exception,
+// and the keys a Store inserts are journalled as it goes rather than copied
+// out wholesale beforehand. Copying cost a duplicate of all three maps on
+// every store, so the price of storing a column grew with the palette the
+// world had already accumulated instead of with what the column contributed.
 type paletteSnapshot struct {
 	rids, identity       int
 	unknown, unkStates   int
-	blockKeys            []uint32
-	stateKeys            []string
-	biomeKeys            []string
+	blockKeys            int
+	stateKeys            int
+	biomeKeys            int
 	biomeIDs, biomeIdent int
 	biomeNames           int
 	biomeUnknown         int
@@ -1347,9 +1365,9 @@ func (w *IndexedWorld) snapshotPalettes() paletteSnapshot {
 	return paletteSnapshot{
 		rids: len(w.rids), identity: len(w.identity),
 		unknown: len(w.unknown), unkStates: len(w.unkStates),
-		blockKeys: slices.Collect(maps.Keys(w.blockIdx)),
-		stateKeys: slices.Collect(maps.Keys(w.stateIdx)),
-		biomeKeys: slices.Collect(maps.Keys(w.biomeIdx)),
+		blockKeys: len(w.newBlockKeys),
+		stateKeys: len(w.newStateKeys),
+		biomeKeys: len(w.newBiomeKeys),
 		biomeIDs:  len(w.biomeIDs), biomeIdent: len(w.biomeIdent),
 		biomeNames: len(w.biomeNames), biomeUnknown: len(w.biomeUnknown),
 		biomeUnkName:    len(w.biomeUnkName),
@@ -1364,9 +1382,18 @@ func (w *IndexedWorld) restorePalettes(s paletteSnapshot) {
 	w.identity = w.identity[:s.identity]
 	w.unknown = w.unknown[:s.unknown]
 	w.unkStates = w.unkStates[:s.unkStates]
-	keepKeys(w.blockIdx, s.blockKeys)
-	keepKeys(w.stateIdx, s.stateKeys)
-	keepKeys(w.biomeIdx, s.biomeKeys)
+	for _, k := range w.newBlockKeys[s.blockKeys:] {
+		delete(w.blockIdx, k)
+	}
+	for _, k := range w.newStateKeys[s.stateKeys:] {
+		delete(w.stateIdx, k)
+	}
+	for _, k := range w.newBiomeKeys[s.biomeKeys:] {
+		delete(w.biomeIdx, k)
+	}
+	w.newBlockKeys = w.newBlockKeys[:s.blockKeys]
+	w.newStateKeys = w.newStateKeys[:s.stateKeys]
+	w.newBiomeKeys = w.newBiomeKeys[:s.biomeKeys]
 	w.biomeIDs = w.biomeIDs[:s.biomeIDs]
 	w.biomeIdent = w.biomeIdent[:s.biomeIdent]
 	w.biomeNames = w.biomeNames[:s.biomeNames]
@@ -1377,22 +1404,6 @@ func (w *IndexedWorld) restorePalettes(s paletteSnapshot) {
 	w.pendingOverride = w.pendingOverride[:s.pendingOverride]
 	w.pendingBiome.b = w.pendingBiome.b[:s.pendingBiomeLen]
 	w.pendingBioN = s.pendingBioN
-}
-
-// keepKeys deletes every key of m that is not in keep.
-func keepKeys[K comparable, V any](m map[K]V, keep []K) {
-	if len(m) == len(keep) {
-		return
-	}
-	set := make(map[K]struct{}, len(keep))
-	for _, k := range keep {
-		set[k] = struct{}{}
-	}
-	for k := range m {
-		if _, ok := set[k]; !ok {
-			delete(m, k)
-		}
-	}
 }
 
 // Store encodes and appends a column, replacing any previous record at its
@@ -1422,6 +1433,9 @@ func (w *IndexedWorld) Store(c Column) error {
 	// one are valid but unreferenced, and would still reach the next
 	// checkpoint, so an empty world that refused a column would not encode
 	// like an empty world that never saw one.
+	w.newBlockKeys = w.newBlockKeys[:0]
+	w.newStateKeys = w.newStateKeys[:0]
+	w.newBiomeKeys = w.newBiomeKeys[:0]
 	snap := w.snapshotPalettes()
 	// Any failure from here on has to wind the palettes back, not just the
 	// one the palette itself reported: a record that is too large, a frame

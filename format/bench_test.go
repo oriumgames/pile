@@ -190,6 +190,54 @@ func BenchmarkIndexedStore(b *testing.B) {
 	}
 }
 
+// BenchmarkIndexedStoreLargePalette stores a column that introduces no new
+// palette entries into a world whose global palette is already large. The
+// per-Store cost must depend on what the column adds, not on how big the
+// palette already is.
+func BenchmarkIndexedStoreLargePalette(b *testing.B) {
+	reg := testRegistry(b)
+	path := filepath.Join(b.TempDir(), "bench.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer w.Close()
+	if err := w.Store(paletteFillColumn(b, reg)); err != nil {
+		b.Fatal(err)
+	}
+	if got := len(w.rids); got < 4096 {
+		b.Fatalf("palette only grew to %d entries", got)
+	}
+	col := buildTestColumn(b, reg, 0, 0)
+	b.ResetTimer()
+	for b.Loop() {
+		if err := w.Store(col); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// paletteFillColumn builds a column referencing every runtime ID the registry
+// knows, so storing it grows the global palette to the registry's full size.
+func paletteFillColumn(b *testing.B, reg world.BlockRegistry) Column {
+	b.Helper()
+	ch := chunk.New(reg, overworldRange)
+	next := uint32(0)
+	for y := int16(-64); y < 320 && next < 1<<20; y++ {
+		for bx := range uint8(16) {
+			for bz := range uint8(16) {
+				if _, _, ok := reg.RuntimeIDToState(next); !ok {
+					next = 1 << 20
+					break
+				}
+				ch.SetBlock(bx, y, bz, 0, next)
+				next++
+			}
+		}
+	}
+	return Column{X: 1, Z: 1, Col: &chunk.Column{Chunk: ch}}
+}
+
 func BenchmarkIndexedColumn(b *testing.B) {
 	b.ReportAllocs()
 	reg := testRegistry(b)
