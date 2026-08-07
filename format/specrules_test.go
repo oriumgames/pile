@@ -224,12 +224,14 @@ func TestEveryRuleIsClaimed(t *testing.T) {
 func TestEveryInvariantNamesALiveTest(t *testing.T) {
 	names := testNames(t)
 	for _, inv := range invariants {
-		if inv.Test == "" {
+		if len(inv.Tests) == 0 {
 			t.Errorf("invariant %q names no test", inv.Name)
 			continue
 		}
-		if !names[inv.Test] {
-			t.Errorf("invariant %q names test %s, which does not exist", inv.Name, inv.Test)
+		for _, name := range inv.Tests {
+			if !names[name] {
+				t.Errorf("invariant %q names test %s, which does not exist", inv.Name, name)
+			}
 		}
 	}
 }

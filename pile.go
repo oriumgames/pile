@@ -416,14 +416,16 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 		if iw == nil {
 			return sidecar{}
 		}
+		id, ok := iw.RecordID(pos[0], pos[1])
+		if !ok {
+			return sidecar{}
+		}
 		fc, err := iw.Column(pos[0], pos[1])
 		if err != nil {
 			return sidecar{}
 		}
 		side := sidecarOf(fc)
-		p.mu.Lock()
-		ds.unkCache[key] = side
-		p.mu.Unlock()
+		p.publishSidecar(ds, iw, key, id, side)
 		return side
 	}
 	p.mu.Lock()
@@ -436,6 +438,22 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 		return p.base.columnSidecar(pos, dim)
 	}
 	return sidecar{}
+}
+
+// publishSidecar records a decoded sidecar, but only if the record it came
+// from is still the current one.
+//
+// Decoding happens outside p.mu, so a store may have replaced the record in
+// the meantime. Publishing anyway would put a stale sidecar where the newer
+// one belongs, and the next store with no explicit sidecar would inherit it:
+// the same recheck LoadColumn and readahead already do.
+func (p *Provider) publishSidecar(ds *dimState, iw *format.IndexedWorld, key [2]int32, id uint64, side sidecar) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if now, still := iw.RecordID(key[0], key[1]); !still || now != id {
+		return
+	}
+	ds.unkCache[key] = side
 }
 
 // sidecarOf collects a column's preserved-state fields.

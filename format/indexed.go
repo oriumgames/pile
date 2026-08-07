@@ -1515,6 +1515,18 @@ func metaFrameLen(blobs ...[]byte) int {
 // file that fails to reopen (which would silently roll back to an older
 // checkpoint, losing chunks stored since).
 func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error {
+	// Refuse where a store would. Reporting success on a world that can never
+	// persist the change leaves Meta answering with something no reader will
+	// ever see.
+	w.mu.Lock()
+	readOnly, closed := w.readOnly, w.closed
+	w.mu.Unlock()
+	if readOnly {
+		return ErrReadOnlyFile
+	}
+	if closed {
+		return errors.New("pile: indexed world is closed")
+	}
 	for _, b := range []struct {
 		p    []byte
 		what string

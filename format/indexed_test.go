@@ -643,3 +643,37 @@ func TestIndexedDirectoryPrologueAuthoritative(t *testing.T) {
 		t.Fatalf("chunk count = %d, want 1 (the pre-damage checkpoint)", rw.ChunkCount())
 	}
 }
+
+// TestSetMetaRefusesReadOnlyAndClosed: reporting success on a world that can
+// never persist the change leaves Meta answering with something no reader will
+// ever see.
+func TestSetMetaRefusesReadOnlyAndClosed(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil, nil); err == nil {
+		t.Error("SetMeta succeeded on a closed world")
+	}
+
+	ro, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	before, _, _, _ := ro.Meta()
+	if err := ro.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil, nil); !errors.Is(err, ErrReadOnlyFile) {
+		t.Errorf("SetMeta on a read-only world: err = %v, want ErrReadOnlyFile", err)
+	}
+	if after, _, _, _ := ro.Meta(); !bytes.Equal(before, after) {
+		t.Error("a refused SetMeta changed what Meta reports")
+	}
+}

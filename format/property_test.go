@@ -103,6 +103,7 @@ func TestPropertyOptionsDoNotChangeContent(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, opts := range []Options{
+				{Compression: CompressionNone, StoreLight: true},
 				{Compression: CompressionBest},
 				{Compression: CompressionFast},
 				{Compression: CompressionNone, Stats: true},
@@ -336,6 +337,16 @@ func boundaryCases(t *testing.T, reg world.BlockRegistry) []boundaryCase {
 				Col: &chunk.Column{Chunk: ch}}}},
 		})
 	}
+
+	// Baked light. The matrix sets StoreLight but never installs any light, so
+	// no case could produce a set light-presence bit: the independence of
+	// light from block presence, its one-sided flags and its own bitset
+	// padding were all unreachable.
+	lit := chunk.New(reg, r)
+	lit.SetBlock(0, -64, 0, 0, stone)
+	chunk.LightArea([]*chunk.Chunk{lit}, 0, 0).Fill()
+	cases = append(cases, boundaryCase{name: "baked_light",
+		world: &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: lit}}}}})
 
 	// A local palette that crosses the index-width boundary only after alias
 	// folding: 257 slots resolving to 256 entries must still choose the
@@ -595,4 +606,17 @@ func TestPropertyTornCheckpointRecovers(t *testing.T) {
 		t.Fatal("no truncation recovered: the test exercised nothing")
 	}
 	t.Logf("%d truncation points recovered a usable world", recovered)
+}
+
+// TestPropertyCanonicalWithLight runs the canonicality property with light
+// stored, so a difference only the light path can produce still shows up. The
+// matrix's other properties run without it, and light is the one option whose
+// content the writer collects rather than the caller supplying.
+func TestPropertyCanonicalWithLight(t *testing.T) {
+	reg := testRegistry(t)
+	for _, c := range boundaryCases(t, reg) {
+		t.Run(c.name, func(t *testing.T) {
+			canonical(t, reg, c.world, Options{Compression: CompressionNone, StoreLight: true})
+		})
+	}
 }

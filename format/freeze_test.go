@@ -2437,3 +2437,685 @@ func TestBiomeAdmissionIgnoresBlockCapacity(t *testing.T) {
 		t.Fatalf("first biome got index %d, want 0", idx)
 	}
 }
+
+// Round 22: tests for invariants whose named test did not isolate their rule.
+
+// recordBody lays out a one-section chunk record. Callers vary one field so a
+// rule can be driven where a record actually carries it.
+type recordFields struct {
+	blockPresence, biomePresence, lightPresence byte
+	haveLight                                   bool
+	lightFlags                                  byte
+	lightBody                                   []byte
+}
+
+func recordBody(f recordFields) []byte {
+	w := &writer{}
+	w.svarint(0) // minSection
+	w.uvarint(1) // sectionN
+	w.u8(f.blockPresence)
+	w.u8(f.biomePresence)
+	if f.haveLight {
+		w.u8(f.lightPresence)
+		if f.lightPresence&1 != 0 {
+			w.u8(f.lightFlags)
+			w.raw(f.lightBody)
+		}
+	}
+	w.uvarint(0) // block entities
+	w.uvarint(0) // entities
+	w.svarint(0) // column tick
+	w.uvarint(0) // scheduled ticks
+	w.blob(nil)  // user data
+	return w.bytes()
+}
+
+// TestRejectsLightBitsetPadding: light has its own presence bitset and its own
+// read path, so the padding rule has to be driven there too.
+func TestRejectsLightBitsetPadding(t *testing.T) {
+	clean := recordFields{haveLight: true, lightPresence: 0}
+	if _, err := parseRecordBody(&reader{b: recordBody(clean)}, tableBlobSource(nil), true, 0, 0); err != nil {
+		t.Fatalf("a clean light bitset was rejected: %v", err)
+	}
+	padded := clean
+	padded.lightPresence = 1 << 7 // section 0 absent, padding bit set
+	if _, err := parseRecordBody(&reader{b: recordBody(padded)}, tableBlobSource(nil), true, 0, 0); err == nil {
+		t.Fatal("light presence padding was accepted")
+	}
+}
+
+// TestRejectsLightEntryFlags: a present light entry names which arrays follow.
+// Zero is a second encoding of an absent entry, and the bits above the two
+// defined ones are reserved. The test supplies full arrays so truncation
+// cannot be what decides the outcome.
+func TestRejectsLightEntryFlags(t *testing.T) {
+	body := make([]byte, 2*lightArrayLen)
+	for _, c := range []struct {
+		name  string
+		flags byte
+		ok    bool
+	}{
+		{"block only", 1, true},
+		{"sky only", 2, true},
+		{"both", 3, true},
+		{"neither", 0, false},
+		{"reserved bit", 0x04, false},
+		{"reserved high bit", 0x80, false},
+	} {
+		f := recordFields{haveLight: true, lightPresence: 1, lightFlags: c.flags, lightBody: body}
+		_, err := parseRecordBody(&reader{b: recordBody(f)}, tableBlobSource(nil), true, 0, 0)
+		if (err == nil) != c.ok {
+			t.Errorf("light flags %s (0x%02X): err = %v, want ok = %v", c.name, c.flags, err, c.ok)
+		}
+	}
+}
+
+// TestRejectsLayerCountInCells is the structure half of the layer ceiling: the
+// record half cannot detect a cell parser that stops consulting the bound.
+func TestRejectsLayerCountInCells(t *testing.T) {
+	reg := testRegistry(t)
+	data, err := NewStructureData([3]int32{1, 1, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := chunk.NewSubChunk(reg.AirRuntimeID())
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	sub.SetBlock(0, 0, 0, 0, stone)
+	data.Cells[0] = sub
+	var buf bytes.Buffer
+	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+		t.Fatal(err)
+	}
+	file := buf.Bytes()
+	body := file[headerSize : len(file)-footerSize]
+	// The one present cell's layerN follows the presence byte, and a
+	// one-layer cell writes it as a single 0x01.
+	at := bytes.LastIndex(body, []byte{0x01, 0x00})
+	if at < 0 {
+		t.Skip("could not locate the cell layer count")
+	}
+	bad := bytes.Clone(file)
+	patched := &writer{}
+	patched.uvarint(256)
+	if len(patched.bytes()) != 2 {
+		t.Fatalf("256 does not encode in two bytes")
+	}
+	copy(bad[headerSize+at:], patched.bytes())
+	rehashSolid(bad)
+	if _, err := ReadStructure(bad, reg); err == nil {
+		t.Fatal("a cell claiming 256 layers was accepted")
+	}
+}
+
+// TestReaderRejectsBadStrings: the writer's UTF-8 and length rules have a
+// reader half, and a test that only drives the writer cannot see it go.
+func TestReaderRejectsBadStrings(t *testing.T) {
+	w := &writer{}
+	w.uvarint(1)
+	w.raw([]byte{0xff})
+	_, err := (&reader{b: w.bytes()}).str()
+	if err == nil {
+		t.Fatal("a string that is not valid UTF-8 was accepted")
+	}
+	if !strings.Contains(err.Error(), "UTF-8") {
+		t.Errorf("rejected by %v, not by the UTF-8 rule", err)
+	}
+
+	w = &writer{}
+	w.uvarint(maxStringLen + 1)
+	_, err = (&reader{b: w.bytes()}).str()
+	if err == nil {
+		t.Fatal("a string longer than the ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("rejected by %v, not by the ceiling", err)
+	}
+}
+
+// TestWriterSortsStateProperties is the writer half of the property ordering
+// rule: the reader half stays green if the writer stops sorting.
+func TestWriterSortsStateProperties(t *testing.T) {
+	b := newBlockPaletteBuilder(testRegistry(t))
+	b.addState(BlockState{Name: "audit:p", Properties: map[string]any{
+		"zeta": int32(1), "alpha": int32(2), "mu": int32(3),
+	}, Version: 1})
+	enc, _, err := b.finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Parsing enforces ascending keys, so a writer that stopped sorting would
+	// produce a palette its own reader refuses.
+	if _, _, _, err := decodeBlockPalette(&reader{b: enc}, testRegistry(t), chunk.CurrentBlockVersion); err != nil {
+		t.Fatalf("the writer emitted properties its own reader rejects: %v", err)
+	}
+	ai, mi, zi := bytes.Index(enc, []byte("alpha")), bytes.Index(enc, []byte("mu")), bytes.Index(enc, []byte("zeta"))
+	if ai < 0 || mi < 0 || zi < 0 || !(ai < mi && mi < zi) {
+		t.Fatalf("properties are not in ascending order: alpha@%d mu@%d zeta@%d", ai, mi, zi)
+	}
+}
+
+// TestRejectsRedundantVersionOverride: an override equal to the palette's own
+// version says nothing, so it is a second encoding of the same entry.
+func TestRejectsRedundantVersionOverride(t *testing.T) {
+	reg := testRegistry(t)
+	build := func(version int32) []byte {
+		w := &writer{}
+		w.uvarint(1)
+		w.str("audit:v")
+		w.uvarint(0)
+		w.uvarint(1) // one override
+		w.uvarint(0) // index 0
+		w.i32(version)
+		return w.bytes()
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: build(17825806)}, reg, chunk.CurrentBlockVersion); err != nil {
+		t.Fatalf("a genuine override was rejected: %v", err)
+	}
+	if _, _, _, err := decodeBlockPalette(&reader{b: build(0)}, reg, chunk.CurrentBlockVersion); err == nil {
+		t.Fatal("a zero override was accepted")
+	}
+}
+
+// TestRejectsOverLimitCounts drives the non-NBT ceilings of §8, which the NBT
+// validator's own tests cannot reach.
+func TestRejectsOverLimitCounts(t *testing.T) {
+	reg := testRegistry(t)
+	// A structure whose first dimension is one past the ceiling.
+	w := &writer{}
+	w.blob(nil)
+	w.blob(nil)
+	w.blob(nil)
+	w.blob(nil)
+	w.uvarint(0) // block palette
+	w.uvarint(0) // overrides
+	w.uvarint(0) // biome palette
+	w.uvarint(0) // blob table
+	w.uvarint(maxStructureSize + 1)
+	w.uvarint(1)
+	w.uvarint(1)
+	body := w.bytes()
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindStructure)
+	hdr.u8(ModeSolid)
+	hdr.u32(FlagUncompressed)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), body, tail.bytes()))
+	ftr.raw(tail.bytes())
+	file := append(append(hdr.bytes(), body...), ftr.bytes()...)
+	if _, err := ReadStructure(file, reg); err == nil {
+		t.Fatal("a structure dimension past the ceiling was accepted")
+	}
+}
+
+// TestReaderRejectsUnorderedRecords is the reader half of chunk uniqueness:
+// the writer half stays green if the reader stops checking.
+func TestReaderRejectsUnorderedRecords(t *testing.T) {
+	reg := testRegistry(t)
+	// Two records at the same position, assembled directly so the writer's own
+	// refusal is not what decides the outcome.
+	rec := recordBody(recordFields{})
+	body := &writer{}
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.uvarint(0) // block palette
+	body.uvarint(0) // overrides
+	body.uvarint(0) // biome palette
+	body.uvarint(0) // blob table
+	body.uvarint(2) // two records
+	body.svarint(0) // first at (0,0)
+	body.svarint(0)
+	body.raw(rec)
+	body.svarint(0) // second at (0,0) too
+	body.svarint(0)
+	body.raw(rec)
+	if _, err := ReadWorld(solidFile(body.bytes()), reg); err == nil {
+		t.Fatal("two records at one position were accepted")
+	}
+}
+
+// solidFile wraps a body in a header and an authenticated footer.
+func solidFile(body []byte) []byte {
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindWorld)
+	hdr.u8(ModeSolid)
+	hdr.u32(FlagUncompressed)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), body, tail.bytes()))
+	ftr.raw(tail.bytes())
+	return append(append(hdr.bytes(), body...), ftr.bytes()...)
+}
+
+// TestDefaultBiomeFlagIsSet: setting the flag is required, not an
+// optimisation. A round-trip assertion cannot see a writer that stores every
+// uniform section explicitly instead.
+func TestDefaultBiomeFlagIsSet(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	plains := fallbackBiomeID()
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	r := ch.Range()
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(r[0]); y <= int16(r[1]); y++ {
+				ch.SetBiome(x, y, z, plains)
+			}
+		}
+	}
+	file := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
+	h, _, err := parseFrame(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.flags&FlagDefaultBiome == 0 {
+		t.Fatal("a world of uniform biome sections did not set the default biome flag")
+	}
+	// And the sections it covers are elided rather than stored.
+	back, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Columns[0].Col.Chunk.Biome(0, 0, 0); got != plains {
+		t.Fatalf("elided section decoded as biome %d, want %d", got, plains)
+	}
+}
+
+// TestBiomeCountsPrecedeElision: counts are taken over every section before
+// elision removes any, which is what stops the two being circular. A fixture
+// with one biome name cannot tell the orders apart.
+func TestBiomeCountsPrecedeElision(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	plains := fallbackBiomeID()
+	ocean := uint32(0)
+	if b, ok := lookupBiome("minecraft:ocean"); ok {
+		ocean = uint32(b.EncodeBiome())
+	}
+	if ocean == plains {
+		t.Skip("this registry does not distinguish ocean from plains")
+	}
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	set := func(sec int, id uint32) {
+		base := int16(-64 + sec*16)
+		for x := range uint8(16) {
+			for z := range uint8(16) {
+				for y := base; y < base+16; y++ {
+					ch.SetBiome(x, y, z, id)
+				}
+			}
+		}
+	}
+	set(0, plains) // uniform
+	set(1, plains) // uniform
+	set(2, ocean)  // uniform
+	// A mixed section, so ocean appears in more local palettes than a
+	// post-elision count would show.
+	set(3, ocean)
+	ch.SetBiome(0, -16, 0, plains)
+
+	file := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
+	back, err := ReadWorld(file, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Whatever the default is, every section has to come back as it went in:
+	// counting after elision would pick a different default and elide a
+	// different set.
+	for _, sec := range []int{0, 1, 2, 3} {
+		y := int16(-64 + sec*16)
+		if got, want := back.Columns[0].Col.Chunk.Biome(15, y, 15), ch.Biome(15, y, 15); got != want {
+			t.Fatalf("section %d biome = %d, want %d", sec, got, want)
+		}
+	}
+	if second := encode(t, back, reg, CompressionNone); !bytes.Equal(file, second) {
+		t.Fatal("a world with competing uniform biomes does not survive a round trip")
+	}
+}
+
+// TestTiedTicksAndStructureCollections covers the collection orders the world
+// block-entity test does not reach.
+func TestTiedTicksAndStructureCollections(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	water, _ := reg.StateToRuntimeID("minecraft:water", map[string]any{"liquid_depth": int32(0)})
+
+	// Scheduled updates tied on position and tick, differing only in block.
+	world := func(first, second uint32) []byte {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, stone)
+		return encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{
+			Chunk: ch,
+			ScheduledBlocks: []chunk.ScheduledBlockUpdate{
+				{Pos: cube.Pos{1, -60, 1}, Block: first, Tick: 9},
+				{Pos: cube.Pos{1, -60, 1}, Block: second, Tick: 9},
+			},
+		}}}}, reg, CompressionNone)
+	}
+	if a, b := world(stone, water), world(water, stone); !bytes.Equal(a, b) {
+		t.Fatalf("tied scheduled updates kept the caller's order: %d vs %d bytes", len(a), len(b))
+	}
+
+	// Structure block entities tied on position, and entities generally.
+	structure := func(swap bool) []byte {
+		data, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub := chunk.NewSubChunk(reg.AirRuntimeID())
+		sub.SetBlock(0, 0, 0, 0, stone)
+		data.Cells[0] = sub
+		a := StructureBlockEntity{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "n": int32(1)}}
+		b := StructureBlockEntity{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "n": int32(2)}}
+		e1 := map[string]any{"identifier": "minecraft:cow", "UniqueID": int64(1)}
+		e2 := map[string]any{"identifier": "minecraft:pig", "UniqueID": int64(2)}
+		if swap {
+			a, b = b, a
+			e1, e2 = e2, e1
+		}
+		data.BlockEntities = []StructureBlockEntity{a, b}
+		data.Entities = []map[string]any{e1, e2}
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	if a, b := structure(false), structure(true); !bytes.Equal(a, b) {
+		t.Fatalf("structure collections kept the caller's order: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestStatsPreservesUnknownKeys: readers ignore keys they do not know, which a
+// test reading only writer-generated stats cannot show.
+func TestStatsPreservesUnknownKeys(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	m, err := ReadMeta(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = m
+	// Assemble a body whose stats compound carries a key this version has
+	// never heard of.
+	stats, err := marshalNBT(map[string]any{
+		"biomes": int64(1), "blockStates": int64(1), "chunks": int64(1),
+		"filledSections": int64(1), "future": int32(7), "uniqueBlobs": int64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := &writer{}
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(stats)
+	body.uvarint(0) // block palette
+	body.uvarint(0) // version overrides
+	body.uvarint(0) // biome palette
+	body.uvarint(0) // blob table
+	body.uvarint(0) // chunk records
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindWorld)
+	hdr.u8(ModeSolid)
+	hdr.u32(FlagUncompressed | FlagStats)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), body.bytes(), tail.bytes()))
+	ftr.raw(tail.bytes())
+	withFuture := append(append(hdr.bytes(), body.bytes()...), ftr.bytes()...)
+
+	got, err := ReadMeta(withFuture)
+	if err != nil {
+		t.Fatalf("a stats compound with an unknown key was rejected: %v", err)
+	}
+	if !bytes.Contains(got.Stats, []byte("future")) {
+		t.Fatal("the unknown stats key was not preserved")
+	}
+	if _, err := ReadWorld(withFuture, reg); err != nil {
+		t.Fatalf("ReadWorld rejected an unknown stats key: %v", err)
+	}
+}
+
+// indexedWithPatchedPrologue builds a valid indexed world, rewrites its
+// directory prologue and refreshes the checkpoint hash, then reports whether
+// the result still opens. Round 21 showed that mutating an authenticated
+// structure without rehashing tests the checksum rather than the rule.
+func indexedWithPatchedPrologue(t *testing.T, reg world.BlockRegistry, edit func(dir []byte)) (opened, recovered bool) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !patchDirectory(t, path, func(dir []byte) bool { edit(dir); return true }) {
+		t.Fatal("could not reach the directory")
+	}
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		return false, false
+	}
+	defer v.Close()
+	return true, v.Recovered()
+}
+
+// TestIndexedRejectsReservedFlags: the flag rules have an indexed half, where
+// the directory prologue is the authority. A solid-only test cannot see that
+// half go.
+func TestIndexedRejectsReservedFlags(t *testing.T) {
+	reg := testRegistry(t)
+	for _, c := range []struct {
+		name string
+		bit  uint32
+	}{
+		{"reserved bit 2", 1 << 2},
+		{"reserved bit 15", 1 << 15},
+		{"default biome reference without its flag", 1 << 16},
+		{"reserved dimension", uint32(5) << dimensionShift},
+	} {
+		opened, recovered := indexedWithPatchedPrologue(t, reg, func(dir []byte) {
+			binary.LittleEndian.PutUint32(dir[2:6], binary.LittleEndian.Uint32(dir[2:6])|c.bit)
+		})
+		// Every file has an earlier checkpoint to fall back to, so the claim
+		// is refused either by failing to open or by recovering past it.
+		if opened && !recovered {
+			t.Errorf("%s was accepted in a directory prologue", c.name)
+		}
+	}
+}
+
+// TestIndexedRejectsStructureKindInDirectory: the solid parser refuses every
+// indexed mode before any pair-specific rule runs, so the kind/mode pairing has
+// to be driven through the directory that actually carries it.
+func TestIndexedRejectsStructureKindInDirectory(t *testing.T) {
+	reg := testRegistry(t)
+	opened, recovered := indexedWithPatchedPrologue(t, reg, func(dir []byte) {
+		dir[0] = KindStructure
+	})
+	if opened && !recovered {
+		t.Fatal("a directory describing an indexed structure was accepted")
+	}
+}
+
+// TestRejectsMalformedFrameReference: an absent reference is all three fields
+// zero. A non-zero offset or hash with a zero length is a second spelling of
+// absence, and the rule has to be reached after authentication rather than
+// before it.
+func TestRejectsMalformedFrameReference(t *testing.T) {
+	reg := testRegistry(t)
+	// The meta reference follows the ten-byte prologue and is absent in a
+	// freshly written file: two zero varints and eight zero bytes.
+	opened, recovered := indexedWithPatchedPrologue(t, reg, func(dir []byte) {
+		const prologue = 10
+		dir[prologue] = headerSize // non-zero offset, still zero length
+	})
+	if opened && !recovered {
+		t.Fatal("a zero-length reference with a non-zero offset was accepted")
+	}
+}
+
+// TestRejectsCumulativePaletteOverflow: the palette ceiling applies across
+// segments, not per segment. Two segments individually legal and jointly past
+// the limit are what distinguish the rule.
+func TestRejectsCumulativePaletteOverflow(t *testing.T) {
+	// The entry ceiling itself needs a segment carrying more than a million
+	// palette entries to reach, which no fixture builds; the fuzz targets are
+	// what cover it, and the invariant says so. What is reachable here is the
+	// other half of the same guard: a segment list whose frames cannot fit the
+	// file is refused before any of them is read, which is the bound that
+	// stops a tiny file from claiming an enormous palette.
+	w := &IndexedWorld{end: 8}
+	bw := &writer{}
+	bw.uvarint(2)
+	for range 2 {
+		bw.uvarint(headerSize)
+		bw.uvarint(64)
+		bw.u64(0)
+	}
+	if _, err := w.parseSegRefs(&reader{b: bw.bytes()}, "segment", func(frameRef, string) error { return nil }); err == nil {
+		t.Fatal("segments totalling more than the file were accepted")
+	}
+}
+
+// TestRejectsStructureEnvelopeViolations: a structure has exactly one valid
+// envelope. Round-tripping a legal one cannot show the rejections going.
+func TestRejectsStructureEnvelopeViolations(t *testing.T) {
+	reg := testRegistry(t)
+	base := func() *writer {
+		w := &writer{}
+		w.blob(nil) // settings
+		w.blob(nil) // user data
+		w.blob(nil) // markers
+		w.blob(nil) // border
+		w.uvarint(0)
+		w.uvarint(0)
+		return w
+	}
+	build := func(flags uint32, edit func(*writer)) []byte {
+		body := base()
+		edit(body)
+		hdr := &writer{}
+		hdr.raw(headerMagic[:])
+		hdr.u16(Version)
+		hdr.u8(KindStructure)
+		hdr.u8(ModeSolid)
+		hdr.u32(flags)
+		hdr.i32(chunk.CurrentBlockVersion)
+		tail := &writer{}
+		tail.u64(0)
+		tail.u64(0)
+		tail.u64(0)
+		tail.u64(0)
+		tail.raw(footerMagic[:])
+		ftr := &writer{}
+		ftr.u64(checkpointHash(hdr.bytes(), body.bytes(), tail.bytes()))
+		ftr.raw(tail.bytes())
+		return append(append(hdr.bytes(), body.bytes()...), ftr.bytes()...)
+	}
+	rest := func(w *writer) {
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(1) // sizes
+		w.uvarint(1)
+		w.uvarint(1)
+		w.svarint(0) // origins
+		w.svarint(0)
+		w.svarint(0)
+		w.u8(0)      // cell presence
+		w.uvarint(0) // block entities
+		w.uvarint(0) // entities
+	}
+	if _, err := ReadStructure(build(FlagUncompressed, rest), reg); err != nil {
+		t.Fatalf("a legal envelope was rejected: %v", err)
+	}
+	// A flag a structure cannot carry.
+	if _, err := ReadStructure(build(FlagUncompressed|FlagStoreLight, rest), reg); err == nil {
+		t.Error("a structure claiming StoreLight was accepted")
+	}
+	// A non-empty biome palette.
+	if _, err := ReadStructure(build(FlagUncompressed, func(w *writer) {
+		w.uvarint(1)
+		w.str("minecraft:plains")
+		w.uvarint(0)
+		w.uvarint(1)
+		w.uvarint(1)
+		w.uvarint(1)
+		w.svarint(0)
+		w.svarint(0)
+		w.svarint(0)
+		w.u8(0)
+		w.uvarint(0)
+		w.uvarint(0)
+	}), reg); err == nil {
+		t.Error("a structure with a biome palette was accepted")
+	}
+	// Non-empty settings.
+	settings, err := marshalNBT(map[string]any{"name": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSettings := &writer{}
+	withSettings.blob(settings)
+	withSettings.blob(nil)
+	withSettings.blob(nil)
+	withSettings.blob(nil)
+	withSettings.uvarint(0)
+	withSettings.uvarint(0)
+	rest(withSettings)
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindStructure)
+	hdr.u8(ModeSolid)
+	hdr.u32(FlagUncompressed)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), withSettings.bytes(), tail.bytes()))
+	ftr.raw(tail.bytes())
+	if _, err := ReadStructure(append(append(hdr.bytes(), withSettings.bytes()...), ftr.bytes()...), reg); err == nil {
+		t.Error("a structure carrying settings was accepted")
+	}
+}

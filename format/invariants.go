@@ -41,8 +41,11 @@ type Invariant struct {
 	Category Category
 	// Rules are the ids of the format.md sentences this covers.
 	Rules []string
-	// Test names the test function that enforces it.
-	Test string
+	// Tests name every test function that enforces it. A rule with a writer
+	// half and a reader half, or one that applies to both worlds and
+	// structures, needs one per half: naming a single test that covers one
+	// side is a claim the other side is protected when it is not.
+	Tests []string
 	// Note explains anything the specification sentence leaves implicit,
 	// usually why the rule exists rather than what it says.
 	Note string
@@ -57,257 +60,258 @@ var invariants = []Invariant{
 	{
 		Name: "varints are minimal", Category: Normalisation,
 		Rules: []string{"b5904bd9", "b970a5c4"},
-		Test:  "TestRejectsNonMinimalVarints",
+		Tests: []string{"TestRejectsNonMinimalVarints"},
 		Note:  "An overlong encoding is a second spelling of one number.",
 	},
 	{
 		Name: "strings are bounded UTF-8", Category: Normalisation,
 		Rules: []string{"ab5dc87f"},
-		Test:  "TestRejectsNonUTF8Strings",
+		Tests: []string{"TestRejectsNonUTF8Strings", "TestReaderRejectsBadStrings"},
 		Note:  "Palettes order strings bytewise, so arbitrary bytes would order differently under an implementation that decodes before comparing.",
 	},
 	{
 		Name: "blobs are bounded", Category: Bound,
 		Rules: []string{"f930c4ef"},
-		Test:  "TestRejectsOversizedBlob",
+		Tests: []string{"TestRejectsOversizedBlob"},
 		Note:  "The blob primitive, not the lengths inside an NBT payload: the validator's own tests never reach the container's length prefix.",
 	},
 	{
 		Name: "bitset padding is zero", Category: Normalisation,
 		Rules: []string{"cf8e4eb4"},
-		Test:  "TestRejectsBitsetPadding",
+		Tests: []string{"TestRejectsBitsetPadding", "TestRejectsLightBitsetPadding"},
 		Note:  "Bits above the count carry no meaning, so a set one is a second encoding. Checked through every parser that reads a bitset, not through the helper they call: a parser that stopped calling it would leave the helper's own test green.",
 	},
 	{
 		Name: "NBT compounds are canonical", Category: Ordering,
 		Rules: []string{"2811e0b4", "e01f257a"},
-		Test:  "TestRejectsNonCanonicalNBT",
+		Tests: []string{"TestRejectsNonCanonicalNBT"},
 		Note:  "Unique keys in ascending order is what lets independent writers agree.",
 	},
 	{
 		Name: "array tags are distinct from lists", Category: Normalisation,
 		Rules: []string{"10bba397"},
-		Test:  "TestOpaqueNBTArraysSurvive",
+		Tests: []string{"TestOpaqueNBTArraysSurvive"},
 		Note:  "Bedrock stores UUIDs as int arrays; folding them into lists is lossy.",
 	},
 	{
 		Name: "metadata field tags are exact", Category: Presence,
 		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "e6b20330", "5bb2554d", "bf4e7d6b"},
-		Test:  "TestRejectsMetaSchemaViolations",
+		Tests: []string{"TestRejectsMetaSchemaViolations", "TestReaderEnforcesMetadataSchemas"},
 	},
 
 	// -- Header and container (§2) ---------------------------------------
 	{
 		Name: "unknown versions and flags are rejected", Category: Presence,
 		Rules: []string{"a4590032", "648be581"},
-		Test:  "TestRejectsReservedFlags",
+		Tests: []string{"TestRejectsReservedFlags", "TestIndexedRejectsReservedFlags"},
 		Note:  "Ignoring a reserved bit spends it: an old reader could not tell a future file needs a feature it lacks.",
 	},
 	{
 		Name: "the dictionary bit stays reserved", Category: Presence,
 		Rules: []string{"2b1d7218"},
-		Test:  "TestRejectsReservedFlags",
+		Tests: []string{"TestRejectsReservedFlags"},
 	},
 	{
 		Name: "the default biome reference needs its flag", Category: Presence,
 		Rules: []string{"6dd8dd9c"},
-		Test:  "TestRejectsReservedFlags",
+		Tests: []string{"TestRejectsReservedFlags"},
 	},
 	{
 		Name: "kind and mode pairs are enumerated", Category: Presence,
 		Rules: []string{"62b04284"},
-		Test:  "TestRejectsIndexedStructureKind",
+		Tests: []string{"TestRejectsIndexedStructureKind", "TestIndexedRejectsStructureKindInDirectory"},
 		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist.",
 	},
 	{
 		Name: "the dimension field is enumerated", Category: Presence,
 		Rules: []string{"2fcb9dbf"},
-		Test:  "TestRejectsReservedDimension",
+		Tests: []string{"TestRejectsReservedDimension"},
 		Note:  "A world file holds one dimension and nothing else in the file says which.",
 	},
 	{
 		Name: "structures have no dimension", Category: Presence,
 		Rules: []string{"2ffce926"},
-		Test:  "TestStructureLeavesDimensionBitsZero",
+		Tests: []string{"TestStructureLeavesDimensionBitsZero"},
 	},
 	{
 		Name: "solid footers carry no indexed words", Category: Presence,
 		Rules: []string{"af37ce22"},
-		Test:  "TestSolidFooterMustBeZero",
+		Tests: []string{"TestSolidFooterMustBeZero"},
 	},
 
 	// -- Palettes and blobs (§3) -----------------------------------------
 	{
 		Name: "the palette order is defined on encoded bytes", Category: Ordering,
 		Rules: []string{"c06f9652"},
-		Test:  "TestPaletteOrderFollowsEncodedBytes",
+		Tests: []string{"TestPaletteOrderFollowsEncodedBytes"},
 		Note:  "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob.",
 	},
 	{
 		Name: "state properties are ordered and unique", Category: Ordering,
 		Rules: []string{"5ed7d87f"},
-		Test:  "TestRejectsUnorderedStateProperties",
+		Tests: []string{"TestRejectsUnorderedStateProperties", "TestWriterSortsStateProperties"},
 		Note:  "A repeated key is worse than an out-of-order one: the later value silently wins, so two files decode to one state.",
 	},
 	{
 		Name: "palette entries are unique", Category: Normalisation,
 		Rules: []string{"afea490c", "ddf5c7be", "22ececda"},
-		Test:  "TestPaletteMergesIdenticalEntries",
+		Tests: []string{"TestPaletteMergesIdenticalEntries", "TestRejectsDuplicatePaletteEntries"},
 		Note:  "Two entries that encode identically at one version have nothing to order them by.",
 	},
 	{
 		Name: "version overrides mean a different version", Category: Omission,
 		Rules: []string{"2062adb1"},
-		Test:  "TestVersionZeroRoundTrips",
+		Tests: []string{"TestVersionZeroRoundTrips", "TestRejectsRedundantVersionOverride"},
 		Note:  "An override equal to the palette's own version is redundant and grows a round trip that changed nothing.",
 	},
 	{
 		Name: "reference counts predate deduplication", Category: Ordering,
 		Rules: []string{"999897c0"},
-		Test:  "TestPaletteCountsOccurrencesNotBlobs",
+		Tests: []string{"TestPaletteCountsOccurrencesNotBlobs"},
 		Note:  "Counting distinct blobs instead reorders the palette exactly when deduplication succeeds.",
 	},
 	{
 		Name: "section blobs are canonical", Category: Ordering,
 		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7", "9c7d6645", "34f2544c"},
-		Test:  "TestRejectsNonCanonicalBlob",
+		Tests: []string{"TestRejectsNonCanonicalBlob"},
 	},
 	{
 		Name: "identical blobs share one table entry", Category: Normalisation,
 		Rules: []string{"3a870a30"},
-		Test:  "TestDedup",
+		Tests: []string{"TestDedup"},
 	},
 
 	// -- Chunk records (§4) ----------------------------------------------
 	{
 		Name: "biome counts predate elision", Category: Ordering,
 		Rules: []string{"27ea7bc1"},
-		Test:  "TestUnknownDefaultBiomePreserved",
+		Tests: []string{"TestBiomeCountsPrecedeElision"},
 		Note:  "Elision depends on the palette order, which depends on the counts: counting before elision is what stops that being circular.",
 	},
 	{
 		Name: "the section span is addressable", Category: Bound,
 		Rules: []string{},
-		Test:  "TestRejectsUnaddressableSectionSpan",
+		Tests: []string{"TestRejectsUnaddressableSectionSpan"},
 		Note:  "sectionN bounds how tall a chunk is, not where it sits.",
 	},
 	{
 		Name: "biome names are fully qualified", Category: Normalisation,
 		Rules: []string{"249dada6"},
-		Test:  "TestBiomeNamesAreNamespaced",
+		Tests: []string{"TestBiomeNamesAreNamespaced"},
 		Note:  "A bare name is not a stable identifier outside the registry that coined it.",
 	},
 	{
 		Name: "chunk positions are unique and ascending", Category: Ordering,
 		Rules: []string{"4e0f8a1e"},
-		Test:  "TestRejectsDuplicateChunks",
+		Tests: []string{"TestRejectsDuplicateChunks", "TestReaderRejectsUnorderedRecords"},
 	},
 	{
 		Name: "the section span is never trimmed", Category: Presence,
 		Rules: []string{"fcf0a219"},
-		Test:  "TestEmptyChunkKeepsFullSpan",
+		Tests: []string{"TestEmptyChunkKeepsFullSpan"},
 	},
 	{
 		Name: "layer counts are addressable", Category: Bound,
 		Rules: []string{"af4b369f"},
-		Test:  "TestRejectsLayerCountInRecords",
+		Tests: []string{"TestRejectsLayerCountInRecords", "TestRejectsLayerCountInCells"},
 		Note:  "A 256th layer wedges any implementation that indexes layers with a byte. Placed where a record actually carries the count, so the rule survives a parser that stops consulting the shared bound.",
 	},
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission,
 		Rules: []string{"a9ee3ac1", "673fb00d", "12bc11b2", "90e4364e"},
-		Test:  "TestInternalAirLayerSurvives",
+		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives"},
 		Note:  "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block.",
 	},
 	{
 		Name: "light entries describe something", Category: Presence,
 		Rules: []string{"929864f4"},
-		Test:  "TestRejectsUndefinedLightFlags",
+		Tests: []string{"TestRejectsLightEntryFlags"},
 	},
 	{
 		Name: "UniqueID is stored verbatim", Category: Normalisation,
 		Rules: []string{"8e623ce0"},
-		Test:  "TestEntityIDZeroRoundTrips",
+		Tests: []string{"TestEntityIDZeroRoundTrips"},
 		Note:  "Zero is legal; rewriting it breaks encode, decode, encode.",
 	},
 	{
 		Name: "the default biome flag is not optional", Category: Omission,
 		Rules: []string{"13221d37", "7984f33b"},
-		Test:  "TestUnknownDefaultBiomePreserved",
+		Tests: []string{"TestUnknownDefaultBiomePreserved", "TestDefaultBiomeFlagIsSet"},
 		Note:  "Declining the flag is a second encoding of the same world.",
 	},
 	{
 		Name: "the biome fallback is version stable", Category: Normalisation,
 		Rules: []string{"d3997566"},
-		Test:  "TestAbsentBiomeFallbackIsVersionStable",
+		Tests: []string{"TestAbsentBiomeFallbackIsVersionStable"},
 		Note:  "A numeric id is a property of the running game version, so naming one would let a single file decode to different biomes on two runtimes.",
 	},
 	{
 		Name: "elided biome sections keep their names", Category: Omission,
 		Rules: []string{"ff694fe9"},
-		Test:  "TestUnknownDefaultBiomePreserved",
+		Tests: []string{"TestUnknownDefaultBiomePreserved"},
 	},
 	{
 		Name: "collections are totally ordered", Category: Ordering,
 		Rules: []string{"920faee4"},
-		Test:  "TestCollectionTiesUseWrittenBytes",
+		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections"},
 		Note:  "Ties break on the bytes that get written, not on the caller's value.",
 	},
 	{
 		Name: "stats keys are extensible", Category: Presence,
 		Rules: []string{"8578b8c5"},
-		Test:  "TestStatsFlag",
+		Tests: []string{"TestStatsPreservesUnknownKeys"},
 	},
 
 	// -- Indexed mode (§5) -----------------------------------------------
 	{
 		Name: "absent frame references are all zero", Category: Normalisation,
 		Rules: []string{"58866f01"},
-		Test:  "TestIndexedDirectoryPrologueAuthoritative",
+		Tests: []string{"TestRejectsMalformedFrameReference"},
 	},
 	{
 		Name: "the directory prologue is authoritative", Category: Integrity,
 		Rules: []string{"cf48aa12"},
-		Test:  "TestIndexedRecoversDamagedKindAndMode",
+		Tests: []string{"TestIndexedRecoversDamagedKindAndMode"},
 	},
 	{
 		Name: "recovered writers hash the rebuilt header", Category: Integrity,
 		Rules: []string{"5befe4df"},
-		Test:  "TestRecoveredHeaderCheckpointVerifies",
+		Tests: []string{"TestRecoveredHeaderCheckpointVerifies"},
 	},
 	{
 		Name: "the directory and dictionary skip the dictionary", Category: Presence,
 		Rules: []string{"7c4f5f2c"},
-		Test:  "TestIndexedDictionary",
+		Tests: []string{"TestIndexedDictionary"},
 	},
 	{
 		Name: "indexed files claim only what they can hold", Category: Presence,
 		Rules: []string{"d2702006"},
-		Test:  "TestIndexedRejectsSolidOnlyFlags",
+		Tests: []string{"TestIndexedRejectsSolidOnlyFlags"},
 		Note:  "Indexed mode has no stats field and elides no biome sections.",
 	},
 	{
 		Name: "a dictionary needs compression", Category: Presence,
 		Rules: []string{"fd0cd567"},
-		Test:  "TestRejectsDirectoryStorageMismatch",
+		Tests: []string{"TestRejectsDirectoryStorageMismatch"},
 		Note:  "Defence in depth rather than an independently reachable rule: a real file cannot carry a compressed dictionary while claiming to be uncompressed without its directory frame tripping the storage-form rule first, which is what this test drives.",
 	},
 	{
 		Name: "palette limits are cumulative", Category: Bound,
 		Rules: []string{"ba81d481", "1983135b"},
-		Test:  "TestRejectsDuplicateSegmentReference",
+		Tests: []string{"TestRejectsDuplicateSegmentReference", "TestRejectsCumulativePaletteOverflow"},
+		Note:  "Duplicate references and the frame-total bound have fixtures. The million-entry ceiling itself is reachable only by fuzzing, since no fixture builds a palette that large; that is stated rather than papered over with a test that would pass either way.",
 	},
 
 	// -- Structures (§6) --------------------------------------------------
 	{
 		Name: "a structure has one envelope", Category: Presence,
 		Rules: []string{"5789390a", "7b480f2f"},
-		Test:  "TestStructureOriginExtremes",
+		Tests: []string{"TestStructureOriginExtremes", "TestRejectsStructureEnvelopeViolations"},
 	},
 	{
 		Name: "cell padding is air", Category: Normalisation,
 		Rules: []string{"c176f73b"},
-		Test:  "TestMaxLayerCellPadding",
+		Tests: []string{"TestMaxLayerCellPadding"},
 		Note:  "The box need not be a multiple of 16, so edge cells have padding that is not part of the structure.",
 	},
 
@@ -315,17 +319,17 @@ var invariants = []Invariant{
 	{
 		Name: "decoders enforce the limits", Category: Bound,
 		Rules: []string{"398afbcf", "bcbf4d91"},
-		Test:  "TestNBTValidatorRejectsHostileLengths",
+		Tests: []string{"TestNBTValidatorRejectsHostileLengths", "TestRejectsOverLimitCounts"},
 	},
 	{
 		Name: "writers refuse what their readers reject", Category: Bound,
 		Rules: []string{"126cf2d4"},
-		Test:  "TestIndexedRejectsOversizedMeta",
+		Tests: []string{"TestSetMetaChecksAggregateFrame", "TestRejectedStoreRollsBackEveryPath"},
 		Note:  "Aggregate ceilings, not only per-field ones: a body of legal blobs can still pass the body limit.",
 	},
 	{
 		Name: "decoders never panic", Category: Integrity,
 		Rules: []string{"43ff86c5"},
-		Test:  "FuzzReadWorld",
+		Tests: []string{"FuzzReadWorld", "FuzzReadStructure", "FuzzOpenIndexed", "FuzzNBTStability"},
 	},
 }

@@ -407,3 +407,53 @@ func TestRejectedAppendStoreLeavesNoState(t *testing.T) {
 			len(poisoned), len(clean))
 	}
 }
+
+// TestSidecarPublishRechecksRecord: a sidecar is decoded outside the lock, so
+// a store can replace the record before it is published. Publishing anyway
+// puts a stale sidecar where the newer one belongs, and the next store with no
+// explicit sidecar inherits it. The interleaving that produces this cannot be
+// staged deterministically through the public API, so the recheck itself is
+// driven with an identity that is deliberately out of date.
+func TestSidecarPublishRechecksRecord(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir, AppendMode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	pos := world.ChunkPos{0, 0}
+	if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	ds := p.dim(world.Overworld)
+	key := [2]int32{0, 0}
+	id, ok := ds.iw.RecordID(0, 0)
+	if !ok {
+		t.Fatal("no record to identify")
+	}
+
+	stale := sidecar{states: []format.BlockState{{Name: "audit:stale", Version: 1}}}
+	p.mu.Lock()
+	delete(ds.unkCache, key)
+	p.mu.Unlock()
+
+	// An identity no record has: the decode this stands for was superseded.
+	p.publishSidecar(ds, ds.iw, key, id+1, stale)
+	p.mu.Lock()
+	_, published := ds.unkCache[key]
+	p.mu.Unlock()
+	if published {
+		t.Fatal("a sidecar from a superseded record was published")
+	}
+
+	// The current identity does publish, so the recheck is not simply
+	// refusing everything.
+	p.publishSidecar(ds, ds.iw, key, id, stale)
+	p.mu.Lock()
+	got, published := ds.unkCache[key]
+	p.mu.Unlock()
+	if !published || len(got.states) != 1 || got.states[0].Name != "audit:stale" {
+		t.Fatalf("a current sidecar was not published: %v %v", published, got.states)
+	}
+}
