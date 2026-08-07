@@ -386,6 +386,9 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 // validateWorldData rejects content that would encode into a file the
 // decoder refuses to read back (oversized blobs or counts).
 func validateWorldData(d *WorldData) error {
+	if d == nil {
+		return fmt.Errorf("pile: nil world data")
+	}
 	for _, b := range []struct {
 		p    []byte
 		what string
@@ -695,11 +698,43 @@ func validateColumn(c Column) error {
 	if n := len(c.Col.ScheduledBlocks); n > maxPerChunk {
 		return fmt.Errorf("pile: chunk (%d,%d) has %d scheduled ticks, limit %d", c.X, c.Z, n, maxPerChunk)
 	}
+	// Every position a record carries has to lie inside the column it is stored
+	// in, and neither half of that was checked. A record stores a block entity's
+	// x and z as one packed nibble pair, so a position outside the column's
+	// 16x16 footprint is silently folded back into it: (100,0,200) in chunk
+	// (0,0) was written, and read back, as (4,0,8). Two positions 16 apart fold
+	// onto one, and the reader then refuses the file for repeating a position —
+	// so the same gap produced both a wrong answer reported as success and a
+	// file this writer's own reader rejects. The Y is not folded but is not
+	// bounded either, and the reader requires it to lie inside the span the
+	// record declares.
+	//
+	// Computed in int64: X reaches MaxInt32 and 16*MaxInt32 does not fit an
+	// int32, nor an int on a 32-bit build.
+	loX, loZ := int64(c.X)*16, int64(c.Z)*16
+	inColumn := func(p cube.Pos, what string) error {
+		if x := int64(p.X()); x < loX || x > loX+15 {
+			return fmt.Errorf("pile: chunk (%d,%d) has a %s at %v, whose X is outside the column's span %d..%d",
+				c.X, c.Z, what, p, loX, loX+15)
+		}
+		if z := int64(p.Z()); z < loZ || z > loZ+15 {
+			return fmt.Errorf("pile: chunk (%d,%d) has a %s at %v, whose Z is outside the column's span %d..%d",
+				c.X, c.Z, what, p, loZ, loZ+15)
+		}
+		if y := p.Y(); y < r[0] || y > r[1] {
+			return fmt.Errorf("pile: chunk (%d,%d) has a %s at %v, whose Y is outside the chunk's range %d..%d",
+				c.X, c.Z, what, p, r[0], r[1])
+		}
+		return nil
+	}
 	// The collection orders are total only because their keys are unique, so
 	// uniqueness is a rule and not an assumption. The reader rejects these, and
 	// a writer that emits them produces a file it cannot read back.
 	bePos := make(map[cube.Pos]struct{}, len(c.Col.BlockEntities))
 	for _, be := range c.Col.BlockEntities {
+		if err := inColumn(be.Pos, "block entity"); err != nil {
+			return err
+		}
 		if _, dup := bePos[be.Pos]; dup {
 			return fmt.Errorf("pile: chunk (%d,%d) has two block entities at %v", c.X, c.Z, be.Pos)
 		}
@@ -712,6 +747,9 @@ func validateColumn(c Column) error {
 	}
 	ticks := make(map[tickID]struct{}, len(c.Col.ScheduledBlocks))
 	for _, t := range c.Col.ScheduledBlocks {
+		if err := inColumn(t.Pos, "scheduled update"); err != nil {
+			return err
+		}
 		k := tickID{pos: t.Pos, tick: t.Tick, block: t.Block}
 		if _, dup := ticks[k]; dup {
 			return fmt.Errorf("pile: chunk (%d,%d) has a duplicate scheduled update at %v", c.X, c.Z, t.Pos)
@@ -824,6 +862,7 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 			unknownBySec[k] = append(unknownBySec[k], u)
 		}
 	}
+	sidecarN := sidecarLayerCounts(unknownBySec)
 
 	r := ch.Range()
 	subs := ch.Sub()
@@ -853,7 +892,7 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 		// unresolved blocks has no storage, and neither does the section
 		// beneath it. Walking only the allocated layers would drop exactly
 		// those entries, so the walk covers whatever the sidecar reaches.
-		n := max(len(layers), sidecarLayers(unknownBySec, sec))
+		n := max(len(layers), sidecarN[sec])
 		if n == 0 {
 			continue
 		}
@@ -1190,16 +1229,26 @@ type secLayer struct {
 	layer uint8
 }
 
-// sidecarLayers returns how many layers a section's preserved-state entries
-// reach, so a layer the runtime never allocated is still written.
-func sidecarLayers(unknownBySec map[secLayer][]UnknownBlock, sec int32) int {
-	n := 0
+// sidecarLayerCounts folds a sidecar's (section, layer) keys into one entry per
+// section: how many layers that section's preserved-state entries reach, so a
+// layer the runtime never allocated is still written.
+//
+// This used to be a per-section scan of the whole key set, which made both
+// writers quadratic in (sections or cells) x (sidecar keys) — a 155-byte
+// structure file of 1,048,576 cells and 4,096 preserved states took 125 seconds
+// to re-encode, and ContentHash re-encodes what it decodes. One pass over the
+// keys answers every section, and the answer is the same one, so no byte moves.
+func sidecarLayerCounts(unknownBySec map[secLayer][]UnknownBlock) map[int32]int {
+	if len(unknownBySec) == 0 {
+		return nil
+	}
+	out := make(map[int32]int, len(unknownBySec))
 	for k := range unknownBySec {
-		if k.sec == sec && int(k.layer)+1 > n {
-			n = int(k.layer) + 1
+		if n := int(k.layer) + 1; n > out[k.sec] {
+			out[k.sec] = n
 		}
 	}
-	return n
+	return out
 }
 
 // airOnlyLayer reports whether a layer holds nothing but air, carrying no

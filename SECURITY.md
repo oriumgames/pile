@@ -623,9 +623,12 @@ The same shape, without the attacker control, applies to `encoders` and
 
 ### Not audited
 
-- **The writer paths.** This pass covers decode. `ContentHash` round-trip
-  behaviour over hostile-but-legal input is still open, as
-  `FREEZE-BLOCKERS.md` records.
+- ~~**The writer paths.**~~ **Closed**: see "The writer matrix" at the end of
+  this document. That pass drove `WriteWorld`, `WriteStructure`,
+  `CreateIndexed`/`Store`/`Checkpoint`/`Compact`/`Close` and `ContentHash` with
+  values a decoder would never produce, found six defects — three of them files
+  a writer emitted that its own reader refuses — and one specification
+  divergence that needs a version bump and is reported unfixed there.
 - **Filesystem behaviour** — path traversal, symlinks on atomic rename,
   permission bits, temp-file naming. Its own `FREEZE.md` box, not this one.
 - **Crash durability.** Its own box.
@@ -697,3 +700,241 @@ of both did neither, and E was green.
 The recovery measurement in item D was taken in both directions on one machine
 — the bound disabled and then restored — rather than extrapolated, which is why
 its table has a before column and an after column rather than a projection.
+
+---
+
+# The writer matrix
+
+`FREEZE.md`'s pre-tag summary named this as **the largest remaining gap and the
+one most likely to hold something**: the reader matrix drives bytes, and the
+writers had never been driven at all. `format/hostilewrite_test.go` is that
+matrix. It runs on every flagless `go test ./...` and under `-race`.
+
+The inputs are Go values rather than bytes, which is what makes it a different
+problem: a `WorldData` or a `StructureData` a caller can construct and no
+decoder would ever produce. There is no truncation axis and no count field to
+walk. What there is instead is §8's requirement that **a writer refuse content
+its own reader would reject**, which had been found unimplemented for the NBT
+container budget one pass earlier and had no systematic check anywhere else.
+
+## What it covers
+
+| test | what it drives |
+|------|----------------|
+| `TestHostileWriteShapes` | 36 world shapes through `WriteWorld`: nil and empty everything, duplicate positions, unaligned and out-of-domain vertical ranges, chunk coordinates at both `int32` extremes, 4,096 sections, 255 layers, air layers above and below populated ones, block entities and scheduled updates outside the column on every axis, unregistered runtime IDs, per-chunk collection counts one past their limit, sidecar entries naming states, sections and layers that do not exist, preserved states that collide after version normalisation, malformed metadata blobs. Each must be **refused**, or produce a file its own reader accepts **and** that re-encodes to the same bytes, twice. |
+| `TestHostileWriteStructureShapes` | 16 structure shapes through `WriteStructure`: degenerate and inverted boxes, the axis ceiling and one past it, the cell ceiling and one past it, a cell grid disagreeing with the size, a 1×1×1 box whose cell is entirely padding, block entities outside the box and at one position, entities in the caller's order, sidecars on edge cells and on cells that do not exist. |
+| `TestHostileWriteRejectsPositionsOutsideTheColumn` | Finding 1, in its three distinguishable consequences, through `WriteWorld` **and** `IndexedWorld.Store`. |
+| `TestHostileWriteRejectsUnknownRuntimeID` | Finding 3, through `WriteWorld`, `WriteStructure` and `Store`, including that a refused `Store` leaves an empty world empty. |
+| `TestHostileWriteStructureCellCeiling` | Finding 2, at the ceiling (must still write) and one row past it (must refuse). |
+| `TestHostileWriteSidecarScanIsLinear` | Finding 4: `ContentHash` over a **155-byte** legal structure file of 1,048,576 cells and 4,096 preserved states, with a wall-clock ceiling. |
+| `TestHostileWriteNilInputs` | Finding 5. |
+| `TestHostileWriteNBTCeilings` | Each of §8's three NBT ceilings at the last accepted value and one past it, through `marshalNBT`, `validateNBT`, `unmarshalNBT` **and** a real block entity in a real file. Finding 6 lived in the gap between the second and the third. |
+| `TestHostileContentHashOverNegativeVectors` | `ContentHash` over all 59 negative conformance vectors: no panic, no hang, and never success on a file the reader refuses. |
+| `TestHostileContentHashIsAFixedPointOverFixtures` | `ContentHash` over every golden and positive vector, then over the file re-encoding produces: the two must agree, or a world's identity would depend on how many times it had been rewritten. |
+| `TestHostileIndexedWriteSurface` | `Store`, `Checkpoint`, `Compact` and `Close` driven with the same shapes, requiring the file to reopen and every column to read back, and requiring a refused `Store` to leave no palette entry behind — checked through `UnresolvedStates`, because the projected content hash cannot see one. |
+
+## What it found
+
+Six. Every one is a writer defect; **none of them changes which files a reader
+accepts**, and the goldens and both vector suites were green throughout with no
+flags.
+
+**1. A block entity or scheduled update outside the column it is stored in.**
+A record packs a position's x and z into one byte of nibbles, so a position
+outside the column's 16×16 footprint has no representation, and `validateColumn`
+checked neither that nor the Y against the span the record declares. The gap
+produced all three failure modes at once:
+
+- **Silent relocation.** A chest at `(100,0,200)` in chunk `(0,0)` was written,
+  and read back, as **`(4,0,8)`** — content changed, success reported. The
+  provider's own test fixture was doing this: `testColumn` put a chest at
+  `(3,1,5)` and several tests stored that column at chunk `(1,2)`, `(5,0)`,
+  `(9,9)` and so on, where it silently became `(19,1,37)` and the rest.
+- **A file the reader refuses.** Two block entities 16 apart in X fold onto one
+  wire key; `ReadWorld` then refuses with "block entities are out of order or
+  repeat a position". 4,290 bytes written, unreadable.
+- **The same, on Y.** A block entity at Y 1000 in a chunk spanning 0..15, or a
+  scheduled update at Y −500, were both written and both refused on read:
+  "block entity at Y 1000 is outside the chunk's span 0..15".
+
+Fixed in `validateColumn`, computed in `int64` because 16 × `MaxInt32` does not
+fit an `int32`. `Store` and `Compact` share it.
+
+**2. A structure whose cell grid passes §8's ceiling while every axis is legal.**
+`validateStructureData` checked each axis against `maxStructureSize` and never
+the product against `maxStructureCells`. `[1048576, 272, 16]` is legal on every
+axis and needs **1,114,112 cells**, one row past the ceiling of 1,048,576 — and
+only 8.9 MB of pointers, so a caller can hold it. `WriteStructure` produced
+**143,477 bytes** and `ReadStructure` refused them outright. Fixed by calling
+`structureCellCount`, the same function the decoder uses. A structure *at* the
+ceiling still round trips, which the test asserts first.
+
+**3. A block runtime ID the registry does not know.** `blockPaletteBuilder.add`
+stored `minecraft:air` for it, with a comment saying it "cannot occur for chunks
+produced by the same registry". A caller can put any `uint32` in a
+`chunk.SubChunk`, and the consequences went past losing the block:
+
+- The block became air, silently, and success was reported.
+- A section holding **nothing else** resolved to uniform air, which §4.3 says an
+  absent section is, so `ReadWorld` refused the 116-byte file the writer had
+  just produced: "section 0 ends in an all-air layer, so it is either absent or
+  shorter".
+- Two scheduled updates differing only in an unknown block collapsed onto one
+  wire key, which the reader also refuses.
+
+Fixed in both palette builders — the solid one records the first bad ID and
+reports it from `finalize`, the indexed one through the existing sticky
+`paletteErr`.
+
+This also uncovered a **vacuous test fixture**: `format/property_test.go`'s
+`aliasWidthCase` builds its column against an aliasing registry and the boundary
+matrix encoded it with the default one, where the second alias is simply an
+unknown runtime ID. The alias folding the case is named for was being done by
+the unknown-ID fallback. `boundaryCase` now carries the registry a case must be
+written with.
+
+**4. The sidecar-layer scan was quadratic, and `ContentHash` is the way in.**
+Both writers folded the preserved-state sidecar into a map keyed by
+`(section, layer)`, then asked that map — once per section, or once per
+structure cell — how many layers that one section reached, by scanning every
+key. The cost was cells × keys, and §8 bounds both factors at a million.
+
+`ContentHash` decodes and re-encodes, so a legal file is enough to reach it.
+Measured on one machine, on files assembled from bytes:
+
+| file | cells | preserved states | `ContentHash` |
+|------|-------|------------------|---------------|
+| **159 bytes** | 1,048,576 | 64 | 2.6 s |
+| **153 bytes** | 1,048,576 | 256 | 16.7 s |
+| **154 bytes** | 1,048,576 | 1,024 | 44.9 s |
+| **155 bytes** | 1,048,576 | 4,096 | **2 m 4 s** |
+
+Linear in the key count on a file whose size does not move, which is the shape.
+The states are bounded by the decoded-storage ceiling rather than by anything in
+these files, so the row above is not the end of the table.
+
+Fixed by folding the keys once into a max-layer-per-section map: same answer,
+one pass. The 155-byte file now takes **149 ms**, and
+`TestHostileWriteSidecarScanIsLinear` holds a 10-second ceiling over it — three
+orders of magnitude under the before, because what is guarded against is
+quadratic growth and not ten per cent.
+
+The world path has the same shape and is bounded lower by §8 (4,096 sections
+rather than 1,048,576 cells): 2,048 sections and 2,047 preserved states took
+303 ms. It is fixed by the same change.
+
+**5. `WriteWorld(out, nil, …)` and `WriteStructure(out, nil, …)` panicked**
+with a nil pointer dereference. Both return an error now.
+
+**6. An NBT string of 32,768 bytes or more is written and cannot be read back.**
+Found by the matrix, not by inspection. §1 says NBT string lengths are a `u16`
+and §8's table says 65,535; `marshalNBT` and `validateNBT` both agree with that.
+`unmarshalNBT` does not: gophertunnel's little-endian decoder reads the length
+as a **signed int16**, so every length from 32,768 up arrives negative and the
+blob is refused with "unexpected buffer end during op: 'String'". Since every
+block entity and entity blob is read back through `unmarshalNBT`, a caller with
+a 32,768-byte string in a block entity got a file `ReadWorld` refuses — a 69,780
+byte blob was enough. Compound **keys** have the same boundary.
+
+The writer now stops at 32,767 (`maxNBTStringWrite`). **The divergence itself is
+not fixed and cannot be**: see below.
+
+## What needs a version bump, and is therefore reported and not fixed
+
+**The specification states an NBT string ceiling this implementation's reader
+does not honour.** §1 ("string lengths `u16`") and §8's limits table (65,535)
+both say 65,535. The reader refuses 32,768..65,535 inside any NBT blob. That is
+a **spec/implementation divergence**, and it is exactly the kind the
+specification's own concession — where prose and implementation disagree, the
+implementation wins — was written to cover, except that no vector exercises it.
+
+Closing it in either direction is a version bump:
+
+- **Widening the reader to 65,535** changes which files are accepted, which
+  `FREEZE.md` calls a validity change outright.
+- **Narrowing §8's stated ceiling to 32,767** for NBT strings tightens a stated
+  rule, moves `spec_rules.txt`, and would make a conforming second
+  implementation's files invalid retroactively.
+
+**How a caller reaches it:** put a string of 32,768 bytes or more in a block
+entity's or an entity's NBT — a long sign text, a serialised inventory, a
+book — and save. Before this pass the file was written and would not load. It is
+now refused at write time, so no new file can carry one; a file **written by a
+second implementation** that followed §1 still will not load here, and that is
+the part only a version bump can change. `TestHostileWriteNBTCeilings` pins the
+boundary in all three directions so the divergence cannot move silently.
+
+**What would become invalid** if the ceiling were narrowed to 32,767 in the
+specification: any file, from any implementation, carrying an NBT string or
+compound key of 32,768..65,535 bytes. No file this implementation has ever
+written can be one, because its reader has always refused them.
+
+## API behaviour changes: writers that now refuse input they used to accept
+
+None of these changes any file's readability — every input listed produced
+either a file the reader already refused, or content the writer had silently
+altered — but each is a behaviour change for a caller.
+
+| surface | now refuses |
+|---------|-------------|
+| `WriteWorld`, `IndexedWorld.Store`, `Compact` | a block entity or scheduled update whose X or Z lies outside the column, or whose Y lies outside the chunk's range |
+| `WriteWorld`, `WriteStructure`, `IndexedWorld.Store` | a block runtime ID the registry does not know |
+| `WriteStructure` | a size whose cell grid exceeds `maxStructureCells`, however legal each axis is |
+| `WriteWorld`, `WriteStructure` | a nil `*WorldData` / `*StructureData` (previously a panic) |
+| every writer, through `marshalNBT` | an NBT string or compound key of 32,768 bytes or more |
+
+`WriteStructure` also now **documents** that it mutates its argument: it clears
+the padding of edge cells in place, which `WriteWorld` explicitly does not do to
+chunks. That was true before and undocumented, and it means a `StructureData`
+shared with another goroutine must not be written concurrently.
+
+## What the writer matrix does not reach
+
+- **A `WorldData` at the 4,194,304-column ceiling.** The count check is in
+  `validateWorldData` and the shape one past it is 671 MB of `Column` structs
+  before a single chunk exists, so it is not driven. The reader-side ceiling is
+  held by `TestHostileDecodedColumnCeiling`.
+- **`Compact`'s dictionary training path under hostile input.** It samples
+  record bodies the writer produced, so its input is bounded by everything
+  above; nothing here drives a hostile dictionary into it.
+- **The `pile` provider surface and the CLI**, which remain as `FREEZE.md` says.
+
+## Negative controls
+
+Every check above was disabled and the named test required to fail. `-count=1`
+throughout; each file was restored from a copy taken before the run and the tree
+confirmed clean afterwards.
+
+| # | production line disabled | test | result with it disabled |
+|---|--------------------------|------|-------------------------|
+| W1 | `format/encode.go`, `validateColumn`'s `inColumn` → `return nil` first | `TestHostileWriteRejectsPositionsOutsideTheColumn` | **FAIL**, all five cases: 4,259 / 4,260 / 4,234 / 4,246 / 4,235 bytes accepted |
+| W2 | the same | `TestHostileWriteShapes` | **FAIL** on the three position shapes |
+| W3 | `format/structure.go`, `validateStructureData`'s `structureCellCount` call removed | `TestHostileWriteStructureCellCeiling` | **FAIL** — "the writer emitted 143,477 bytes its own reader refuses: structure size [1048576 272 16] too large (1114112 cells, limit 1048576)" |
+| W3′ | the same | `TestHostileWriteStructureShapes/cell_grid_one_row_past_the_ceiling` | **FAIL** — 139,343 bytes accepted |
+| W4 | `format/palette.go`, `blockPaletteBuilder.add`'s `b.err` assignment removed | `TestHostileWriteRejectsUnknownRuntimeID` | **FAIL** — world 4,230 bytes accepted; the section-only case 116 bytes accepted, which `ReadWorld` refuses; structure 4,211 bytes accepted |
+| W4′ | the same | `TestHostileWriteShapes`, `TestHostileWriteStructureShapes` | **FAIL** on all three unregistered-ID shapes |
+| W5 | `format/indexed.go`, `addBlock`'s `noteErr` → `name, props = "minecraft:air", nil` | `TestHostileWriteRejectsUnknownRuntimeID/indexed_Store` | **FAIL** — "Store accepted an unregistered runtime ID" |
+| W6 | `format/encode.go`, `sidecarLayerCounts` restored to the per-section scan at both call sites | `TestHostileWriteSidecarScanIsLinear` | **FAIL** — **1 m 12 s** on the 155-byte file, ceiling 10 s (72 s rather than the 124 s first measured because the fix also removed a redundant re-scan; the shape is the same) |
+| W7 | `format/encode.go` and `format/structure.go`, both nil guards removed | `TestHostileWriteNilInputs` | **FAIL** — "WriteWorld(nil) panicked: invalid memory address or nil pointer dereference" |
+| W8 | `format/nbt.go`, `maxNBTStringWrite` 1<<15−1 → 1<<16−1 | `TestHostileWriteNBTCeilings` | **FAIL** — the 32,768-byte case emitted a blob `unmarshalNBT` refuses; the 65,535-byte case emitted 65,545 bytes the reader refuses |
+| W9 | `format/palette.go`, `normaliseStateVersion`'s fold removed | `TestHostileContentHashIsAFixedPointOverFixtures` | **FAIL** — `golden_world_props.pile`: "the re-encoding does not decode: palette version override equals the palette's own version" |
+| W10 | `format/encode.go`, `extractColumnRaw`'s trailing-all-air-layer drop removed | `TestHostileWriteShapes` | **FAIL** on two shapes — "the writer emitted a file its own reader refuses: section 0 ends in an all-air layer" |
+| W11 | `format/indexed.go`, `Store`'s `restorePalettes` wind-back removed | `TestHostileIndexedWriteSurface` | **FAIL** — "a refused Store left 1 unreferenced palette entries behind: [pile:admitted_first]" |
+| W12 | `format/check.go`, `panic("control")` inserted in `ContentHash` | `TestHostileContentHashOverNegativeVectors` | **FAIL** on the three structure vectors — "ContentHash panicked" |
+
+**W11 was green on the first attempt, and the repair is the point.** The test
+compared a content hash projected from the world's live columns before and after
+the refused stores. A leftover palette entry is not in any column, so the hash
+could not see it — and worse, every shape in the list is refused by
+`validateColumn`, which runs before a single palette entry is touched, so none
+of them could have left anything behind whatever the assertion was. The test now
+also stores a column that gets one preserved state admitted and fails on a
+second (invalid UTF-8), and asserts on `UnresolvedStates`, which reads the
+persisted palette segments. That is the version W11 turns red.
+
+**W12 is the honest one.** `TestHostileContentHashOverNegativeVectors` has no
+distinguishing input among the vectors themselves: every negative vector is
+refused by a reader before `ContentHash` reaches a writer, so no reader rule one
+could disable would let one through into an encoder. It is a no-panic, no-hang
+guard over 59 inputs, and W12 proves only that the guard reports a panic rather
+than aborting the run. It is recorded here rather than presented as enforcement.

@@ -20,7 +20,7 @@ func TestConcurrentProviderHammer(t *testing.T) {
 	}
 	// Seed some columns.
 	for i := range int32(8) {
-		if err := p.StoreColumn(world.ChunkPos{i, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(world.ChunkPos{i, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{i, 0})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +34,7 @@ func TestConcurrentProviderHammer(t *testing.T) {
 				pos := world.ChunkPos{int32((g*50 + i) % 12), 0}
 				switch i % 4 {
 				case 0:
-					_ = p.StoreColumn(pos, world.Overworld, testColumn(t, reg))
+					_ = p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos))
 				case 1:
 					if col, err := p.LoadColumn(pos, world.Overworld); err == nil {
 						_ = col.Chunk.Block(1, 1, 1, 0)
@@ -83,7 +83,7 @@ func TestConcurrentAppendHammer(t *testing.T) {
 				pos := world.ChunkPos{int32((g*30 + i) % 10), 0}
 				switch i % 3 {
 				case 0:
-					_ = p.StoreColumn(pos, world.Overworld, testColumn(t, reg))
+					_ = p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos))
 				case 1:
 					_, _ = p.LoadColumn(pos, world.Overworld)
 				case 2:
@@ -192,7 +192,7 @@ func TestSaveAsyncCoalesce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 20 {
-		if err := p.StoreColumn(world.ChunkPos{int32(i), 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(world.ChunkPos{int32(i), 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{int32(i), 0})); err != nil {
 			t.Fatal(err)
 		}
 		p.SaveAsync()

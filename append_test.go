@@ -20,10 +20,10 @@ func TestAppendProviderRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{4, -3}, world.Nether, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{4, -3}, world.Nether, testColumn(t, reg, world.ChunkPos{4, -3})); err != nil {
 		t.Fatal(err)
 	}
 	p.SaveSettings(&world.Settings{Name: "append-world", Time: 99, TickRange: 5})
@@ -66,7 +66,7 @@ func TestAppendProviderRoundTrip(t *testing.T) {
 	}
 
 	// Overwriting a column preserves its user data.
-	if err := q.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := q.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(q.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld), []byte("cud")) {
@@ -83,7 +83,7 @@ func TestAppendAutoCompactOnClose(t *testing.T) {
 	}
 	// Heavy overwriting produces garbage well past the threshold.
 	for range 20 {
-		if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 			t.Fatal(err)
 		}
 		if err := p.Save(); err != nil {
@@ -114,7 +114,7 @@ func TestAppendRejectsSolidFile(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	p, _ := Open(dir)
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	_ = p.Close()
 
 	if _, err := Open(dir, AppendMode()); err == nil {
@@ -123,7 +123,7 @@ func TestAppendRejectsSolidFile(t *testing.T) {
 	// And the reverse: solid open of an indexed world.
 	dir2 := t.TempDir()
 	a, _ := Open(dir2, AppendMode())
-	_ = a.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = a.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	_ = a.Close()
 	if _, err := Open(dir2); err == nil {
 		t.Fatal("solid mode opened an indexed file")
@@ -141,7 +141,7 @@ func TestSnapshotRollbackSolid(t *testing.T) {
 	stone := reg.BlockRuntimeID(block.Stone{})
 	dirt := reg.BlockRuntimeID(block.Dirt{})
 
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Snapshot("clean"); err != nil {
@@ -152,7 +152,7 @@ func TestSnapshotRollbackSolid(t *testing.T) {
 	col, _ := p.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
 	col.Chunk.SetBlock(4, -10, 4, 0, dirt)
 	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col)
-	_ = p.StoreColumn(world.ChunkPos{5, 5}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{5, 5}, world.Overworld, testColumn(t, reg, world.ChunkPos{5, 5}))
 	if err := p.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestSnapshotRollbackAppend(t *testing.T) {
 	stone := reg.BlockRuntimeID(block.Stone{})
 	dirt := reg.BlockRuntimeID(block.Dirt{})
 
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Snapshot("island-v1"); err != nil {
@@ -211,7 +211,7 @@ func TestSnapshotRollbackAppend(t *testing.T) {
 		t.Fatalf("append rollback did not restore block, rid %d", rid)
 	}
 	// Provider still writable after rollback.
-	if err := p.StoreColumn(world.ChunkPos{1, 1}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{1, 1}, world.Overworld, testColumn(t, reg, world.ChunkPos{1, 1})); err != nil {
 		t.Fatal(err)
 	}
 }

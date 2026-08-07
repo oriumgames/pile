@@ -21,16 +21,16 @@ func TestRollbackAtomicity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Nether, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Nether, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Snapshot("clean"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{9, 9}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{9, 9}, world.Overworld, testColumn(t, reg, world.ChunkPos{9, 9})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Save(); err != nil {
@@ -63,7 +63,7 @@ func TestCloseIsRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	// Force the save to fail: the destination path is occupied by a
@@ -99,7 +99,7 @@ func TestSaveAsFailsOnUnreadableRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pos := range []world.ChunkPos{{0, 0}, {1, 0}} {
-		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 			t.Fatal(err)
 		}
 	}

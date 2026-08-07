@@ -155,6 +155,9 @@ func cellExtent(size [3]int32, cx, cy, cz int32) [3]int32 {
 // validateStructureData rejects content that would encode into a structure
 // file the decoder refuses to read back.
 func validateStructureData(s *StructureData) error {
+	if s == nil {
+		return fmt.Errorf("pile: nil structure data")
+	}
 	if err := checkBlob(s.UserData, "structure user data"); err != nil {
 		return err
 	}
@@ -170,6 +173,14 @@ func validateStructureData(s *StructureData) error {
 			// writer must too.
 			return fmt.Errorf("pile: invalid structure size %v", s.Size)
 		}
+	}
+	// §8 bounds the cell grid as well as each axis, and only the axes were
+	// checked here. The two are not the same bound: [1048576, 272, 16] is legal
+	// on every axis and needs 1,114,112 cells, one row past the ceiling, which
+	// is only 8.9 MB of pointers — a caller can hold it, so WriteStructure
+	// produced a 143 KB file that ReadStructure refuses outright.
+	if _, err := structureCellCount(s.Size); err != nil {
+		return err
 	}
 	// §4.8: at most one block entity per position. Two at one position have
 	// nothing to order them by beyond their bytes, and the reader rejects the
@@ -268,6 +279,12 @@ func insideStructure(s *StructureData, u UnknownBlock) bool {
 }
 
 // WriteStructure encodes a structure file. Output is deterministic.
+//
+// Unlike WriteWorld, whose chunks are read-only inputs, this **mutates s**: the
+// positions of an edge cell that lie outside the declared box are cleared to
+// air in place, because two structures with the same content must encode
+// identically and padding is not content. A caller that shares a StructureData
+// with another goroutine must not write it concurrently.
 func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, opts Options) error {
 	if err := validateStructureData(s); err != nil {
 		return err
@@ -314,6 +331,7 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 			unknownBySec[k] = append(unknownBySec[k], e)
 		}
 	}
+	sidecarN := sidecarLayerCounts(unknownBySec)
 
 	// Pass 1: extract cells.
 	type cellData struct{ layers []secData }
@@ -330,7 +348,7 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 		// would drop exactly those entries, so the walk covers whatever the
 		// sidecar reaches. Whether the caller left the cell nil or handed over
 		// an empty sub chunk must not decide that either.
-		n := max(len(layers), sidecarLayers(unknownBySec, int32(i)))
+		n := max(len(layers), sidecarN[int32(i)])
 		if n == 0 {
 			continue
 		}

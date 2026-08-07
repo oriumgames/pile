@@ -30,8 +30,21 @@ func testRegistry(t testing.TB) world.BlockRegistry {
 	return world.DefaultBlockRegistry
 }
 
-func testColumn(t testing.TB, reg world.BlockRegistry) *chunk.Column {
+// testColumn builds a filled column for the chunk position it will be stored
+// at, defaulting to the origin.
+//
+// The position matters: a block entity's position is absolute, and a record
+// stores its x and z as one packed nibble pair, so a block entity outside the
+// column it is stored in has no representation. The writer used to fold it back
+// in silently — this fixture's (3,1,5) chest, stored at chunk (1,2), was written
+// and read back as (19,1,37) — and now refuses instead. Every caller that stores
+// away from the origin has to say where.
+func testColumn(t testing.TB, reg world.BlockRegistry, at ...world.ChunkPos) *chunk.Column {
 	t.Helper()
+	pos := world.ChunkPos{0, 0}
+	if len(at) > 0 {
+		pos = at[0]
+	}
 	ch := chunk.New(reg, cube.Range{-64, 319})
 	stone := reg.BlockRuntimeID(block.Stone{})
 	for x := range uint8(16) {
@@ -41,14 +54,15 @@ func testColumn(t testing.TB, reg world.BlockRegistry) *chunk.Column {
 			}
 		}
 	}
+	bx, by, bz := int(pos[0])*16+3, 1, int(pos[1])*16+5
 	return &chunk.Column{
 		Chunk: ch,
 		Entities: []chunk.Entity{{ID: 7, Data: map[string]any{
 			"identifier": "minecraft:cow", "UniqueID": int64(7),
 		}}},
 		BlockEntities: []chunk.BlockEntity{{
-			Pos:  cube.Pos{3, 1, 5},
-			Data: map[string]any{"id": "minecraft:chest", "x": int32(3), "y": int32(1), "z": int32(5)},
+			Pos:  cube.Pos{bx, by, bz},
+			Data: map[string]any{"id": "minecraft:chest", "x": int32(bx), "y": int32(by), "z": int32(bz)},
 		}},
 		Tick: 100,
 	}
@@ -66,7 +80,7 @@ func TestProviderRoundTrip(t *testing.T) {
 	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{1, 2}, world.Nether, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{1, 2}, world.Nether, testColumn(t, reg, world.ChunkPos{1, 2})); err != nil {
 		t.Fatal(err)
 	}
 	s := &world.Settings{Name: "lobby", Time: 6000, TickRange: 4,
@@ -129,7 +143,7 @@ func TestLoadColumnIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := p.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
@@ -151,7 +165,7 @@ func TestReadOnly(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	p, _ := Open(dir)
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	_ = p.Close()
 	before, err := os.ReadFile(filepath.Join(dir, "overworld.pile"))
 	if err != nil {
@@ -162,7 +176,7 @@ func TestReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = r.StoreColumn(world.ChunkPos{5, 5}, world.Overworld, testColumn(t, reg))
+	_ = r.StoreColumn(world.ChunkPos{5, 5}, world.Overworld, testColumn(t, reg, world.ChunkPos{5, 5}))
 	r.SaveSettings(&world.Settings{Name: "changed"})
 	if err := r.Save(); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("Save on read-only = %v, want ErrReadOnly", err)
@@ -191,7 +205,7 @@ func TestReadOnlyRefusesEveryMutator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	p.SaveSettings(&world.Settings{Name: "original", TickRange: 6})
@@ -316,7 +330,7 @@ func TestSaveSkipsCleanDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Save(); err != nil {
@@ -340,7 +354,7 @@ func TestSaveSkipsCleanDimensions(t *testing.T) {
 	}
 
 	// And a dirty one still is, so the skip is not simply refusing every save.
-	if err := p.StoreColumn(world.ChunkPos{1, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{1, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{1, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Save(); err != nil {
@@ -368,8 +382,8 @@ func TestSkipAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
-	_ = p.StoreColumn(world.ChunkPos{99, 0}, world.Overworld, testColumn(t, reg)) // filtered out
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
+	_ = p.StoreColumn(world.ChunkPos{99, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{99, 0})) // filtered out
 	_ = p.Close()
 
 	q, _ := Open(dir)
@@ -586,14 +600,14 @@ func TestDeterministicResave(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	p, _ := Open(dir)
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	_ = p.Close()
 	path := filepath.Join(dir, "overworld.pile")
 	first, _ := os.ReadFile(path)
 
 	q, _ := Open(dir)
 	// Store identical content again and force a rewrite.
-	_ = q.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = q.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	if err := q.Save(); err != nil {
 		t.Fatal(err)
 	}

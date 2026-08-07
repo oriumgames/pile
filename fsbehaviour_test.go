@@ -38,7 +38,7 @@ func mustWorld(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Save(); err != nil {
@@ -72,7 +72,7 @@ func TestStagedNamesAreNeverWrittenThrough(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+				if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 					t.Fatal(err)
 				}
 				if err := p.Save(); err != nil {
@@ -114,7 +114,7 @@ func TestStagedNamesAreNeverWrittenThrough(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer p.Close()
-				if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+				if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 					t.Fatal(err)
 				}
 				if err := p.Snapshot("s"); err != nil {
@@ -184,7 +184,7 @@ func TestSaveReplacesASymlinkDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Save(); err != nil {
@@ -231,7 +231,7 @@ func TestAppendModeWritesThroughASymlinkedDimensionFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Close(); err != nil {
@@ -352,7 +352,7 @@ func TestSavePreservesAnExistingFilesMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := p.StoreColumn(world.ChunkPos{1, 1}, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(world.ChunkPos{1, 1}, world.Overworld, testColumn(t, reg, world.ChunkPos{1, 1})); err != nil {
 			t.Fatal(err)
 		}
 		if err := p.Save(); err != nil {
@@ -415,7 +415,7 @@ func TestNoStagingFileSurvivesAFailedSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Nether, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Nether, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	// A directory at the destination makes the rename fail with everything

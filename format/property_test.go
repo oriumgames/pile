@@ -71,7 +71,7 @@ func TestPropertyCanonicalOverBoundaryMatrix(t *testing.T) {
 	reg := testRegistry(t)
 	for _, c := range boundaryCases(t, reg) {
 		t.Run(c.name, func(t *testing.T) {
-			canonical(t, reg, c.world, Options{Compression: CompressionNone})
+			canonical(t, c.registry(reg), c.world, Options{Compression: CompressionNone})
 		})
 	}
 }
@@ -82,7 +82,7 @@ func TestPropertyCanonicalCompressed(t *testing.T) {
 	reg := testRegistry(t)
 	for _, c := range boundaryCases(t, reg) {
 		t.Run(c.name, func(t *testing.T) {
-			canonical(t, reg, c.world, Options{Compression: CompressionBest})
+			canonical(t, c.registry(reg), c.world, Options{Compression: CompressionBest})
 		})
 	}
 }
@@ -94,6 +94,7 @@ func TestPropertyOptionsDoNotChangeContent(t *testing.T) {
 	reg := testRegistry(t)
 	for _, c := range boundaryCases(t, reg) {
 		t.Run(c.name, func(t *testing.T) {
+			reg := c.registry(reg)
 			var base bytes.Buffer
 			if err := WriteWorld(&base, c.world, reg, Options{Compression: CompressionNone}); err != nil {
 				t.Fatal(err)
@@ -201,7 +202,7 @@ func aliasWidthCase(t *testing.T) boundaryCase {
 	ch.SetBlock(0, -63, 0, 0, reg.alias-1)
 	ch.SetBlock(1, -63, 0, 0, reg.alias)
 	return boundaryCase{name: "alias_at_width_boundary",
-		world: &WorldData{Columns: []Column{c}}}
+		world: &WorldData{Columns: []Column{c}}, reg: reg}
 }
 
 // boundaryCase is one generated world with a name describing which corner it
@@ -209,6 +210,21 @@ func aliasWidthCase(t *testing.T) boundaryCase {
 type boundaryCase struct {
 	name  string
 	world *WorldData
+	// reg is the registry the case's chunks were built against, when that is
+	// not the default one. It used to be absent, and the alias case was
+	// therefore encoded under a registry that did not know its second alias:
+	// the folding it exists to exercise was being done by the writer's
+	// unknown-runtime-ID fallback instead, which now refuses. A case built
+	// against a registry must be written with it.
+	reg world.BlockRegistry
+}
+
+// registry returns the registry a case must be encoded with.
+func (c boundaryCase) registry(dflt world.BlockRegistry) world.BlockRegistry {
+	if c.reg != nil {
+		return c.reg
+	}
+	return dflt
 }
 
 // boundaryCases generates the corner cases worth running every property over.
@@ -476,6 +492,7 @@ func TestPropertyIndexedCanonicalContent(t *testing.T) {
 			continue // nothing to store
 		}
 		t.Run(c.name, func(t *testing.T) {
+			reg := c.registry(reg)
 			hash := func(order []int, checkpointEvery int) uint64 {
 				path := filepath.Join(t.TempDir(), "w.pile")
 				w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
@@ -621,7 +638,7 @@ func TestPropertyCanonicalWithLight(t *testing.T) {
 	reg := testRegistry(t)
 	for _, c := range boundaryCases(t, reg) {
 		t.Run(c.name, func(t *testing.T) {
-			canonical(t, reg, c.world, Options{Compression: CompressionNone, StoreLight: true})
+			canonical(t, c.registry(reg), c.world, Options{Compression: CompressionNone, StoreLight: true})
 		})
 	}
 }

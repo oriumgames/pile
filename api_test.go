@@ -114,7 +114,7 @@ func TestMarkerRemoveAndSnapshotDelete(t *testing.T) {
 	dir := t.TempDir()
 	p, _ := Open(dir)
 	defer p.Close()
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 
 	p.SetMarker(Marker{Name: "a", Kind: "poi"})
 	p.SetMarker(Marker{Name: "b", Kind: "poi"})
@@ -152,7 +152,7 @@ func TestColumnsIterator(t *testing.T) {
 	defer p.Close()
 	want := map[[2]int32]bool{{0, 0}: true, {3, -2}: true, {-5, 7}: true}
 	for k := range want {
-		if err := p.StoreColumn(world.ChunkPos{k[0], k[1]}, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(world.ChunkPos{k[0], k[1]}, world.Overworld, testColumn(t, reg, world.ChunkPos{k[0], k[1]})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -216,7 +216,7 @@ func TestProviderMaxDecodedBytes(t *testing.T) {
 				t.Fatal(err)
 			}
 			for x := int32(0); x < 8; x++ {
-				if err := p.StoreColumn(world.ChunkPos{x, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+				if err := p.StoreColumn(world.ChunkPos{x, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{x, 0})); err != nil {
 					t.Fatal(err)
 				}
 			}

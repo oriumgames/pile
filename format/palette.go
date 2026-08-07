@@ -31,6 +31,9 @@ type blockPaletteBuilder struct {
 	idx   map[uint32]uint32 // runtime ID → build-order index
 	byKey map[string]uint32 // canonical state string → build-order index (unknown states)
 	ent   []blockPaletteEntry
+	// err is the first runtime ID the registry did not know. add sits behind a
+	// callback signature that cannot return one, so it is reported by finalize.
+	err error
 }
 
 type blockPaletteEntry struct {
@@ -56,8 +59,16 @@ func (b *blockPaletteBuilder) add(rid uint32) uint32 {
 	}
 	name, props, found := b.reg.RuntimeIDToState(rid)
 	if !found {
-		// A runtime ID outside the registry cannot be represented; store air.
-		// This cannot occur for chunks produced by the same registry.
+		// A runtime ID outside the registry has no state to store. Storing air
+		// instead loses the block silently, and does worse than that: a section
+		// holding nothing else resolves to uniform air, which §4.3 says an
+		// absent section is, so the reader refuses the record. The same merge
+		// collapses two scheduled updates that differ only in an unknown block
+		// into one wire key, which the reader also refuses. Both were reachable
+		// from a chunk carrying a single bad runtime ID.
+		if b.err == nil {
+			b.err = fmt.Errorf("pile: block runtime ID %d is not in the registry", rid)
+		}
 		name, props = "minecraft:air", nil
 	}
 	// A registry may number one state twice. Merging the aliases here rather
@@ -139,6 +150,9 @@ func (b *blockPaletteBuilder) addState(bs BlockState) uint32 {
 // registry states are not, so the two key spaces would be compared against
 // each other and the resulting order would follow neither rule.
 func (b *blockPaletteBuilder) finalize() (encoded []byte, remap []uint32, err error) {
+	if b.err != nil {
+		return nil, nil, b.err
+	}
 	// Encode every entry once, up front. Entries that encode identically at
 	// the same version are the same state and are merged: leaving both in
 	// would put two indistinguishable entries in the palette whose relative

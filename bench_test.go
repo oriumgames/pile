@@ -100,7 +100,7 @@ func BenchmarkProviderLoadColumn(b *testing.B) {
 	reg := testRegistry(b)
 	p := NewMemory()
 	defer p.Close()
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(b, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(b, reg, world.ChunkPos{0, 0})); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()

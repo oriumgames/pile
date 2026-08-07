@@ -1241,3 +1241,77 @@ pointed at a file its user named, it cannot guess which worlds are meant to be
 enormous, and refusing a legitimate large world by default would be a worse
 failure than the one it prevents. What the flag buys is that bounding
 `pile verify` on a file someone sent you is possible at all.
+
+## 9. Post-freeze: the writer hostile matrix
+
+Added after the freeze. `format/hostilewrite_test.go` is the writer half of
+`format/hostile_test.go`, which `FREEZE.md`'s pre-tag summary named as the
+largest remaining gap. Neither the wire format nor any reader's accept boundary
+moves: the goldens and both vector suites were green with no flags throughout,
+which is what says so.
+
+The full account — what each test drives, the six findings with measured before
+and after, the API behaviour changes, and the one divergence that needs a
+version bump — is in `SECURITY.md`, "The writer matrix". This section records
+only the controls, in this document's format, because that is what this document
+is for.
+
+| # | control | command | result |
+|---|---------|---------|--------|
+| W1 | `validateColumn`'s `inColumn` returns nil immediately | `go test ./format -run TestHostileWriteRejectsPositionsOutsideTheColumn -count=1` | **RED**, all five cases: 4,259 / 4,260 / 4,234 / 4,246 / 4,235 bytes accepted, each with the before it was written for |
+| W2 | the same | `-run TestHostileWriteShapes` | **RED** on the three position shapes |
+| W3 | `validateStructureData`'s `structureCellCount` call removed | `-run TestHostileWriteStructureCellCeiling` | **RED** — "the writer emitted 143,477 bytes its own reader refuses" |
+| W3′ | the same | `-run TestHostileWriteStructureShapes` | **RED** — 139,343 bytes accepted for a grid one row past the ceiling |
+| W4 | `blockPaletteBuilder.add`'s `b.err` assignment removed | `-run TestHostileWriteRejectsUnknownRuntimeID` | **RED** — world 4,230 bytes, section-only 116 bytes (which `ReadWorld` refuses), structure 4,211 bytes |
+| W4′ | the same | `-run 'TestHostileWriteShapes\|TestHostileWriteStructureShapes'` | **RED** on all three unregistered-ID shapes |
+| W5 | `IndexedWorld.addBlock`'s `noteErr` replaced by the old air fallback | `-run TestHostileWriteRejectsUnknownRuntimeID` | **RED** — "Store accepted an unregistered runtime ID" |
+| W6 | `sidecarLayerCounts` restored to the per-section scan at both call sites | `-run TestHostileWriteSidecarScanIsLinear` | **RED** — 1 m 12 s over a 155-byte file, ceiling 10 s |
+| W7 | both nil guards removed | `-run TestHostileWriteNilInputs` | **RED** — "WriteWorld(nil) panicked" |
+| W8 | `maxNBTStringWrite` 1<<15−1 → 1<<16−1 | `-run TestHostileWriteNBTCeilings` | **RED** — the 32,768-byte string emitted a blob `unmarshalNBT` refuses; the 65,535-byte one emitted 65,545 bytes the reader refuses |
+| W9 | `normaliseStateVersion`'s fold removed | `-run TestHostileContentHashIsAFixedPointOverFixtures` | **RED** — `golden_world_props.pile`: "the re-encoding does not decode" |
+| W10 | `extractColumnRaw`'s trailing-all-air-layer drop removed | `-run TestHostileWriteShapes` | **RED** on two shapes — "the writer emitted a file its own reader refuses: section 0 ends in an all-air layer" |
+| W11 | `Store`'s `restorePalettes` wind-back removed | `-run TestHostileIndexedWriteSurface` | **RED** — "a refused Store left 1 unreferenced palette entries behind: [pile:admitted_first]" |
+| W12 | `panic("control")` inserted in `ContentHash` | `-run TestHostileContentHashOverNegativeVectors` | **RED** on the three structure vectors — "ContentHash panicked" |
+
+### The two that had to be redone
+
+**W11 was green on the first attempt**, which is the whole reason this document
+exists. The test compared a content hash projected from the world's *live
+columns* before and after a batch of refused stores, and a leftover palette
+entry is in none of them — but the deeper problem was that every shape in the
+batch is refused by `validateColumn`, which runs before a single palette entry
+is touched. The assertion had no input that could reach the rule it named. The
+test now also stores a column that gets one preserved state admitted and then
+fails on a second (invalid UTF-8), which is the only shape that leaves anything
+behind, and asserts on `UnresolvedStates`, which reads the persisted palette
+segments rather than the live directory.
+
+**W9's first form did not compile** — removing the only use of
+`chunk.CurrentBlockVersion` from `palette.go` left an unused import — and a
+control that does not build is not a control. It was rerun with the constant
+referenced and discarded.
+
+### A vacuous fixture found on the way
+
+Not a control of this pass's tests, but of an existing one, and it belongs with
+the rest of §5's kind. `format/property_test.go`'s `aliasWidthCase` builds its
+column against `newAliasRegistry` and the boundary matrix encoded every case
+with the **default** registry, where the second alias is simply a runtime ID
+nothing knows. The "257 slots that fold to 256" the case is named for was being
+folded by the writer's unknown-runtime-ID fallback, not by the alias merge. The
+case has been failing to exercise its own subject for as long as it has existed;
+it surfaced only because that fallback now refuses. `boundaryCase` carries the
+registry a case must be written with, and `aliasWidthCase` declares it.
+`TestAliasedRuntimeIDsCollapse` and `TestStructureAliasCountsOneAppearance` pass
+the alias registry to the writer directly and were always real.
+
+### A guard with no distinguishing input
+
+`TestHostileContentHashOverNegativeVectors` is one, and is recorded as such
+rather than presented as enforcement. Every negative vector is refused by a
+reader before `ContentHash` reaches a writer, so there is no reader rule one
+could disable that would let a vector through into an encoder. What it holds is
+that none of the 59 panics or hangs, and W12 proves only that a panic would be
+reported rather than aborting the run. It is kept because `ContentHash` is the
+one ordinary-tooling entry point that re-encodes attacker-controlled bytes, and
+a future writer change could make one of them reachable.

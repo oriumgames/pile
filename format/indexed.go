@@ -1437,7 +1437,11 @@ func (w *IndexedWorld) addBlock(rid uint32) uint32 {
 	}
 	name, props, found := w.reg.RuntimeIDToState(rid)
 	if !found {
-		name, props = "minecraft:air", nil
+		// As in the solid builder: an unknown runtime ID stored as air is a
+		// block lost without a word, and a section holding nothing else becomes
+		// an all-air section the reader refuses. Refuse the Store instead.
+		w.noteErr(fmt.Errorf("pile: block runtime ID %d is not in the registry", rid))
+		return 0
 	}
 	// Key by the state, not by the runtime ID. A registry may number the same
 	// state twice, and the palette holds one entry per unique state: the solid

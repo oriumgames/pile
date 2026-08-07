@@ -488,12 +488,23 @@ several of them now would be a format change.
 - **`FuzzOpenIndexed` is not saturated.** It now runs at ~31,400 exec/s rather
   than 2/s, but its corpus was still taking new inputs at twenty minutes, so it
   has more to find than the other three targets do.
-- **The writer paths have not been audited against hostile-but-legal input**,
-  and neither has the `pile` provider surface or the CLI: the matrix drives
-  `format` directly. This is the largest remaining gap and the one most likely
-  to hold something. It cannot invalidate a file already written — a writer
-  refusing an input is an API change, not a format change — so it does not
-  block the tag, but it is the first thing to do after it.
+- ~~**The writer paths have not been audited against hostile-but-legal input**~~
+  — **done after the tag**, in `format/hostilewrite_test.go`. It found six
+  defects, three of them files a writer emitted that its own reader refuses
+  (positions outside the column, a structure grid past §8's cell ceiling, an
+  unregistered block runtime ID), one quadratic scan reachable from
+  `ContentHash` at 2 m 4 s on a 155-byte file, two panics on nil input, and one
+  **specification divergence that needs a version bump and is deliberately
+  unfixed**: §1 and §8 put an NBT string at 65,535 bytes and this reader refuses
+  anything from 32,768 up, because gophertunnel takes the length as a signed
+  int16. `SECURITY.md`, "The writer matrix", has all of it with measurements;
+  `HARNESS.md` §9 has the thirteen controls. No file's readability moved and no
+  fixture did; the five new writer refusals are API behaviour changes and are
+  listed there.
+  **The `pile` provider surface and the CLI are still not audited**: the matrix
+  drives `format` directly. Neither can invalidate a file already written — a
+  writer refusing an input is an API change, not a format change — so neither
+  blocks the tag.
   `FREEZE-BLOCKERS.md` records the first; its closing note reconciles what has
   moved since it was written. Its point 1 — only `MUST` sentences are pinned,
   so layout annotations are not — is still live and is how §3.1's ascent rule

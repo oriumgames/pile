@@ -92,10 +92,26 @@ func unmarshalNBT(b []byte) (m map[string]any, err error) {
 	return m, nil
 }
 
+// maxNBTStringWrite bounds an NBT string this writer will emit.
+//
+// §1 says NBT string lengths are a `u16` and §8 puts the ceiling at 65,535,
+// and the decoder does not agree: gophertunnel's little-endian reader takes the
+// length as a *signed* int16, so every length from 32,768 up arrives negative
+// and the blob is refused ("unexpected buffer end during op: 'String'").
+// unmarshalNBT is what every block entity and entity blob is read back through,
+// so a writer that emitted one produced a file ReadWorld refuses — a 69,780-byte
+// block entity blob was enough.
+//
+// The bound is on the *writer* only. Widening the reader to the stated 65,535
+// would change which files are accepted, which after the freeze is a version
+// bump; SECURITY.md records the divergence and what a second implementation
+// must know about it.
+const maxNBTStringWrite = 1<<15 - 1
+
 // nbtString writes an NBT string: uint16 length + bytes.
 func nbtString(w *writer, s string) error {
-	if len(s) > 0xFFFF {
-		return fmt.Errorf("pile: nbt string longer than 65535 bytes")
+	if len(s) > maxNBTStringWrite {
+		return fmt.Errorf("pile: nbt string is %d bytes, and this release's decoder refuses any past %d", len(s), maxNBTStringWrite)
 	}
 	w.u16(uint16(len(s)))
 	w.raw([]byte(s))

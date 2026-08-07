@@ -25,7 +25,7 @@ func TestCacheColumns(t *testing.T) {
 	defer p.Close()
 	stone := reg.BlockRuntimeID(block.Stone{})
 	dirt := reg.BlockRuntimeID(block.Dirt{})
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,7 +69,7 @@ func TestAutoSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 		t.Fatal(err)
 	}
 	stop := p.AutoSave(20 * time.Millisecond)
@@ -97,7 +97,7 @@ func TestBorderRoundTripAndMove(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	p, _ := Open(dir)
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg))
+	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 	if err := p.SetBorder(&Border{Min: [2]int32{-64, -64}, Max: [2]int32{64, 64}}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -297,7 +297,7 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -318,7 +318,7 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg)); err != nil {
+			if err := p.StoreColumn(world.ChunkPos{0, 0}, d.dim, testColumn(t, reg, world.ChunkPos{0, 0})); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -355,7 +355,7 @@ func TestRejectedAppendStoreLeavesNoState(t *testing.T) {
 			t.Fatal(err)
 		}
 		pos := world.ChunkPos{0, 0}
-		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg)); err != nil {
+		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 			t.Fatal(err)
 		}
 		if offerRejected {
@@ -423,7 +423,7 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 	}
 	defer p.Close()
 	pos := world.ChunkPos{0, 0}
-	if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 		t.Fatal(err)
 	}
 	ds := p.dim(world.Overworld)
@@ -470,10 +470,12 @@ func TestChunkMetaCacheBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	col := testColumn(t, reg)
 	const n = 400
 	for i := range int32(n) {
-		if err := p.StoreColumn(world.ChunkPos{i, i}, world.Overworld, col); err != nil {
+		// Built per position: a block entity's position is absolute, so one
+		// column cannot be stored at four hundred of them.
+		pos := world.ChunkPos{i, i}
+		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -492,11 +494,12 @@ func TestChunkMetaCacheBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range int32(n) {
-		if err := p.StoreColumn(world.ChunkPos{i + n, i}, world.Overworld, col); err != nil {
+		at := world.ChunkPos{i + n, i}
+		if err := p.StoreColumn(at, world.Overworld, testColumn(t, reg, at)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := p.StoreColumn(pos, world.Overworld, col); err != nil {
+	if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 		t.Fatal(err)
 	}
 	if got := p.ChunkUserData(pos, world.Overworld); !bytes.Equal(got, []byte("keep-me")) {
@@ -567,10 +570,10 @@ func TestColumnsAppendLazy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	col := testColumn(t, reg)
 	const n = 64
 	for i := range int32(n) {
-		if err := p.StoreColumn(world.ChunkPos{i, 0}, world.Overworld, col); err != nil {
+		pos := world.ChunkPos{i, 0}
+		if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
 			t.Fatal(err)
 		}
 	}
