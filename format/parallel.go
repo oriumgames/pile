@@ -24,9 +24,7 @@ func parallelFor(n, workers int, fn func(i int)) {
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				i := int(next.Add(1)) - 1
 				if i >= n {
@@ -34,7 +32,7 @@ func parallelFor(n, workers int, fn func(i int)) {
 				}
 				fn(i)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

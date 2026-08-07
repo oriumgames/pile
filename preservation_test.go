@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -418,10 +419,8 @@ func hasUnknownBiome(t *testing.T, dir string, reg world.BlockRegistry, name str
 		return false
 	}
 	for _, c := range df.Columns {
-		for _, n := range c.UnknownBiomeNames {
-			if n == name {
-				return true
-			}
+		if slices.Contains(c.UnknownBiomeNames, name) {
+			return true
 		}
 	}
 	return false
@@ -999,7 +998,7 @@ func uniformStructure(t *testing.T, reg world.BlockRegistry) *Structure {
 	ch := chunk.New(reg, cube.Range{-64, 319})
 	for x := range uint8(16) {
 		for z := range uint8(16) {
-			for y := int16(0); y < 16; y++ {
+			for y := range int16(16) {
 				ch.SetBlock(x, y, z, 0, placeholder)
 			}
 		}

@@ -514,8 +514,8 @@ func TestLightOnAirSections(t *testing.T) {
 	reg := testRegistry(t)
 	ch := chunk.New(reg, cube.Range{-64, 319})
 	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
-	for x := uint8(0); x < 16; x++ {
-		for z := uint8(0); z < 16; z++ {
+	for x := range uint8(16) {
+		for z := range uint8(16) {
 			ch.SetBlock(x, -64, z, 0, stone)
 		}
 	}

@@ -108,7 +108,7 @@ func splitUnit(u string) []string {
 		return []string{u}
 	}
 	var out []string
-	for _, cell := range strings.Split(strings.Trim(u, "|"), "|") {
+	for cell := range strings.SplitSeq(strings.Trim(u, "|"), "|") {
 		if c := strings.TrimSpace(cell); c != "" {
 			out = append(out, c)
 		}

@@ -215,7 +215,7 @@ func TestProviderMaxDecodedBytes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for x := int32(0); x < 8; x++ {
+			for x := range int32(8) {
 				if err := p.StoreColumn(world.ChunkPos{x, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{x, 0})); err != nil {
 					t.Fatal(err)
 				}

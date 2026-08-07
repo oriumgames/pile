@@ -216,13 +216,11 @@ type IndexedWorld struct {
 // lock, so the budget is snapshotted alongside the palettes rather than taken
 // off the struct once the lock is gone.
 func (w *IndexedWorld) recordBudget() *storageBudget {
-	left := w.decodedByteCeiling - int64(len(w.dir))*columnBytes
-	if left < 1 {
+	left := max(w.decodedByteCeiling-int64(len(w.dir))*columnBytes,
 		// The directory alone has reached the ceiling. One column is charged
 		// before a record is parsed, so any value below columnBytes refuses at
 		// the first charge; zero would be read as "no ceiling resolved".
-		left = 1
-	}
+		1)
 	return &storageBudget{limit: maxDecodedStorages, byteLimit: left}
 }
 

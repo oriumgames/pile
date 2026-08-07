@@ -232,8 +232,8 @@ func goldenWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 		ch := chunk.New(reg, cube.Range{-64, 319})
 		stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
 		water, _ := reg.StateToRuntimeID("minecraft:water", map[string]any{"liquid_depth": int32(0)})
-		for x := uint8(0); x < 16; x++ {
-			for z := uint8(0); z < 16; z++ {
+		for x := range uint8(16) {
+			for z := range uint8(16) {
 				for y := int16(-64); y < -60; y++ {
 					ch.SetBlock(x, y, z, 0, stone)
 				}
@@ -433,8 +433,8 @@ func goldenDenseWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 
 		// Two biomes covering exactly half the column each: the counts tie, and
 		// only the tiebreak keeps the palette order stable.
-		for x := uint8(0); x < 16; x++ {
-			for z := uint8(0); z < 16; z++ {
+		for x := range uint8(16) {
+			for z := range uint8(16) {
 				for y := int16(denseRange[0]); y <= int16(denseRange[1]); y++ {
 					if y < 0 {
 						ch.SetBiome(x, y, z, 1)

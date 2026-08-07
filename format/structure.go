@@ -90,9 +90,9 @@ func NewStructureData(size [3]int32) (*StructureData, error) {
 // structure's declared size.
 func clearPadding(s *StructureData, air uint32) {
 	nx, ny, nz := CellDims(s.Size)
-	for cx := int32(0); cx < nx; cx++ {
-		for cy := int32(0); cy < ny; cy++ {
-			for cz := int32(0); cz < nz; cz++ {
+	for cx := range nx {
+		for cy := range ny {
+			for cz := range nz {
 				cell := s.Cells[CellIndex(s.Size, cx, cy, cz)]
 				if cell == nil {
 					continue

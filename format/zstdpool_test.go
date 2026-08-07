@@ -118,9 +118,7 @@ func TestEvictedDictCodecStaysUsable(t *testing.T) {
 	errs := make(chan error, 8)
 	// Four readers decoding through the codec the handle is holding.
 	for r := range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range int32(50) {
 				x := (i * int32(r+1)) % 40
 				got, err := h.Column(x, x%5)
@@ -133,21 +131,19 @@ func TestEvictedDictCodecStaysUsable(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	// Meanwhile, enough distinct dictionaries to evict the live one many
 	// times over. The count is absolute rather than a multiple of the bound,
 	// so raising the bound does not raise it too.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := range 64 {
 			if _, err := sharedDictCodec(hostileDict(t, 20_000+i), CompressionDefault); err != nil {
 				errs <- err
 				return
 			}
 		}
-	}()
+	})
 	wg.Wait()
 	close(errs)
 	for err := range errs {

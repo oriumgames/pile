@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -179,12 +180,12 @@ func (p *Provider) Rollback(name string) error {
 	// undo puts the directory back the way it was: remove what was renamed in,
 	// then move the parked originals home in reverse order.
 	undo := func() {
-		for i := len(placed) - 1; i >= 0; i-- {
-			_ = os.Remove(placed[i])
+		for _, p := range slices.Backward(placed) {
+			_ = os.Remove(p)
 		}
-		for i := len(park) - 1; i >= 0; i-- {
-			_ = os.Remove(park[i].path)
-			_ = os.Rename(park[i].aside, park[i].path)
+		for _, p := range slices.Backward(park) {
+			_ = os.Remove(p.path)
+			_ = os.Rename(p.aside, p.path)
 		}
 	}
 	for _, ds := range p.dims {

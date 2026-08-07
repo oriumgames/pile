@@ -589,21 +589,17 @@ func TestIndexedColumnDecodesOutsideTheLockSafely(t *testing.T) {
 
 	var wg sync.WaitGroup
 	// Writers, growing the directory the readers' budget is derived from.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := int32(seeded); i < seeded+64; i++ {
 			if err := w.Store(buildTestColumn(t, reg, i, 1)); err != nil {
 				t.Errorf("store (%d,1): %v", i, err)
 				return
 			}
 		}
-	}()
+	})
 	// Readers, decoding outside the lock while it happens.
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 64 {
 				for i := range int32(seeded) {
 					if _, err := w.Column(i, 0); err != nil {
@@ -612,7 +608,7 @@ func TestIndexedColumnDecodesOutsideTheLockSafely(t *testing.T) {
 					}
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
