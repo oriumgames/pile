@@ -115,6 +115,18 @@ func clearPadding(s *StructureData, air uint32) {
 	}
 }
 
+// structBEAscends reports whether b follows a in the (y, z, x) order §4.8 fixes
+// for a structure's block entities. Positions are (x, y, z).
+func structBEAscends(a, b [3]int32) bool {
+	if a[1] != b[1] {
+		return a[1] < b[1]
+	}
+	if a[2] != b[2] {
+		return a[2] < b[2]
+	}
+	return a[0] < b[0]
+}
+
 // cellExtent returns how far into a cell the declared box reaches on each
 // axis: 16 when the cell is wholly inside, less where the box ends inside it.
 func cellExtent(size [3]int32, cx, cy, cz int32) [3]int32 {
@@ -145,12 +157,21 @@ func validateStructureData(s *StructureData) error {
 			return fmt.Errorf("pile: invalid structure size %v", s.Size)
 		}
 	}
+	// §4.8: at most one block entity per position. Two at one position have
+	// nothing to order them by beyond their bytes, and the reader rejects the
+	// file either way, so a writer that emitted them would be producing a file
+	// it cannot read back.
+	seen := make(map[[3]int32]struct{}, len(s.BlockEntities))
 	for _, be := range s.BlockEntities {
 		for i := range 3 {
 			if be.Pos[i] < 0 || be.Pos[i] >= s.Size[i] {
 				return fmt.Errorf("pile: block entity at %v is outside the structure %v", be.Pos, s.Size)
 			}
 		}
+		if _, dup := seen[be.Pos]; dup {
+			return fmt.Errorf("pile: two block entities at %v", be.Pos)
+		}
+		seen[be.Pos] = struct{}{}
 	}
 	return nil
 }
@@ -575,6 +596,18 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 
 	air := reg.AirRuntimeID()
 	budget := &storageBudget{limit: maxDecodedStorages}
+	// The same blob source a world record reads through, and for the same two
+	// reasons. §3.4 assigns ids in first-use order over the stream of stored
+	// units, which for a structure is its ascending cells and their ascending
+	// layers, and that sequence is visible on the wire: the first reference
+	// must be 0 and each later one either repeats a seen id or is the next
+	// unseen one. §3.4 also refuses a table carrying a blob no record names.
+	// Resolving cells with a bare index checked neither, so a structure could
+	// number its table any way it liked and carry any amount of content nothing
+	// reads -- both second encodings of a structure that already had one.
+	used := make([]bool, len(blobs))
+	nextID := uint64(0)
+	src := tableBlobSource(blobs, used, &nextID)
 	presence, err := r.take((len(s.Cells) + 7) / 8)
 	if err != nil {
 		return nil, err
@@ -603,14 +636,11 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		// equivalent of one.
 		cellBlobs := make([]decBlob, 0, layerN)
 		for range layerN {
-			ref, err := r.uvarint()
+			cb, err := src(r)
 			if err != nil {
 				return nil, err
 			}
-			if int(ref) >= len(blobs) {
-				return nil, corruptf("cell blob reference %d out of range", ref)
-			}
-			cellBlobs = append(cellBlobs, blobs[ref])
+			cellBlobs = append(cellBlobs, cb)
 		}
 		if err := checkSectionCanonical(cellBlobs, rids, unknown, air, int32(i)); err != nil {
 			return nil, err
@@ -628,11 +658,19 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		}
 		s.Cells[i] = sub
 	}
+	// A blob no cell references is content the file carries and nothing reads,
+	// exactly as in a world file.
+	for i, u := range used {
+		if !u {
+			return nil, corruptf("blob %d is never referenced", i)
+		}
+	}
 
 	beN, err := r.count(maxPerChunk, "block entity")
 	if err != nil {
 		return nil, err
 	}
+	var prevBE *[3]int32
 	for range beN {
 		var pos [3]int32
 		for i := range 3 {
@@ -648,6 +686,19 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 			}
 			pos[i] = int32(v)
 		}
+		// §4.8 orders structure block entities by (y, z, x) and requires at
+		// most one per position, and both halves are on the wire, so a reader
+		// checks them the way a world record's are checked: by strict ascent.
+		// A sequence whose consecutive keys all ascend repeats nothing, so the
+		// one comparison carries the uniqueness rule too and a separate
+		// seen-set would have no input that could fail it. The NBT tie-break
+		// §4.8 names is unreachable for the same reason -- two entries can only
+		// tie on position, which is already refused.
+		if prevBE != nil && !structBEAscends(*prevBE, pos) {
+			return nil, corruptf("structure block entities are out of order or repeat position %v", pos)
+		}
+		cur := pos
+		prevBE = &cur
 		blob, err := r.blob()
 		if err != nil {
 			return nil, err

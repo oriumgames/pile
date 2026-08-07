@@ -207,7 +207,8 @@ var invariants = []Invariant{
 	{
 		Name: "identical blobs share one table entry", Category: Normalisation, Enforce: Decoded,
 		Rules: []string{"1e589410"},
-		Tests: []string{"TestDedup", "TestRejectsBlobTableWaste", "TestRejectsUnreferencedBlob"},
+		Tests: []string{"TestDedup", "TestRejectsBlobTableWaste", "TestRejectsUnreferencedBlob", "TestDecodersAgreeOnValidity"},
+		Note:  "The rule applies wherever a blob table does, and a structure has one of its own. Its reader resolved cell references with a bare index for a long time, tracking neither what was used nor in what order, so the world fixtures said nothing about it.",
 	},
 
 	// -- Chunk records (§4) ----------------------------------------------
@@ -249,7 +250,7 @@ var invariants = []Invariant{
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission, Enforce: Decoded,
 		Rules: []string{"a9ee3ac1", "673fb00d", "12bc11b2", "90e4364e"},
-		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives", "TestRejectsNonCanonicalSections"},
+		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives", "TestRejectsNonCanonicalSections", "TestDecodersAgreeOnValidity"},
 		Note:  "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block.",
 	},
 	{
@@ -283,7 +284,7 @@ var invariants = []Invariant{
 	{
 		Name: "collections are totally ordered", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"920faee4"},
-		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections", "TestReaderEnforcesCollectionOrder"},
+		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections", "TestReaderEnforcesCollectionOrder", "TestDecodersAgreeOnValidity"},
 		Note:  "Ties break on the bytes that get written, not on the caller's value.",
 	},
 
@@ -381,7 +382,7 @@ var invariants = []Invariant{
 	{
 		Name: "blob ids follow the field order", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"078b2b7d"},
-		Tests: []string{"TestDedup", "TestReaderEnforcesBlobFirstUseOrder"},
+		Tests: []string{"TestDedup", "TestReaderEnforcesBlobFirstUseOrder", "TestDecodersAgreeOnValidity"},
 		Note:  "The whole dedup table's identity depends on the assignment sequence, which is otherwise only deducible from the record layout.",
 	},
 	{
@@ -410,8 +411,8 @@ var invariants = []Invariant{
 	{
 		Name: "collection keys are unique", Category: Presence, Enforce: Decoded,
 		Rules: []string{"c5770076", "0528d6ba"},
-		Tests: []string{"TestRejectsDuplicateCollectionEntries", "TestStructureRejectsBlockEntityOutsideBox"},
-		Note:  "The orders of §4.8 are total only because their keys are unique, so uniqueness is a rule rather than an assumption. In a chunk record the reader enforces it through the strict ascent of the order itself: a sequence whose consecutive keys all ascend repeats nothing, and a seen-set that duplicated the rule could not fail. A structure's block entities are covered only for the box they must lie in; nothing on either side of the format rejects two of them at one position.",
+		Tests: []string{"TestRejectsDuplicateCollectionEntries", "TestStructureRejectsBlockEntityOutsideBox", "TestDecodersAgreeOnValidity", "TestStructureWriterRefusesDuplicateBlockEntities"},
+		Note:  "The orders of §4.8 are total only because their keys are unique, so uniqueness is a rule rather than an assumption. Both readers enforce it through the strict ascent of the order itself: a sequence whose consecutive keys all ascend repeats nothing, and a seen-set that duplicated the rule could not fail. The structure half needs its own reader fixture and a writer one besides, because a writer that emits two entries at one position produces a file this package refuses to read back. It also makes the NBT tie-break §4.8 names for structure block entities unreachable: two entries can only tie on position, which is already refused.",
 	},
 	{
 		Name: "StoreLight matches its content", Category: Omission, Enforce: Decoded,

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -3183,8 +3184,12 @@ func TestTiedTicksAndStructureCollections(t *testing.T) {
 		sub := chunk.NewSubChunk(reg.AirRuntimeID())
 		sub.SetBlock(0, 0, 0, 0, stone)
 		data.Cells[0] = sub
+		// Two positions, not one. §4.8 allows at most one block entity per
+		// position, so the NBT tie-break it names for this collection has no
+		// legal input that reaches it: what the caller's order must not decide
+		// here is which of two distinct positions is written first.
 		a := StructureBlockEntity{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "n": int32(1)}}
-		b := StructureBlockEntity{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "n": int32(2)}}
+		b := StructureBlockEntity{Pos: [3]int32{4, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "n": int32(2)}}
 		e1 := map[string]any{"identifier": "minecraft:cow", "UniqueID": int64(1)}
 		e2 := map[string]any{"identifier": "minecraft:pig", "UniqueID": int64(2)}
 		if swap {
@@ -4022,6 +4027,36 @@ func TestStructureRejectsBlockEntityOutsideBox(t *testing.T) {
 	}
 }
 
+// TestStructureWriterRefusesDuplicateBlockEntities: the writer half of §4.8's
+// uniqueness rule. The reader's half is driven by TestDecodersAgreeOnValidity,
+// and it is the reason this one has to exist: a writer that emits two entries
+// at one position produces a file this package refuses to read back, which is
+// worse than either rejecting it or accepting both.
+func TestStructureWriterRefusesDuplicateBlockEntities(t *testing.T) {
+	reg := testRegistry(t)
+	write := func(second [3]int32) error {
+		data, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub := chunk.NewSubChunk(reg.AirRuntimeID())
+		stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+		sub.SetBlock(0, 0, 0, 0, stone)
+		data.Cells[0] = sub
+		data.BlockEntities = []StructureBlockEntity{
+			{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest"}},
+			{Pos: second, Data: map[string]any{"id": "minecraft:barrel"}},
+		}
+		return WriteStructure(io.Discard, data, reg, Options{Compression: CompressionNone})
+	}
+	if err := write([3]int32{4, 2, 3}); err != nil {
+		t.Fatalf("two block entities at distinct positions were refused: %v", err)
+	}
+	if err := write([3]int32{1, 2, 3}); err == nil {
+		t.Fatal("two block entities at one position were written")
+	}
+}
+
 // Round 25: rules the table claimed readers enforced, which readers did not.
 
 // collectionBody assembles a solid world body whose one record carries the
@@ -4474,5 +4509,172 @@ func TestRejectsStatsSchemaViolations(t *testing.T) {
 	}
 	if err := checkStatsBlob(bad); err == nil {
 		t.Fatal("a counter carried as an int was accepted")
+	}
+}
+
+// parityShape describes one unit of stored content in terms both decoders
+// understand: a blob table of uniform blobs naming global palette references, a
+// single present unit whose layers name blob ids, and a block-entity list. A
+// world's chunk record and a structure's cell are the same shape read by two
+// separate implementations, which is the whole reason this file needs the test
+// below.
+type parityShape struct {
+	blobs  []uint64    // one uniform blob per entry, naming that global reference
+	layers []uint64    // the present unit's layers, in order, as blob ids
+	bes    [][3]uint64 // block entity positions as (x, y, z)
+}
+
+// palette is the three-entry global block palette both bodies share: air so a
+// blob can be uniform air, and two solid blocks so a layer need not be.
+func (p parityShape) palette(w *writer) {
+	w.uvarint(3)
+	for _, name := range []string{"minecraft:air", "minecraft:dirt", "minecraft:stone"} {
+		w.str(name)
+		w.uvarint(0)
+	}
+	w.uvarint(0) // no version overrides
+}
+
+func (p parityShape) table(w *writer) {
+	w.uvarint(uint64(len(p.blobs)))
+	for _, ref := range p.blobs {
+		w.uvarint(1)
+		w.uvarint(ref)
+		w.u8(widthUniform)
+	}
+}
+
+// worldBody renders the shape as a solid world body: one chunk record spanning
+// sections 0..0, so a block entity's Y lies in 0..15 as it does in the cell.
+func (p parityShape) worldBody() []byte {
+	w := &writer{}
+	for range 4 {
+		w.blob(nil)
+	}
+	p.palette(w)
+	w.uvarint(0) // biome palette
+	p.table(w)
+	w.uvarint(1) // one record
+	w.svarint(0)
+	w.svarint(0)
+	rec := &writer{}
+	rec.svarint(0) // minSection
+	rec.uvarint(1) // sectionN
+	rec.u8(0x01)   // the one section is present
+	rec.uvarint(uint64(len(p.layers)))
+	for _, id := range p.layers {
+		rec.uvarint(id)
+	}
+	rec.u8(0) // no biome sections
+	rec.uvarint(uint64(len(p.bes)))
+	for _, pos := range p.bes {
+		rec.u8(uint8(pos[2]<<4 | pos[0]))
+		rec.svarint(int64(pos[1]))
+		rec.blob(emptyCompound())
+	}
+	rec.uvarint(0) // entities
+	rec.svarint(0) // column tick
+	rec.uvarint(0) // scheduled updates
+	rec.blob(nil)
+	w.raw(rec.bytes())
+	return w.bytes()
+}
+
+// structureBody renders the same shape as a 16x16x16 structure: one cell,
+// holding the same layers and the same block entities.
+func (p parityShape) structureBody() []byte {
+	w := &writer{}
+	for range 4 {
+		w.blob(nil)
+	}
+	p.palette(w)
+	w.uvarint(0) // biome palette: structures store none
+	p.table(w)
+	for range 3 {
+		w.uvarint(16) // size: exactly one cell
+	}
+	for range 3 {
+		w.svarint(0) // origin
+	}
+	w.u8(0x01) // the one cell is present
+	w.uvarint(uint64(len(p.layers)))
+	for _, id := range p.layers {
+		w.uvarint(id)
+	}
+	w.uvarint(uint64(len(p.bes)))
+	for _, pos := range p.bes {
+		for i := range 3 {
+			w.uvarint(pos[i])
+		}
+		w.blob(emptyCompound())
+	}
+	w.uvarint(0) // entities
+	return w.bytes()
+}
+
+// TestDecodersAgreeOnValidity: ReadStructure is a second implementation of
+// ReadWorld's record loop, and it has drifted every time either was touched --
+// four of the six gaps the freeze triage found were exactly that, rules the
+// world reader enforced and the structure reader had never learned. A test that
+// exercises one decoder cannot see the other lose a check, and a rule stated
+// once and enforced once is how a strict reader and a lenient one end up
+// disagreeing about which files are valid.
+//
+// So the shapes below are rendered into both containers and the two decoders
+// are required to reach the same verdict. It fails when either side gains or
+// loses a rule the other does not have, which is the event worth catching:
+// what it says about a shared check is only that the check is shared.
+func TestDecodersAgreeOnValidity(t *testing.T) {
+	reg := testRegistry(t)
+	const (
+		air   = 0
+		dirt  = 1
+		stone = 2
+	)
+	clean := parityShape{
+		blobs:  []uint64{dirt, stone},
+		layers: []uint64{0, 1},
+		bes:    [][3]uint64{{1, 1, 1}, {2, 1, 1}},
+	}
+	for _, c := range []struct {
+		rule  string
+		shape parityShape
+		valid bool
+	}{
+		{"a well-formed unit", clean, true},
+		{"a blob the table carries and nothing references (§3.4)",
+			parityShape{blobs: []uint64{dirt, stone}, layers: []uint64{0}}, false},
+		{"blob ids named out of first-use order (§3.4)",
+			parityShape{blobs: []uint64{dirt, stone}, layers: []uint64{1, 0}}, false},
+		{"a blob reference past the end of the table",
+			parityShape{blobs: []uint64{dirt}, layers: []uint64{0, 1}}, false},
+		{"a table repeating a blob (§3.4)",
+			parityShape{blobs: []uint64{dirt, dirt}, layers: []uint64{0, 1}}, false},
+		{"a present unit declaring no layers",
+			parityShape{}, false},
+		{"a unit ending in an all-air layer (§4.3)",
+			parityShape{blobs: []uint64{dirt, air}, layers: []uint64{0, 1}}, false},
+		{"block entities out of order (§4.8)",
+			parityShape{blobs: []uint64{dirt}, layers: []uint64{0}, bes: [][3]uint64{{2, 1, 1}, {1, 1, 1}}}, false},
+		{"two block entities at one position (§4.8)",
+			parityShape{blobs: []uint64{dirt}, layers: []uint64{0}, bes: [][3]uint64{{1, 1, 1}, {1, 1, 1}}}, false},
+	} {
+		_, wErr := ReadWorld(solidFile(c.shape.worldBody()), reg)
+		_, sErr := ReadStructure(structureFile(FlagUncompressed, c.shape.structureBody()), reg)
+		if c.valid {
+			if wErr != nil {
+				t.Errorf("%s: the world decoder rejected it: %v", c.rule, wErr)
+			}
+			if sErr != nil {
+				t.Errorf("%s: the structure decoder rejected it: %v", c.rule, sErr)
+			}
+			continue
+		}
+		if wErr == nil {
+			t.Errorf("%s: the world decoder accepted it", c.rule)
+		}
+		if sErr == nil {
+			t.Errorf("%s: the structure decoder accepted it", c.rule)
+		}
 	}
 }
