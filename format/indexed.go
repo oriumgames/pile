@@ -872,6 +872,19 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 		if px < math.MinInt32 || px > math.MaxInt32 || pz < math.MinInt32 || pz > math.MaxInt32 {
 			return corruptf("directory entry position (%d,%d) out of int32 range", px, pz)
 		}
+		// The offset chain gets the same treatment, which it did not have. Two
+		// things came of that. A running sum was only bounded once, at the end,
+		// so a chain that ran the long way round int64 and landed back on a
+		// legal offset was a second encoding of the same directory; and the
+		// bounds test below adds the entry's length to the offset before
+		// comparing, which a wrapped offset could have slipped past. Bounding
+		// each step to the file settles both. It also makes a separate overflow
+		// test pointless: with the previous value inside the file the only
+		// possible wrap is a positive one, and it lands next to the bottom of
+		// int64, nowhere near a legal offset.
+		if poff < headerSize || poff > w.end {
+			return corruptf("directory entry (%d,%d) offset %d is outside the file", px, pz, poff)
+		}
 		// Entries are Morton-ordered and positions are unique, so keys
 		// strictly ascend. Anything else is either a duplicate (no defined
 		// meaning) or a reordering (a second encoding of one directory).

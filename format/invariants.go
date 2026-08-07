@@ -329,6 +329,12 @@ var invariants = []Invariant{
 		Note:  "Defence in depth rather than an independently reachable rule: a real file cannot carry a compressed dictionary while claiming to be uncompressed without its directory frame tripping the storage-form rule first, which is what this test drives.",
 	},
 	{
+		Name: "directory offsets accumulate in range", Category: Bound, Enforce: Decoded,
+		Rules: []string{},
+		Tests: []string{"TestRejectsWrappingDirectoryOffset"},
+		Note:  "The positions in a directory entry are deltas that get range-checked at every step; the frame offset beside them is a delta that was checked only at the end, and the check adds the entry's length before comparing, so an offset near the top of int64 wrapped past it. Not a validity rule -- adopting a checkpoint reads every record it names, so such a file never opened either way -- but a bound the reader sizes a buffer from before it reads. Its test asserts which check refuses the file, because a verdict-only assertion passes with the bound deleted.",
+	},
+	{
 		Name: "palette limits are cumulative", Category: Bound, Enforce: Decoded,
 		Rules: []string{"ba81d481", "89ca9097"},
 		Tests: []string{"TestRejectsDuplicateSegmentReference", "TestRejectsCumulativePaletteOverflow"},

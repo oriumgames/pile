@@ -4738,6 +4738,18 @@ func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
 // never emits one, so there is nothing to patch.
 func indexedWithSegments(t *testing.T, blockSegs, biomeSegs [][]byte) string {
 	t.Helper()
+	// A directory naming no chunks at all, which §5.3 says is legal.
+	return indexedWithDirectory(t, blockSegs, biomeSegs, func(w *writer, _ func([]byte) (int64, uint64)) { w.uvarint(0) })
+}
+
+// indexedWithDirectory is indexedWithSegments with the chunk entry table
+// written by the caller, count included, so a test can put a directory entry on
+// the wire that no writer would produce. The callback is handed an appender for
+// record frames, because adopting a checkpoint validates the hash of every
+// frame the directory names: an entry pointing at nothing fails on that long
+// before it reaches whatever the test is about.
+func indexedWithDirectory(t *testing.T, blockSegs, biomeSegs [][]byte, entries func(w *writer, frame func(body []byte) (off int64, hash uint64))) string {
+	t.Helper()
 	hdr := &writer{}
 	hdr.raw(headerMagic[:])
 	hdr.u16(Version)
@@ -4747,10 +4759,13 @@ func indexedWithSegments(t *testing.T, blockSegs, biomeSegs [][]byte) string {
 	hdr.i32(chunk.CurrentBlockVersion)
 
 	frames := &writer{}
-	ref := func(body []byte) func(*writer) {
+	frame := func(body []byte) (int64, uint64) {
 		off := int64(headerSize) + int64(frames.len())
 		frames.raw(body)
-		hash := xxhash.Sum64(body)
+		return off, xxhash.Sum64(body)
+	}
+	ref := func(body []byte) func(*writer) {
+		off, hash := frame(body)
 		return func(w *writer) {
 			w.uvarint(uint64(off))
 			w.uvarint(uint64(len(body)))
@@ -4781,7 +4796,7 @@ func indexedWithSegments(t *testing.T, blockSegs, biomeSegs [][]byte) string {
 			f(dir)
 		}
 	}
-	dir.uvarint(0) // no chunks: a directory naming none is legal (§5.3)
+	entries(dir, frame)
 	dirOff := int64(headerSize) + int64(frames.len())
 	dirBytes := dir.bytes()
 	frames.raw(dirBytes)
@@ -4851,5 +4866,61 @@ func TestRejectsEmptyPaletteSegment(t *testing.T) {
 	}
 	if err := open(nil, [][]byte{biomeSeg()}); err == nil {
 		t.Error("a biome palette segment with no entries was accepted")
+	}
+}
+
+// TestRejectsWrappingDirectoryOffset: a directory entry's frame offset is a
+// delta chain like its position, and the position chain was range-checked while
+// the offset chain was not. The bounds test the offsets did have adds the
+// entry's length to the offset before comparing against the end of the file, so
+// an offset near the top of int64 wraps that sum negative and sails through.
+//
+// This one does not change which files open -- adopting a checkpoint verifies
+// every record it names, and a frame at that offset cannot be read whatever the
+// directory says. What it changes is what happens first: verifyRecords sizes a
+// buffer from the entry's length before it reads, so a wrapped comparison hands
+// a hundred-byte file a four-gigabyte allocation. The assertion is therefore on
+// which check refuses the file, in the manner of the section-span fixture; a
+// verdict-only assertion here would pass with the bound deleted.
+func TestRejectsWrappingDirectoryOffset(t *testing.T) {
+	reg := testRegistry(t)
+	// A sentinel meaning "wherever the frame actually landed", for the case
+	// that has to be accepted.
+	const keepOffset = int64(-1)
+	open := func(off int64, length uint64) error {
+		path := indexedWithDirectory(t, nil, nil, func(w *writer, frame func([]byte) (int64, uint64)) {
+			// A real two-byte record frame, so the entry that must be accepted
+			// has a hash that checks out and its offset is all that is in
+			// question.
+			realOff, hash := frame([]byte{0, 0})
+			if off == keepOffset {
+				off = realOff
+			}
+			w.uvarint(1)      // one directory entry
+			w.svarint(0)      // dx
+			w.svarint(0)      // dz
+			w.svarint(off)    // frame offset, delta from 0
+			w.uvarint(length) // stored frame length
+			w.u64(hash)
+		})
+		v, err := OpenIndexed(path, reg, true)
+		if err == nil {
+			v.Close()
+		}
+		return err
+	}
+	if err := open(keepOffset, 2); err != nil {
+		t.Fatalf("a directory entry pointing at a real frame was rejected: %v", err)
+	}
+	// MaxInt64-1 plus any length at all wraps the sum to the bottom of int64,
+	// which is below the end of every file there can be. A megabyte rather
+	// than the four gigabytes that make the point, so that running this with
+	// the bound disabled costs a megabyte and not the machine.
+	err := open(math.MaxInt64-1, 1<<20)
+	if err == nil {
+		t.Fatal("a directory entry whose offset plus length wraps int64 was accepted")
+	}
+	if !strings.Contains(err.Error(), "outside the file") {
+		t.Fatalf("the offset was refused by something other than its bound: %v", err)
 	}
 }
