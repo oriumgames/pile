@@ -87,7 +87,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "strings are bounded UTF-8", Category: Normalisation, Enforce: Decoded,
-		Rules: []string{"ab5dc87f"},
+		Rules: []string{"27513eef"},
 		Tests: []string{"TestRejectsNonUTF8Strings", "TestReaderRejectsBadStrings"},
 		Note:  "Palettes order strings bytewise, so arbitrary bytes would order differently under an implementation that decodes before comparing.",
 	},
@@ -124,7 +124,7 @@ var invariants = []Invariant{
 	// -- Header and container (§2) ---------------------------------------
 	{
 		Name: "unknown versions and flags are rejected", Category: Presence, Enforce: Decoded,
-		Rules: []string{"a4590032", "648be581"},
+		Rules: []string{"a4590032", "648be581", "718f271d"},
 		Tests: []string{"TestRejectsReservedFlags", "TestIndexedRejectsReservedFlags"},
 		Note:  "Ignoring a reserved bit spends it: an old reader could not tell a future file needs a feature it lacks.",
 	},
@@ -164,7 +164,7 @@ var invariants = []Invariant{
 	// -- Palettes and blobs (§3) -----------------------------------------
 	{
 		Name: "the palette order is defined on encoded bytes", Category: Ordering, Enforce: WriterOnly,
-		Rules: []string{"731c63ac", "3bc3297f"},
+		Rules: []string{"ad7fe57e", "3bc3297f"},
 		Tests: []string{"TestPaletteOrderFollowsEncodedBytes"},
 		Note:  "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob.",
 	},
@@ -273,9 +273,9 @@ var invariants = []Invariant{
 		Tests: []string{"TestUnknownDefaultBiomePreserved"},
 	},
 	{
-		Name: "collections are totally ordered", Category: Ordering, Enforce: WriterOnly,
+		Name: "collections are totally ordered", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"920faee4"},
-		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections"},
+		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections", "TestReaderEnforcesCollectionOrder"},
 		Note:  "Ties break on the bytes that get written, not on the caller's value.",
 	},
 
@@ -314,7 +314,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "palette limits are cumulative", Category: Bound, Enforce: Decoded,
-		Rules: []string{"ba81d481", "1983135b"},
+		Rules: []string{"ba81d481", "89ca9097"},
 		Tests: []string{"TestRejectsDuplicateSegmentReference", "TestRejectsCumulativePaletteOverflow"},
 		Note:  "Duplicate references and the frame-total bound have fixtures. The million-entry ceiling itself is reachable only by fuzzing, since no fixture builds a palette that large; that is stated rather than papered over with a test that would pass either way.",
 	},
@@ -345,15 +345,15 @@ var invariants = []Invariant{
 		Note:  "Aggregate ceilings, not only per-field ones: a body of legal blobs can still pass the body limit.",
 	},
 	{
-		Name: "decoders never panic", Category: Integrity, Enforce: WriterOnly,
+		Name: "decoders never panic", Category: Integrity, Enforce: Decoded,
 		Rules: []string{"43ff86c5"},
 		Tests: []string{"FuzzReadWorld", "FuzzReadStructure", "FuzzOpenIndexed", "FuzzNBTStability"},
 	},
 	// -- Specification review (round 23) ---------------------------------
 	{
-		Name: "the hash seed is zero", Category: Normalisation, Enforce: WriterOnly,
+		Name: "the hash seed is zero", Category: Normalisation, Enforce: Decoded,
 		Rules: []string{},
-		Tests: []string{"TestHashSeedIsZero"},
+		Tests: []string{"TestHashSeedIsZero", "TestHashSeedIsUsedInProduction"},
 		Note:  "xxHash64 takes a seed and nothing else in the format implies which. An implementation that guesses differently agrees with this one on nothing.",
 	},
 	{
@@ -368,9 +368,9 @@ var invariants = []Invariant{
 		Note:  "A layer that never reaches the file contributes nothing to the palette order.",
 	},
 	{
-		Name: "blob ids follow the field order", Category: Ordering, Enforce: WriterOnly,
+		Name: "blob ids follow the field order", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"078b2b7d"},
-		Tests: []string{"TestDedup"},
+		Tests: []string{"TestDedup", "TestReaderEnforcesBlobFirstUseOrder"},
 		Note:  "The whole dedup table's identity depends on the assignment sequence, which is otherwise only deducible from the record layout.",
 	},
 	{
@@ -404,12 +404,12 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "StoreLight matches its content", Category: Omission, Enforce: Decoded,
-		Rules: []string{"46ccd356"},
+		Rules: []string{"e0479882"},
 		Tests: []string{"TestRejectsStoreLightWithoutLight"},
 	},
 	{
 		Name: "empty palette segments are not written", Category: Presence, Enforce: Decoded,
-		Rules: []string{"6d565c8e"},
+		Rules: []string{"2ed66e73"},
 		Tests: []string{"TestRejectsDuplicateSegmentReference"},
 		Note:  "A segment with no entries is pure garbage two writers could differ on.",
 	},

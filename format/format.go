@@ -205,7 +205,10 @@ func corruptf(format string, args ...any) error {
 // every count by the input bytes that remain (see reader.count and the
 // per-structure checks), not from these ceilings.
 const (
-	maxStringLen = 64 << 10
+	// maxStringLen is the largest an NBT string length can express. The
+	// format's own string primitive is bounded by the same number so one
+	// concept has one ceiling rather than two that differ by a byte.
+	maxStringLen = 1<<16 - 1
 	maxBlobLen   = 16 << 20
 	// maxChunks bounds chunk records in a solid body and entries in an
 	// indexed directory. It is the largest value a u32 holds, so a reader that

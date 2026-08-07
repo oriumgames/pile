@@ -198,6 +198,11 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 	if !w.compressed {
 		flags |= FlagUncompressed
 	}
+	// Unlike a solid write, this is a layout decision rather than a statement
+	// about content: it is fixed here and every record obeys it, because
+	// changing it later would mean rewriting every record's light bitset.
+	// §2.3 scopes the "clear when nothing carries light" rule to mode 0 for
+	// exactly this reason.
 	if opts.StoreLight {
 		flags |= FlagStoreLight
 	}

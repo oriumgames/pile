@@ -28,7 +28,7 @@ All fixed-width integers are **little-endian**.
 | `u8`, `u16`, `u32`, `u64`, `i32` | fixed-width little-endian |
 | `uvarint` | unsigned LEB128 (Go `binary.PutUvarint`): 7 bits per byte, high bit = continuation. MUST be minimal: decoders reject overlong encodings |
 | `svarint` | zigzag-encoded LEB128 (Go `binary.PutVarint`): value `v` maps to `uvarint((v << 1) ^ (v >> 63))`. MUST be minimal |
-| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 536 (64 KiB), and MUST reject bytes that are not valid UTF-8: strings are compared bytewise when ordering palettes, so arbitrary bytes would order differently under an implementation that decodes before comparing |
+| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 535, the largest an NBT string length can express, so one concept has one ceiling, and MUST reject bytes that are not valid UTF-8: strings are compared bytewise when ordering palettes, so arbitrary bytes would order differently under an implementation that decodes before comparing |
 | `blob`   | `uvarint` byte length + raw bytes. Decoders MUST reject lengths > 16 777 216 (16 MiB) |
 | `bitset(n)` | `ceil(n/8)` bytes; bit `i` is bit `i%8` of byte `i/8` (LSB-first). Padding bits above `n` MUST be zero |
 
@@ -115,7 +115,7 @@ long_array(12).
 | 6  | u8  | kind | 0 = world, 1 = structure |
 | 7  | u8  | mode | 0 = solid, 1 = indexed |
 | 8  | u32 | flags | §2.3 |
-| 12 | i32 | blockVersion | the Minecraft block-state version the writer encoded against |
+| 12 | i32 | blockVersion | the Minecraft block-state version the writer encoded against. MUST be non-zero, for the reason §3.1 gives for overrides: zero is the value that means "the palette's own version" and cannot also be a version |
 
 Readers MUST reject unknown versions and unknown flag bits (they may change
 payload meaning). Not every `kind`/`mode` pair exists: a structure is always
@@ -158,7 +158,7 @@ keeps one valid encoding per file.
 
 | bit | name | meaning |
 |-----|------|---------|
-| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness. MUST be clear when no section carries any, since setting it over a light-free world is a second encoding of that world and §4.8's content identity covers the whole body |
+| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness. In **mode 0** it MUST be clear when no section carries any, since a solid file's flag and content are written together and setting it over a light-free world is a second encoding of that world. In **mode 1** it is a layout decision fixed when the file is created and obeyed by every record thereafter, so an indexed file may carry it with no chunks yet; indexed bytes are history-dependent by design (§5) and light is outside content identity (§4.8), so no second encoding of any content arises |
 | 1 | Stats | the meta block contains a stats compound (§4.2) |
 | 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
 | 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
@@ -276,12 +276,15 @@ different files decode to the same state.
 Bedrock block state properties are exactly these three NBT types, making the
 encoding lossless.
 
-In solid mode writers MUST sort the palette by (writer-only: reference counts
-are not stored, so a reader cannot verify the order and MUST NOT try):
+In **mode 0** — that is, in a solid world and in a structure alike — writers
+MUST sort the palette by (writer-only: reference counts are not stored, so a
+reader cannot verify the order and MUST NOT try):
 
 1. **descending reference count**, where the reference count is the number of
-   section-local palettes the state appears in, plus one per scheduled block
-   update referencing it (not the number of blocks holding it). Counting
+   local palettes the state appears in, plus one per scheduled block update
+   referencing it (not the number of blocks holding it). A local palette is a
+   section's in a world and a cell's in a structure; structures carry no
+   scheduled updates, so that term is zero for them. Counting
    happens before the blob table deduplicates anything, so a section blob
    shared by a hundred sections contributes a hundred, not one. Writers MUST
    count occurrences rather than distinct blobs, since the two disagree
@@ -400,11 +403,14 @@ count            uvarint          (≤ 16 777 216)
 blob[count]      section blobs, concatenated (self-delimiting)
 ```
 
-Blob ids are assigned in first-use order over the (Morton-sorted) record
-stream. Within one record the order is the order §4.3 writes the fields in:
-present block sections by ascending section index, and within each section its
-layers by ascending layer number, then present biome sections by ascending
-section index. That is deducible from the field order, but the whole table's
+Blob ids are assigned in first-use order over the stream of stored units: the
+Morton-sorted records of a solid world, or the ascending cells of a structure.
+Within one record the order is the order §4.3 writes the fields in: present
+block sections by ascending section index, and within each section its layers
+by ascending layer number, then present biome sections by ascending section
+index. Within a structure it is the order §6 writes them: present cells by
+ascending cell index, and within each cell its layers by ascending layer
+number. Structures store no biomes, so no biome blobs arise there. That is deducible from the field order, but the whole table's
 identity depends on it, so writers MUST assign ids in exactly that sequence.
 
 Block and biome blobs share the table; a blob's refs are interpreted against
@@ -708,7 +714,10 @@ One frame per stored chunk. Content = a chunk record as in §4.3 **except**:
 
 Palette references point into the cumulative global palettes (§5.3).
 Overwriting a chunk appends a new frame; the old one becomes garbage until
-compaction.
+compaction. Deleting a chunk is the same operation without a replacement: the
+next checkpoint's directory simply omits its entry, and the frame it named
+becomes garbage. There is no tombstone, because a directory names exactly the
+chunks that exist.
 
 ### 5.3 Palette segments
 
@@ -716,12 +725,14 @@ The global palettes grow append-only as **delta segments**. A block segment
 frame is an `i32` Minecraft block version followed by a §3.1-encoded palette;
 a biome segment frame is a §3.2-encoded palette. Segments hold only the
 entries new since the previous checkpoint, and a segment with no entries is
-never written: it is pure garbage that two writers could differ on. Decoders
-MUST reject one. A directory naming no chunks is legal, since that is what a
-freshly created file has. The directory MUST list them in the
+never written: it is pure garbage that two writers could differ on, and
+decoders MUST reject one. The directory MUST list the segments in the
 order they were written, since entry indices are cumulative across segments and
 reordering the list renumbers every palette reference in the file. Palette
 order is first-seen; no frequency sorting.
+
+A directory naming no chunks at all is legal: that is what a freshly created
+file has, and it is not the same thing as an empty segment.
 
 Each block segment carries its own version because a file outlives game
 upgrades: states written before an upgrade must still be upgraded from the
@@ -978,7 +989,7 @@ remain, not from these ceilings.
 | item | limit |
 |------|-------|
 | NBT nesting depth | 64 |
-| string length | 64 KiB |
+| string length | 65 535 |
 | blob length | 16 MiB |
 | chunk records in a solid body | 4 294 967 295 (the largest value a u32 holds) |
 | entries in an indexed directory | 4 194 304 |

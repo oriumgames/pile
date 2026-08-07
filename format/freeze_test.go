@@ -1329,7 +1329,7 @@ func TestRejectsUnaddressableSectionSpan(t *testing.T) {
 		w.svarint(min)
 		w.uvarint(uint64(sections))
 		w.b = append(w.b, make([]byte, 1024)...) // presence bits and beyond
-		_, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource(nil, nil), false, 0, 0)
+		_, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource(nil, nil, nil), false, 0, 0)
 		return err
 	}
 	for _, c := range []struct {
@@ -2254,13 +2254,13 @@ func TestRejectsBitsetPadding(t *testing.T) {
 		w.blob(nil)  // user data
 		return w.bytes()
 	}
-	if _, err := parseRecordBody(&reader{b: record(0, 0)}, tableBlobSource(nil, nil), false, 0, 0); err != nil {
+	if _, err := parseRecordBody(&reader{b: record(0, 0)}, tableBlobSource(nil, nil, nil), false, 0, 0); err != nil {
 		t.Fatalf("a clean record was rejected: %v", err)
 	}
-	if _, err := parseRecordBody(&reader{b: record(1<<7, 0)}, tableBlobSource(nil, nil), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: record(1<<7, 0)}, tableBlobSource(nil, nil, nil), false, 0, 0); err == nil {
 		t.Error("block presence padding was accepted")
 	}
-	if _, err := parseRecordBody(&reader{b: record(0, 1<<7)}, tableBlobSource(nil, nil), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: record(0, 1<<7)}, tableBlobSource(nil, nil, nil), false, 0, 0); err == nil {
 		t.Error("biome presence padding was accepted")
 	}
 
@@ -2343,7 +2343,7 @@ func TestRejectsLayerCountInRecords(t *testing.T) {
 	w.svarint(0) // column tick
 	w.uvarint(0) // scheduled ticks
 	w.blob(nil)  // user data
-	if _, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource([]decBlob{{}}, nil), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource([]decBlob{{}}, nil, nil), false, 0, 0); err == nil {
 		t.Error("a record claiming 256 layers was accepted")
 	}
 }
@@ -2482,12 +2482,12 @@ func recordBody(f recordFields) []byte {
 // read path, so the padding rule has to be driven there too.
 func TestRejectsLightBitsetPadding(t *testing.T) {
 	clean := recordFields{haveLight: true, lightPresence: 0}
-	if _, err := parseRecordBody(&reader{b: recordBody(clean)}, tableBlobSource(nil, nil), true, 0, 0); err != nil {
+	if _, err := parseRecordBody(&reader{b: recordBody(clean)}, tableBlobSource(nil, nil, nil), true, 0, 0); err != nil {
 		t.Fatalf("a clean light bitset was rejected: %v", err)
 	}
 	padded := clean
 	padded.lightPresence = 1 << 7 // section 0 absent, padding bit set
-	if _, err := parseRecordBody(&reader{b: recordBody(padded)}, tableBlobSource(nil, nil), true, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: recordBody(padded)}, tableBlobSource(nil, nil, nil), true, 0, 0); err == nil {
 		t.Fatal("light presence padding was accepted")
 	}
 }
@@ -2511,7 +2511,7 @@ func TestRejectsLightEntryFlags(t *testing.T) {
 		{"reserved high bit", 0x80, false},
 	} {
 		f := recordFields{haveLight: true, lightPresence: 1, lightFlags: c.flags, lightBody: body}
-		_, err := parseRecordBody(&reader{b: recordBody(f)}, tableBlobSource(nil, nil), true, 0, 0)
+		_, err := parseRecordBody(&reader{b: recordBody(f)}, tableBlobSource(nil, nil, nil), true, 0, 0)
 		if (err == nil) != c.ok {
 			t.Errorf("light flags %s (0x%02X): err = %v, want ok = %v", c.name, c.flags, err, c.ok)
 		}
@@ -2621,6 +2621,12 @@ func TestRejectsRedundantVersionOverride(t *testing.T) {
 	}
 	if _, _, _, err := decodeBlockPalette(&reader{b: build(0)}, reg, chunk.CurrentBlockVersion); err == nil {
 		t.Fatal("a zero override was accepted")
+	}
+	// An override repeating the palette's own version says nothing, so it is a
+	// second encoding of an entry with none. Without this case the test stayed
+	// green with that rejection deleted.
+	if _, _, _, err := decodeBlockPalette(&reader{b: build(chunk.CurrentBlockVersion)}, reg, chunk.CurrentBlockVersion); err == nil {
+		t.Fatal("an override equal to the palette's own version was accepted")
 	}
 }
 
@@ -3404,5 +3410,123 @@ func TestRejectsDuplicateCollectionEntries(t *testing.T) {
 		}
 	}), reg, Options{Compression: CompressionNone}); err == nil {
 		t.Error("a duplicate scheduled update was written")
+	}
+}
+
+// Round 25: rules the table claimed readers enforced, which readers did not.
+
+// TestReaderEnforcesCollectionOrder: the order is on the wire, so a reader can
+// check it, and a file whose collections are reordered is a second encoding of
+// the same chunk. The writer-side test cannot see this half go.
+func TestReaderEnforcesCollectionOrder(t *testing.T) {
+	reg := testRegistry(t)
+	body := func(swap bool) []byte {
+		w := &writer{}
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.uvarint(0) // block palette
+		w.uvarint(0) // overrides
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(1) // one record
+		w.svarint(0)
+		w.svarint(0)
+		rec := &writer{}
+		rec.svarint(0) // minSection
+		rec.uvarint(1) // sectionN
+		rec.u8(0)      // no block sections
+		rec.u8(0)      // no biome sections
+		rec.uvarint(2) // two block entities
+		lo := func(bw *writer) { bw.u8(0x11); bw.svarint(-60); bw.blob(emptyCompound()) }
+		hi := func(bw *writer) { bw.u8(0x22); bw.svarint(-60); bw.blob(emptyCompound()) }
+		if swap {
+			hi(rec)
+			lo(rec)
+		} else {
+			lo(rec)
+			hi(rec)
+		}
+		rec.uvarint(0) // entities
+		rec.svarint(0) // column tick
+		rec.uvarint(0) // scheduled ticks
+		rec.blob(nil)
+		w.raw(rec.bytes())
+		return w.bytes()
+	}
+	if _, err := ReadWorld(solidFile(body(false)), reg); err != nil {
+		t.Fatalf("ordered block entities were rejected: %v", err)
+	}
+	if _, err := ReadWorld(solidFile(body(true)), reg); err == nil {
+		t.Fatal("out-of-order block entities were accepted")
+	}
+}
+
+// emptyCompound is a canonical unnamed empty NBT compound.
+func emptyCompound() []byte { return []byte{0x0a, 0, 0, 0x00} }
+
+// TestReaderEnforcesBlobFirstUseOrder: ids are assigned in first-use order, and
+// that is visible on the wire. A table numbered any other way is a second
+// encoding of the same file.
+func TestReaderEnforcesBlobFirstUseOrder(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	// Two sections, each a distinct uniform blob, so the record references
+	// two ids and the order they are first used is observable.
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			for y := int16(-64); y < -48; y++ {
+				ch.SetBlock(x, y, z, 0, stone)
+			}
+		}
+	}
+	ch.SetBlock(0, -40, 0, 0, stone)
+	file := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
+		Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
+	if _, err := ReadWorld(file, reg); err != nil {
+		t.Fatalf("a canonical file was rejected: %v", err)
+	}
+	// Swap the two references: still in range, still every blob used, but no
+	// longer first-use order.
+	body := file[headerSize : len(file)-footerSize]
+	first := bytes.IndexByte(body, 0x00)
+	_ = first
+	patched := bytes.Clone(file)
+	// Find the first "01 00" reference pair inside the record and reverse it.
+	at := bytes.Index(patched[headerSize:], []byte{0x00, 0x01})
+	if at < 0 {
+		t.Skip("could not locate the reference pair")
+	}
+	patched[headerSize+at], patched[headerSize+at+1] = 0x01, 0x00
+	rehashSolid(patched)
+	if _, err := ReadWorld(patched, reg); err == nil {
+		t.Fatal("blob ids referenced out of first-use order were accepted")
+	}
+}
+
+// TestHashSeedIsUsedInProduction: the seed matters because every reader
+// verifies a checkpoint hash with it. Testing the dependency's default proves
+// nothing about the path that authenticates a file.
+func TestHashSeedIsUsedInProduction(t *testing.T) {
+	reg := testRegistry(t)
+	file := encode(t, testWorld(t, reg), reg, CompressionNone)
+	if _, err := ReadWorld(file, reg); err != nil {
+		t.Fatalf("a clean file was rejected: %v", err)
+	}
+	// Recompute the footer hash with a non-zero seed. If production hashed
+	// with anything but zero, this is the file it would accept.
+	header := file[:headerSize]
+	payload := file[headerSize : len(file)-footerSize]
+	footer := file[len(file)-footerSize:]
+	d := xxhash.NewWithSeed(1)
+	_, _ = d.Write(header)
+	_, _ = d.Write(payload)
+	_, _ = d.Write(footer[8:])
+	seeded := bytes.Clone(file)
+	binary.LittleEndian.PutUint64(seeded[len(seeded)-footerSize:], d.Sum64())
+	if _, err := ReadWorld(seeded, reg); err == nil {
+		t.Fatal("a footer hashed with seed 1 was accepted: production is not using seed 0")
 	}
 }

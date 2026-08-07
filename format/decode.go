@@ -254,8 +254,13 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	// be walked in order; parsing is cheap slicing. Capacity is bounded by
 	// what the input could actually contain (a record is >= 8 bytes).
 	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1))
+	// Blob ids are assigned in first-use order (§3.4), which is visible on the
+	// wire: the first reference must be 0, and each later one must either
+	// repeat an id already seen or be exactly the next unseen id. A table
+	// numbered any other way is a second encoding of the same file.
 	used := make([]bool, len(blobs))
-	src := tableBlobSource(blobs, used)
+	nextID := uint64(0)
+	src := tableBlobSource(blobs, used, &nextID)
 	var prevX, prevZ int64
 	var prevKey uint64
 	for range chunkN {
@@ -341,7 +346,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 type blobSource func(r *reader) (decBlob, error)
 
 // tableBlobSource returns a blobSource reading references into a blob table.
-func tableBlobSource(blobs []decBlob, used []bool) blobSource {
+func tableBlobSource(blobs []decBlob, used []bool, nextID *uint64) blobSource {
 	return func(r *reader) (decBlob, error) {
 		ref, err := r.uvarint()
 		if err != nil {
@@ -349,6 +354,14 @@ func tableBlobSource(blobs []decBlob, used []bool) blobSource {
 		}
 		if int(ref) >= len(blobs) {
 			return decBlob{}, corruptf("section blob reference %d out of range", ref)
+		}
+		if nextID != nil {
+			if ref > *nextID {
+				return decBlob{}, corruptf("blob %d referenced before %d: ids are assigned in first-use order", ref, *nextID)
+			}
+			if ref == *nextID {
+				*nextID++
+			}
 		}
 		if used != nil {
 			used[ref] = true
@@ -652,16 +665,24 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 	}
 
 	col.Col = &chunk.Column{Chunk: ch}
-	seenBE := make(map[[2]int32]struct{}, len(rr.bes))
+	seenBE := make(map[beKey]struct{}, len(rr.bes))
+	var prevBE *beKey
 	for _, be := range rr.bes {
 		// At most one block entity per position: two a reader cannot tell
 		// apart leave their order decided by nothing, which is what §4.8's
 		// totality argument rests on.
-		k := [2]int32{int32(be.packedXZ), int32(be.y)}
+		k := beKey{packedXZ: be.packedXZ, y: be.y}
 		if _, dup := seenBE[k]; dup {
 			return Column{}, corruptf("two block entities at one position in chunk (%d,%d)", x, z)
 		}
 		seenBE[k] = struct{}{}
+		// The order is on the wire, so a reader can check it, and a file whose
+		// collections are reordered is a second encoding of the same chunk.
+		if prevBE != nil && !beAscends(*prevBE, k) {
+			return Column{}, corruptf("block entities are out of order in chunk (%d,%d)", x, z)
+		}
+		cur := k
+		prevBE = &cur
 		data, err := unmarshalNBT(be.nbt)
 		if err != nil {
 			return Column{}, err
@@ -690,13 +711,8 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		col.Col.Entities = append(col.Col.Entities, chunk.Entity{ID: id, Data: data})
 	}
 	col.Col.Tick = rr.tick
-	type tickKey struct {
-		packedXZ uint8
-		y        int64
-		at       int64
-		ref      uint64
-	}
 	seenTick := make(map[tickKey]struct{}, len(rr.ticks))
+	var prevTick *tickKey
 	for _, t := range rr.ticks {
 		if int(t.ref) >= len(rids) {
 			return Column{}, corruptf("scheduled tick block reference %d out of range", t.ref)
@@ -708,6 +724,11 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 			return Column{}, corruptf("duplicate scheduled update in chunk (%d,%d)", x, z)
 		}
 		seenTick[k] = struct{}{}
+		if prevTick != nil && !tickAscends(*prevTick, k) {
+			return Column{}, corruptf("scheduled updates are out of order in chunk (%d,%d)", x, z)
+		}
+		curTick := k
+		prevTick = &curTick
 		pos := cube.Pos{int(x)*16 + int(t.packedXZ&0xF), int(t.y), int(z)*16 + int(t.packedXZ>>4)}
 		if unknown != nil && unknown[t.ref] >= 0 {
 			col.UnknownTicks = append(col.UnknownTicks, UnknownTick{
@@ -839,6 +860,50 @@ func applyBiomeBlob(ch *chunk.Chunk, secIdx int, blob decBlob, biomeIDs []uint32
 // fillBiome sets one section of a chunk to a uniform biome.
 func fillBiome(ch *chunk.Chunk, secIdx int, id uint32) {
 	chunkSetBiomes(ch, secIdx, makeStorage([]uint32{id}, nil))
+}
+
+// tickKey identifies a scheduled update by everything §4.8 orders it on.
+type tickKey struct {
+	packedXZ uint8
+	y        int64
+	at       int64
+	ref      uint64
+}
+
+// beKey identifies a block entity by the position the record stores.
+type beKey struct {
+	packedXZ uint8
+	y        int64
+}
+
+// beAscends reports whether b follows a in the (y, z, x) order §4.8 fixes.
+func beAscends(a, b beKey) bool {
+	if a.y != b.y {
+		return a.y < b.y
+	}
+	az, bz := a.packedXZ>>4, b.packedXZ>>4
+	if az != bz {
+		return az < bz
+	}
+	return a.packedXZ&0xF < b.packedXZ&0xF
+}
+
+// tickAscends reports whether b follows a in the (y, z, x, tick, reference)
+// order §4.8 fixes.
+func tickAscends(a, b tickKey) bool {
+	if a.y != b.y {
+		return a.y < b.y
+	}
+	if az, bz := a.packedXZ>>4, b.packedXZ>>4; az != bz {
+		return az < bz
+	}
+	if ax, bx := a.packedXZ&0xF, b.packedXZ&0xF; ax != bx {
+		return ax < bx
+	}
+	if a.at != b.at {
+		return a.at < b.at
+	}
+	return a.ref < b.ref
 }
 
 // syntheticEntityID derives a stable non-zero entity ID for a record that
