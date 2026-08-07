@@ -487,7 +487,15 @@ several of them now would be a format change.
   `FSBEHAVIOUR.md` §5.
 - **`FuzzOpenIndexed` is not saturated.** It now runs at ~31,400 exec/s rather
   than 2/s, but its corpus was still taking new inputs at twenty minutes, so it
-  has more to find than the other three targets do.
+  has more to find than the other three targets do. A forty-minute re-run at
+  `684a200` reached **21,167,773 executions**, `PASS`, no crashers, and grew the
+  corpus from 52 entries to **208**. That quadrupling is the finding: the target
+  was discovering new coverage for most of the run, so it still is not
+  saturated, only better covered than it was. The lower execution count against
+  the twenty-minute run is expected and not a regression -- a larger corpus
+  means more seeds replayed per generation, and the machine was running two
+  other agents throughout. Treat this box as "no crasher has been found",
+  which is what fuzzing can ever say, and not as "there is none".
 - ~~**The writer paths have not been audited against hostile-but-legal input**~~
   — **done after the tag**, in `format/hostilewrite_test.go`. It found six
   defects, three of them files a writer emitted that its own reader refuses
