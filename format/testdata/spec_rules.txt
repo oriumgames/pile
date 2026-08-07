@@ -61,6 +61,7 @@ b5904bd9 MUST be minimal:
 b970a5c4 MUST be minimal
 ba81d481 Decoders MUST enforce the palette limits **cumulatively** across segments and MUST reject duplicate segment references (both are allocation amplifiers).
 bcbf4d91 Decoders MUST enforce (reference values):
+bd83e312 Nothing may follow the last record, and decoders MUST reject a body with bytes left over once the last record has been read; the same holds for a structure body (§6) after its last entity.
 bf4e7d6b Readers MUST enforce this exactly as writers do:
 c176f73b The box need not be a multiple of 16, so edge cells have padding, and two structures that differ only in that padding are the same structure and MUST encode identically.
 c5770076 At most one block entity may occupy a position and at most one scheduled update may name a given position, firing tick and block reference; a structure's block entities are subject to the same rule and MUST additionally lie inside the declared box.

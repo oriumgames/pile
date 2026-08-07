@@ -451,7 +451,10 @@ defined meaning, since nothing tells a reader which of the two records wins,
 and a non-ascending file is a second encoding of a world that already has one.
 The same rule applies to indexed directory entries (§5.5).
 
-Nothing may follow the last record.
+Nothing may follow the last record, and decoders MUST reject a body with bytes
+left over once the last record has been read; the same holds for a structure
+body (§6) after its last entity. Such bytes change nothing the file decodes to,
+so admitting them would give one world many encodings.
 
 **Section span.** `minSection` and `sectionN` describe the chunk's whole
 vertical range, section-aligned per §1. Writers MUST NOT trim leading or

@@ -3255,6 +3255,83 @@ func TestReaderRejectsUnorderedRecords(t *testing.T) {
 	}
 }
 
+// TestRejectsTrailingBytesAfterBody: §4 says nothing may follow the last
+// record. A body's length is not a field anywhere -- it is whatever the header
+// and the footer leave between them -- so a padded body decodes to exactly the
+// world an unpadded one does while being different bytes under a different
+// checkpoint hash. That is a second encoding of one world, which is the thing
+// the format does not have. The world reader and the structure reader each
+// carry their own copy of the check and share nothing, so each needs a fixture:
+// deleting one leaves the other's test green.
+func TestRejectsTrailingBytesAfterBody(t *testing.T) {
+	reg := testRegistry(t)
+
+	worldBody := &writer{}
+	worldBody.blob(nil)  // settings
+	worldBody.blob(nil)  // userData
+	worldBody.blob(nil)  // markers
+	worldBody.blob(nil)  // border
+	worldBody.uvarint(0) // block palette
+	worldBody.uvarint(0) // version overrides
+	worldBody.uvarint(0) // biome palette
+	worldBody.uvarint(0) // blob table
+	worldBody.uvarint(1) // one record
+	worldBody.svarint(0) // at (0, 0)
+	worldBody.svarint(0)
+	worldBody.raw(recordBody(recordFields{}))
+
+	var noMeta [4][]byte
+	structureBody := structBody(noMeta, func(w *writer) {
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(1) // sizeX
+		w.uvarint(1) // sizeY
+		w.uvarint(1) // sizeZ
+		w.svarint(0) // originX
+		w.svarint(0) // originY
+		w.svarint(0) // originZ
+		w.u8(0)      // cell presence: the one cell is absent
+		w.uvarint(0) // block entities
+		w.uvarint(0) // entities
+	})
+
+	for _, c := range []struct {
+		name string
+		body []byte
+		read func([]byte) error
+		want string
+	}{
+		{
+			name: "world", body: worldBody.bytes(),
+			read: func(b []byte) error { _, err := ReadWorld(solidFile(b), reg); return err },
+			want: "trailing bytes after last chunk",
+		},
+		{
+			name: "structure", body: structureBody,
+			read: func(b []byte) error {
+				_, err := ReadStructure(structureFile(FlagUncompressed, b), reg)
+				return err
+			},
+			want: "trailing bytes after structure record",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// Without this the padded body below could be refused for
+			// anything at all and the case would still pass.
+			if err := c.read(c.body); err != nil {
+				t.Fatalf("a clean body was rejected: %v", err)
+			}
+			err := c.read(append(append([]byte{}, c.body...), 0))
+			if err == nil {
+				t.Fatal("a body with a byte after the last record was accepted")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("rejected for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
 // solidFile wraps a body in a header and an authenticated footer.
 func solidFile(body []byte) []byte { return solidFileFlags(body, FlagUncompressed) }
 

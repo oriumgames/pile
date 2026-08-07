@@ -239,6 +239,12 @@ var invariants = []Invariant{
 		Tests: []string{"TestRejectsDuplicateChunks", "TestReaderRejectsUnorderedRecords"},
 	},
 	{
+		Name: "the body ends where the last record ends", Category: Presence, Enforce: Decoded,
+		Rules: []string{"bd83e312"},
+		Tests: []string{"TestRejectsTrailingBytesAfterBody", "TestConformanceVectorsNegative"},
+		Note:  "Both readers of a solid body enforced this before the specification said it; §4 stated it without a MUST, so nothing pinned it and no entry claimed it. It is the §5.1 frame rule applied to the one body a solid file has, and it matters for the same reason: a body's length is not a field, so padding decodes to the same world under a different checkpoint hash. The world reader and the structure reader share no code here, so each has its own fixture, and the negative vector is the half a second implementation can check itself against.",
+	},
+	{
 		Name: "the section span is never trimmed", Category: Presence, Enforce: WriterOnly,
 		Note:  "A reader cannot know the span a dimension intended, only the one the record declares, so a trimmed record is indistinguishable from an honest one. Verified by re-encoding.",
 		Rules: []string{"fcf0a219"},
