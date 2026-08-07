@@ -2459,6 +2459,20 @@ func TestRejectsDuplicateSegmentReference(t *testing.T) {
 	if _, err := small.parseSegRefs(&reader{b: refs(1)}, "segment", ok); err == nil {
 		t.Fatal("a segment larger than the file was accepted")
 	}
+
+	// A segment with no entries is pure garbage two writers could differ on,
+	// so a zero-length reference is refused rather than skipped. Nothing else
+	// in this parser reaches a length of zero: the ceiling admits it, the
+	// duplicate set would accept one copy of it, and the running total is
+	// unmoved by it.
+	empty := &writer{}
+	empty.uvarint(1)
+	empty.uvarint(headerSize) // offset
+	empty.uvarint(0)          // length
+	empty.u64(1234)           // hash
+	if _, err := w.parseSegRefs(&reader{b: empty.bytes()}, "segment", ok); err == nil {
+		t.Fatal("a zero-length segment reference was accepted")
+	}
 }
 
 // TestSetMetaChecksAggregateFrame: the four metadata blobs share one frame,
@@ -3056,6 +3070,46 @@ func TestIndexedRejectsReservedFlags(t *testing.T) {
 		if opened && !recovered {
 			t.Errorf("%s was accepted in a directory prologue", c.name)
 		}
+	}
+}
+
+// TestIndexedRejectsUnsupportedVersion: the version is the one header field an
+// indexed reader has to trust, because everything after it is interpreted by
+// the rules of that version. It is checked before the directory is consulted,
+// so the recovery that repairs a damaged kind or mode does not apply, and the
+// solid reader's own version check says nothing about this path.
+func TestIndexedRejectsUnsupportedVersion(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The checkpoint hash is not touched. Its preimage falls back to the
+	// header the directory prologue implies, which always carries the version
+	// this package writes, so a patched version byte leaves every checkpoint
+	// verifiable and the version check is the only thing that can refuse it.
+	binary.LittleEndian.PutUint16(file[4:6], Version+1)
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := OpenIndexed(path, reg, true)
+	if err == nil {
+		v.Close()
+		t.Fatal("an indexed file declaring an unknown version was opened")
+	}
+	if !errors.Is(err, ErrUnsupportedVersion) {
+		t.Fatalf("err = %v, want ErrUnsupportedVersion", err)
 	}
 }
 

@@ -125,8 +125,8 @@ var invariants = []Invariant{
 	{
 		Name: "unknown versions and flags are rejected", Category: Presence, Enforce: Decoded,
 		Rules: []string{"a4590032", "648be581", "718f271d"},
-		Tests: []string{"TestRejectsReservedFlags", "TestIndexedRejectsReservedFlags"},
-		Note:  "Ignoring a reserved bit spends it: an old reader could not tell a future file needs a feature it lacks.",
+		Tests: []string{"TestRejectsReservedFlags", "TestIndexedRejectsReservedFlags", "TestIndexedRejectsUnsupportedVersion"},
+		Note:  "Ignoring a reserved bit spends it: an old reader could not tell a future file needs a feature it lacks. The version has a reader per mode: the indexed one checks it before the directory is consulted, so the recovery that repairs a damaged kind or mode never reaches it and the solid reader's fixture says nothing about it.",
 	},
 	{
 		Name: "the dictionary bit stays reserved", Category: Presence, Enforce: Decoded,
@@ -141,8 +141,8 @@ var invariants = []Invariant{
 	{
 		Name: "kind and mode pairs are enumerated", Category: Presence, Enforce: Decoded,
 		Rules: []string{"62b04284"},
-		Tests: []string{"TestRejectsIndexedStructureKind", "TestIndexedRejectsStructureKindInDirectory"},
-		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist.",
+		Tests: []string{"TestRejectsIndexedStructureKind", "TestIndexedRejectsStructureKindInDirectory", "TestRejectsUndefinedKind"},
+		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist. The sentence also covers every value of either field the table does not list, which is a separate check from the pairing and needs its own fixture.",
 	},
 	{
 		Name: "the dimension field is enumerated", Category: Presence, Enforce: Decoded,
@@ -290,7 +290,8 @@ var invariants = []Invariant{
 	{
 		Name: "the directory prologue is authoritative", Category: Integrity, Enforce: Decoded,
 		Rules: []string{"cf48aa12"},
-		Tests: []string{"TestIndexedRecoversDamagedKindAndMode"},
+		Tests: []string{"TestIndexedRecoversDamagedKindAndMode", "TestIndexedRejectsStructureKindInDirectory", "TestIndexedRejectsReservedFlags"},
+		Note:  "Two obligations in one sentence. The SHOULD half is that a prologue disagreeing with an intact physical header is reported rather than fatal; the MUST half is that a prologue disagreeing with §5.7 is refused outright, whatever the physical header says. Naming only the recovery test claimed the second half was protected by a test that passes precisely when nothing is rejected.",
 	},
 	{
 		Name: "recovered writers hash the rebuilt header", Category: Integrity, Enforce: Decoded,
