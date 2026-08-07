@@ -753,16 +753,24 @@ func TestBiomeNamesAreNamespaced(t *testing.T) {
 	}
 
 	// A bare name is not a second spelling of the same biome; it is invalid.
-	// Rewriting the length prefix and name in place keeps every later offset.
-	patched := bytes.Clone(file)
-	i := bytes.Index(patched, []byte("\x0fminecraft:ocean"))
-	if i < 0 {
-		t.Fatal("namespaced name not found for patching")
+	// The palette is built here rather than patched in place: overwriting a
+	// name with a shorter one desynchronises the stream, and the file is then
+	// rejected for corruption without the namespace rule ever running.
+	palette := func(name string) []byte {
+		w := &writer{}
+		w.uvarint(1)
+		w.str(name)
+		return w.bytes()
 	}
-	copy(patched[i:], append([]byte{0x05}, []byte("oceanXXXXXXXXXX")...))
-	rehashSolid(patched)
-	if _, err := ReadWorld(patched, reg); err == nil {
-		t.Fatal("an unnamespaced biome name was accepted")
+	if _, _, _, err := decodeBiomePalette(&reader{b: palette("minecraft:ocean")}); err != nil {
+		t.Fatalf("a namespaced name was rejected: %v", err)
+	}
+	_, _, _, err := decodeBiomePalette(&reader{b: palette("ocean")})
+	if err == nil {
+		t.Fatal("a bare biome name was accepted")
+	}
+	if !strings.Contains(err.Error(), "namespaced") {
+		t.Errorf("rejected by %v, not by the namespace rule", err)
 	}
 }
 
@@ -2699,13 +2707,17 @@ func TestReaderRejectsUnorderedRecords(t *testing.T) {
 }
 
 // solidFile wraps a body in a header and an authenticated footer.
-func solidFile(body []byte) []byte {
+func solidFile(body []byte) []byte { return solidFileFlags(body, FlagUncompressed) }
+
+// solidFileFlags is solidFile with the header flags chosen by the caller, for
+// tests that need the flags and the body to disagree.
+func solidFileFlags(body []byte, flags uint32) []byte {
 	hdr := &writer{}
 	hdr.raw(headerMagic[:])
 	hdr.u16(Version)
 	hdr.u8(KindWorld)
 	hdr.u8(ModeSolid)
-	hdr.u32(FlagUncompressed)
+	hdr.u32(flags)
 	hdr.i32(chunk.CurrentBlockVersion)
 	tail := &writer{}
 	tail.u64(0)
@@ -3467,42 +3479,59 @@ func TestReaderEnforcesCollectionOrder(t *testing.T) {
 // emptyCompound is a canonical unnamed empty NBT compound.
 func emptyCompound() []byte { return []byte{0x0a, 0, 0, 0x00} }
 
-// TestReaderEnforcesBlobFirstUseOrder: ids are assigned in first-use order, and
-// that is visible on the wire. A table numbered any other way is a second
-// encoding of the same file.
+// TestReaderEnforcesBlobFirstUseOrder: ids are assigned in first-use order,
+// and that is visible on the wire. The body is assembled by hand so the
+// reference sequence is the only thing wrong with it: the earlier version of
+// this test patched bytes that landed inside the biome palette, so the file was
+// rejected for a corrupt biome name and the check never ran.
 func TestReaderEnforcesBlobFirstUseOrder(t *testing.T) {
 	reg := testRegistry(t)
 	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
-	// Two sections, each a distinct uniform blob, so the record references
-	// two ids and the order they are first used is observable.
-	ch := chunk.New(reg, cube.Range{-64, 319})
-	for x := range uint8(16) {
-		for z := range uint8(16) {
-			for y := int16(-64); y < -48; y++ {
-				ch.SetBlock(x, y, z, 0, stone)
-			}
+	_ = stone
+	// Two distinct uniform blobs, referenced by one record's two sections.
+	body := func(first, second uint64) []byte {
+		w := &writer{}
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.uvarint(2) // block palette: stone, dirt, so neither blob is air
+		w.str("minecraft:stone")
+		w.uvarint(0)
+		w.str("minecraft:dirt")
+		w.uvarint(0)
+		w.uvarint(0) // no version overrides
+		w.uvarint(0) // no biome palette
+		w.uvarint(2) // blob table: two distinct uniform blobs
+		for _, ref := range []uint64{0, 1} {
+			w.uvarint(1)
+			w.uvarint(ref)
+			w.u8(widthUniform)
 		}
+		w.uvarint(1) // one record
+		w.svarint(0)
+		w.svarint(0)
+		rec := &writer{}
+		rec.svarint(0)
+		rec.uvarint(2) // two sections
+		rec.u8(0x03)   // both present
+		rec.uvarint(1) // section 0: one layer
+		rec.uvarint(first)
+		rec.uvarint(1) // section 1: one layer
+		rec.uvarint(second)
+		rec.u8(0)      // no biome sections
+		rec.uvarint(0) // block entities
+		rec.uvarint(0) // entities
+		rec.svarint(0) // column tick
+		rec.uvarint(0) // scheduled ticks
+		rec.blob(nil)
+		w.raw(rec.bytes())
+		return w.bytes()
 	}
-	ch.SetBlock(0, -40, 0, 0, stone)
-	file := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
-		Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
-	if _, err := ReadWorld(file, reg); err != nil {
-		t.Fatalf("a canonical file was rejected: %v", err)
+	if _, err := ReadWorld(solidFile(body(0, 1)), reg); err != nil {
+		t.Fatalf("blobs referenced in first-use order were rejected: %v", err)
 	}
-	// Swap the two references: still in range, still every blob used, but no
-	// longer first-use order.
-	body := file[headerSize : len(file)-footerSize]
-	first := bytes.IndexByte(body, 0x00)
-	_ = first
-	patched := bytes.Clone(file)
-	// Find the first "01 00" reference pair inside the record and reverse it.
-	at := bytes.Index(patched[headerSize:], []byte{0x00, 0x01})
-	if at < 0 {
-		t.Skip("could not locate the reference pair")
-	}
-	patched[headerSize+at], patched[headerSize+at+1] = 0x01, 0x00
-	rehashSolid(patched)
-	if _, err := ReadWorld(patched, reg); err == nil {
+	if _, err := ReadWorld(solidFile(body(1, 0)), reg); err == nil {
 		t.Fatal("blob ids referenced out of first-use order were accepted")
 	}
 }
