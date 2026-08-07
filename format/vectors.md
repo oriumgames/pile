@@ -291,6 +291,38 @@ walker deliberately does not do — it models the wire, not the game.
 | `neg_structure_biome_palette_nonempty` | a structure declaring a biome palette entry. Structures store no biomes |
 | `neg_structure_block_entity_outside_box` | a structure block entity at a coordinate outside the declared box |
 
+### Indexed mode (§5.3, §5.4, §5.5)
+
+All three are **(reader only)**: the independent walker models a solid body,
+and an indexed file has none — its content is a set of frames located by a
+directory.
+
+| file | must be rejected because |
+|------|--------------------------|
+| `neg_indexed_prologue_stats_flag` | the directory prologue sets `Stats`. Indexed mode has no stats field, so the flag is a claim the layout cannot keep |
+| `neg_indexed_prologue_block_version_zero` | the prologue's `blockVersion` is 0, the value an override uses to mean "the palette's own version" |
+| `neg_indexed_empty_palette_segment` | a block palette segment frame holding no entries. A directory naming no segments at all stays legal; a segment that adds nothing is garbage two writers could differ on |
+
+Two things about these differ from every other negative vector, and a second
+implementation will meet both.
+
+**The mutation is in the prologue, never in the header.** §5.5 makes the
+prologue the authority, so a rule about what an indexed file may contain has to
+be enforced on the prologue's copy for it to be enforced at all. Each of these
+files keeps a valid physical header, so a reader that answers from the header
+accepts all three. That is what makes them vectors for §5.5 as much as for the
+rule each is named after.
+
+**Each file holds exactly one checkpoint.** §5.6 says a reader that cannot
+adopt the newest checkpoint falls back to an older one, so a file whose newest
+checkpoint breaks a rule and whose previous one does not is a file that *opens*,
+at the previous generation. It is not a file a reader rejects. The reference
+writer takes a checkpoint when it creates a file and another when it closes it,
+so these vectors are built from a two-checkpoint file with the creation-time
+footer blanked. If your reader opens one of these successfully at an earlier
+generation rather than refusing it, check that it is judging the checkpoint you
+think it is.
+
 ---
 
 ## Rules no vector here exercises
@@ -302,17 +334,27 @@ Stated plainly, so the appendix is not read as more complete than it is.
   writer-only by construction and is verified by re-encoding and comparing —
   which every positive vector does — never by reading. A vector cannot express
   "this palette is in the wrong order" as something to reject.
+
+  This one is a closed door rather than an omission, and worth stating because
+  a second implementation will find the same temptation. A reader *could*
+  approximate the block palette's reference counts, by walking every stored
+  local palette and counting. §3.1 says it MUST NOT try. Doing so would reject
+  files this version wrote — the count is taken over material the file does not
+  keep, including sections §4.7 elided and the trailing air layers §4.3 dropped
+  — and would make validity depend on a reconstruction the specification never
+  defined.
 - **Cell padding in structures (§6)**, for the same reason: it lies outside the
   declared box, so a file carrying it decodes identically to one that cleared
   it. It is covered by an encode-twice comparison instead of by a vector.
-- **Most of indexed mode (§5).** Only recovery from a torn write is covered. A
-  directory frame, palette segments, the meta frame, the dictionary frame and
-  the prologue-versus-header authority rule of §5.5 have no vectors, because an
-  indexed file's bytes are history-dependent and a byte-pinned vector would
-  assert facts about the order this implementation happens to write in rather
-  than about the format. The §5.4 rules that `Stats` and `DefaultBiome` must be
-  clear in an indexed file, and the §5.3 rule against an empty palette segment,
-  are therefore stated but not exercised here.
+- **Most of indexed mode (§5).** No *positive* vector pins an indexed file's
+  bytes beyond `indexed_torn`, and none should: an indexed file's bytes are
+  history-dependent, so a byte-pinned positive vector would assert facts about
+  the order this implementation happens to write in rather than about the
+  format. That objection does not reach the negative vectors above, which say
+  only that a file must be refused and name the rule refusing it, so §5.3, §5.4
+  and §5.5 are now exercised. What is still uncovered is the meta frame, the
+  dictionary frame, compaction, and every §5 rule that decides what a *valid*
+  indexed file looks like rather than which ones are invalid.
 - **The §8 ceilings**, apart from the layer count. A vector for a 512 MiB body
   or a 1 048 576-entry palette would be a vector nobody can check into a
   repository. They are covered by the limit tests instead.

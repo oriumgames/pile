@@ -129,11 +129,14 @@ Nothing below is optional. Each line names its exit criterion.
       `ContentHash`. *Exit: `format/vectors.md` documents 17 positive vectors
       (the nine named cases plus layer numbering, default-biome elision with a
       tie, blob dedup and Morton order, the per-column collections, light,
-      stats and a full structure) and 39 negative ones, each with the rule a
+      stats and a full structure) and 58 negative ones, each with the rule a
       conforming reader must refuse it for. The appendix also records what it
       does not cover: the palette sort orders and cell padding, which no vector
-      can express because nothing in a file proves them, and most of indexed
-      mode, whose bytes are history-dependent.*
+      can express because nothing in a file proves them, and indexed mode's
+      positive shape, whose bytes are history-dependent. Indexed mode's validity
+      rules are covered — §5.3, §5.4 and §5.5 each have a negative vector, since
+      "this file must be refused, for this rule" says nothing about the order a
+      writer happened to append in.*
 - [x] The vectors are generated from the implementation and checked into
       `format/testdata`, and a test verifies them. *Exit:
       `format/testdata/vectors/` plus `TestConformanceVectors` and

@@ -46,6 +46,14 @@ palette rules they depend on; collection order, blob first-use order and the
 §7 metadata schemas enforced on read as well as write; enforcement labels
 corrected on four entries.
 
+One more, found by the harness pass and closed after the vectors landed: both
+solid readers reject a body with bytes after the last record, and §4 said so
+without a MUST, so the extractor never pinned the sentence and no invariant
+claimed it. It is a rule now, with an entry, a fixture per reader and a negative
+vector. No file's validity moved — the code already did this — which is why it
+was a specification edit and a `TestSpecRulesPinned` re-pin rather than a format
+change.
+
 Method: `Enforce` is a required field, so an entry that does not say whether
 readers reject violations fails the harness. Benchmarks went from 5 to 28.
 
@@ -105,10 +113,21 @@ whether an error came back. Assert on which error.
 **Security** — about eleven lower-severity items remain, none of them a
 process-killer.
 
-**Conformance vectors** — not started, and they are what makes a freeze mean
-anything. The specification concedes that where prose and implementation
-disagree the implementation wins; vectors are the arbiter that makes the
-concession safe.
+**Conformance vectors** — done. `format/vectors.md` is the appendix, 17 positive
+and 58 negative vectors in `format/testdata/vectors/`, verified on every run
+with no flags. Each positive vector is also parsed by a second reader written
+from the specification, and each negative one must be refused by both with an
+error naming its rule.
+
+Two things the vector work left behind. The appendix says plainly what no vector
+can express — the palette sort orders and cell padding, because nothing in a
+file proves them — which is the part a second implementation most needs told.
+And a negative vector for an indexed file is a different claim from a negative
+vector for a solid one: §5.6 recovery means a reader that refuses the newest
+checkpoint falls back to an older one, so a file with a valid earlier checkpoint
+*opens* instead of being rejected. The §5 vectors are built with exactly one
+checkpoint for that reason, and `format/vectors.md` says so where a reader of
+those vectors will meet it.
 
 ## Two method notes, both learned the hard way
 
@@ -131,13 +150,14 @@ something that cannot fail.
 
 ## Sequence from here
 
-Vectors, then freeze. Security's remainder and the API surface review can
-follow the tag, since neither can invalidate a file that has already been
-written.
+Freeze. What still gates it is under Security in `FREEZE.md`, none of which can
+change a byte: the extended fuzzing session, the hostile-input matrix, crash
+durability, the written threat model. The API surface review can follow the tag,
+since it cannot invalidate a file already written.
 
-One thing the harness pass turned up that the vectors should carry: a reader
-could plausibly reconstruct the solid block palette's reference counts and
-check its order, and §3.1 says readers MUST NOT. That is a deliberate closed
-door, not an omission, and a second implementation will find the same
-temptation. `HARNESS.md` says so under "Rules a reader could check and must
-not".
+The closed door the harness pass turned up is now carried by the vectors as
+well as by `HARNESS.md`: a reader could plausibly reconstruct the solid block
+palette's reference counts and check its order, and §3.1 says readers MUST NOT.
+`format/vectors.md` says so under "Rules no vector here exercises", which is
+where a second implementation will be looking when it wonders why the order is
+not checkable.

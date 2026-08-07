@@ -153,6 +153,147 @@ func vecNBTI64(v int64) []byte {
 }
 
 // ---------------------------------------------------------------------------
+// Indexed bases (§5)
+// ---------------------------------------------------------------------------
+
+// An indexed base is built rather than mutated out of a positive vector,
+// because the walker of vectorwalk_test.go models a solid body and an indexed
+// file has none: its content is a set of frames located by a directory. Two
+// things about §5 shape everything below.
+//
+// A file records more than one checkpoint. CreateIndexed takes one before any
+// column exists and Close takes another, and §5.6 says a reader that cannot
+// adopt the newest falls back to an older one. A mutation applied only to the
+// newest checkpoint therefore does not produce a file a reader rejects; it
+// produces a file that opens at the previous generation, which is a different
+// claim and one indexed_torn already makes. vecIndexedBase blanks the
+// creation-time footer so exactly one checkpoint remains, and opens the result
+// to prove the blanking alone leaves a valid file. Without that the cases
+// below could "reject" a base that was already broken.
+//
+// The mutations are all in the directory's prologue or its frame references,
+// never in the header. That is §5.5: the prologue is the authority over the
+// header, so a rule about what an indexed file may contain has to be enforced
+// on the prologue's copy for it to be enforced at all. Leaving the physical
+// header intact is what makes these vectors say so — a reader that took its
+// answer from the header would accept every one of them.
+
+// vecIndexedBase writes the smallest indexed world that carries a directory
+// prologue, a block palette segment and a biome palette segment, then reduces
+// it to a single checkpoint. Frames are stored raw, so the directory can be
+// edited in place.
+func vecIndexedBase(t *testing.T, reg world.BlockRegistry) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "base.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(minimalWorld(t, reg).Columns[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = bytes.Clone(b)
+	ftr := b[len(b)-footerSize:]
+	prev := int(binary.LittleEndian.Uint64(ftr[32:40]))
+	if prev < headerSize || prev+footerSize > len(b)-footerSize {
+		t.Fatalf("the base has no creation-time checkpoint to blank (prevFooter %d)", prev)
+	}
+	clear(b[prev : prev+footerSize])
+	binary.LittleEndian.PutUint64(ftr[32:40], 0)
+	vecIndexedRehash(b)
+	if err := vecOpenIndexed(t, b, reg); err != nil {
+		t.Fatalf("the one-checkpoint base does not open: %v", err)
+	}
+	return b
+}
+
+// vecIndexedDir is the stored directory frame's range, read from the footer at
+// EOF. The base stores frames raw, so this is also the directory's plaintext.
+func vecIndexedDir(file []byte) (off, length int) {
+	f := file[len(file)-footerSize:]
+	return int(binary.LittleEndian.Uint64(f[8:16])), int(binary.LittleEndian.Uint64(f[16:24]))
+}
+
+// vecIndexedRehash repairs the §2.4 checkpoint hash after the directory frame
+// has been edited. The preimage is the physical header, the stored directory
+// bytes and the footer's control words; every mutation below leaves the
+// directory's length alone, so the footer's own offset and length still hold.
+func vecIndexedRehash(file []byte) {
+	off, length := vecIndexedDir(file)
+	f := file[len(file)-footerSize:]
+	binary.LittleEndian.PutUint64(f[:8], checkpointHash(file[:headerSize], file[off:off+length], f[8:]))
+}
+
+// vecIndexedBlockSeg locates the first block palette segment: the file offset
+// of the frame itself, and the offsets within the file of its reference's
+// length and hash fields. It walks the directory exactly as loadDirectory
+// does, so a case cannot patch the wrong field when the layout moves.
+func vecIndexedBlockSeg(t *testing.T, file []byte) (segOff, lenAt, hashAt int) {
+	t.Helper()
+	dOff, dLen := vecIndexedDir(file)
+	r := &reader{b: file[dOff : dOff+dLen]}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("walking the directory: %v", err)
+		}
+	}
+	for _, read := range []func() error{
+		func() error { _, err := r.u8(); return err },  // kind
+		func() error { _, err := r.u8(); return err },  // mode
+		func() error { _, err := r.u32(); return err }, // flags
+		func() error { _, err := r.u32(); return err }, // blockVersion
+	} {
+		must(read())
+	}
+	skipRef := func() {
+		t.Helper()
+		_, err := r.uvarint()
+		must(err)
+		_, err = r.uvarint()
+		must(err)
+		_, err = r.u64()
+		must(err)
+	}
+	skipRef() // meta
+	skipRef() // dict
+	n, err := r.uvarint()
+	must(err)
+	if n == 0 {
+		t.Fatal("the base has no block palette segment to empty")
+	}
+	off, err := r.uvarint()
+	must(err)
+	lenAt = dOff + r.off
+	_, err = r.uvarint()
+	must(err)
+	hashAt = dOff + r.off
+	return int(off), lenAt, hashAt
+}
+
+// vecOpenIndexed drives a file through OpenIndexed, which is the only reader
+// that will look at one.
+func vecOpenIndexed(t *testing.T, file []byte, reg world.BlockRegistry) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "vector.pile")
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenIndexed(path, reg, true)
+	if err == nil {
+		_ = w.Close()
+	}
+	return err
+}
+
+// ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
 
@@ -177,6 +318,11 @@ type negCase struct {
 	walkerBlind bool
 	// structure selects the reader the case is driven through.
 	structure bool
+	// indexed marks a §5 case: its base is vecIndexedBase rather than a
+	// positive vector, it is driven through OpenIndexed, and it is never
+	// offered to the walker, which models a solid body. mutate receives a nil
+	// layout, so an indexed case locates its edits with the helpers above.
+	indexed bool
 }
 
 func negCases() []negCase {
@@ -800,6 +946,62 @@ func negCases() []negCase {
 				return vecApply(b, vecEdit{off: s.off, remove: s.size, insert: enc})
 			},
 		},
+
+		// -- §5 indexed mode -------------------------------------------------
+		{
+			name: "indexed_prologue_stats_flag", rule: "§5.4: an indexed file leaves Stats and DefaultBiome clear",
+			wantErr: "not valid for an indexed file", indexed: true, walkerBlind: true,
+			mutate: func(t *testing.T, _ *vecLayout, b []byte) []byte {
+				// Indexed mode has no stats field to hold what the flag
+				// promises, so the flag is a claim the layout cannot keep.
+				b = bytes.Clone(b)
+				off, _ := vecIndexedDir(b)
+				f := b[off+2 : off+6]
+				binary.LittleEndian.PutUint32(f, binary.LittleEndian.Uint32(f)|FlagStats)
+				vecIndexedRehash(b)
+				return b
+			},
+		},
+		{
+			name: "indexed_prologue_block_version_zero", rule: "§5.5: the prologue is the authority, so §2.1's non-zero blockVersion binds there",
+			wantErr: "directory blockVersion is zero", indexed: true, walkerBlind: true,
+			mutate: func(t *testing.T, _ *vecLayout, b []byte) []byte {
+				// The physical header keeps a valid version. A reader that
+				// took its answer from the header would accept this file,
+				// which is exactly what §5.5 forbids.
+				b = bytes.Clone(b)
+				off, _ := vecIndexedDir(b)
+				binary.LittleEndian.PutUint32(b[off+6:off+10], 0)
+				vecIndexedRehash(b)
+				return b
+			},
+		},
+		{
+			name: "indexed_empty_palette_segment", rule: "§5.3: a palette segment with no entries is never written",
+			wantErr: "has no entries", indexed: true, walkerBlind: true,
+			mutate: func(t *testing.T, _ *vecLayout, b []byte) []byte {
+				// The segment frame is shrunk in place to a §3.1 palette of
+				// zero entries and zero overrides -- six bytes after its i32
+				// version. Its reference's length and hash move with it; the
+				// bytes past the new end stay in the file and are simply no
+				// longer part of any frame, which is what garbage from an
+				// overwrite looks like anyway. Shrinking rather than blanking
+				// keeps the frame ending where its content ends, so §5.1
+				// cannot refuse the file before §5.3 does.
+				b = bytes.Clone(b)
+				segOff, lenAt, hashAt := vecIndexedBlockSeg(t, b)
+				const emptySeg = 6
+				b[segOff+4] = 0 // palette entries
+				b[segOff+5] = 0 // version overrides
+				if b[lenAt] < emptySeg || b[lenAt] >= 0x80 {
+					t.Fatalf("the segment reference's length is %#x, which this edit cannot rewrite in place", b[lenAt])
+				}
+				b[lenAt] = emptySeg
+				binary.LittleEndian.PutUint64(b[hashAt:hashAt+8], xxhash.Sum64(b[segOff:segOff+emptySeg]))
+				vecIndexedRehash(b)
+				return b
+			},
+		},
 	}
 }
 
@@ -893,10 +1095,16 @@ func TestConformanceVectorsNegative(t *testing.T) {
 	})
 	for _, c := range negCases() {
 		t.Run(c.name, func(t *testing.T) {
-			base := vectorBase(t, reg, c.base)
-			l, err := vecWalk(base)
-			if err != nil {
-				t.Fatalf("the base vector %s does not walk: %v", c.base, err)
+			var base []byte
+			var l *vecLayout
+			if c.indexed {
+				base = vecIndexedBase(t, reg)
+			} else {
+				base = vectorBase(t, reg, c.base)
+				var err error
+				if l, err = vecWalk(base); err != nil {
+					t.Fatalf("the base vector %s does not walk: %v", c.base, err)
+				}
 			}
 			got := c.mutate(t, l, base)
 			next[c.name] = vectorRecord{fileHash: xxhash.Sum64(got)}
@@ -916,7 +1124,7 @@ func TestConformanceVectorsNegative(t *testing.T) {
 					len(want), hex.EncodeToString(want[:min(64, len(want))]))
 			}
 
-			err = vecReject(want, reg, c)
+			err = vecReject(t, want, reg, c)
 			if err == nil {
 				t.Fatalf("%s was accepted; %s", path, c.rule)
 			}
@@ -947,8 +1155,12 @@ func vectorBase(t *testing.T, reg world.BlockRegistry, name string) []byte {
 }
 
 // vecReject drives a negative vector through the reader its kind belongs to.
-func vecReject(file []byte, reg world.BlockRegistry, c negCase) error {
-	if c.structure {
+func vecReject(t *testing.T, file []byte, reg world.BlockRegistry, c negCase) error {
+	t.Helper()
+	switch {
+	case c.indexed:
+		return vecOpenIndexed(t, file, reg)
+	case c.structure:
 		_, err := ReadStructure(file, reg)
 		return err
 	}
