@@ -91,6 +91,35 @@ because directory keys are in Morton order and a prefix samples one corner of
 the world; each sample is also truncated, so the byte budget spreads over the
 world instead of being spent on whichever records the walk reaches first.
 
+## Durability and filesystem behaviour: what landed
+
+The two `FREEZE.md` security boxes about crash durability and filesystem
+behaviour are ticked. `DURABILITY.md` and `FSBEHAVIOUR.md` carry the evidence;
+the short version:
+
+- `format/indexed.go` takes an `indexedFile` interface instead of `*os.File`,
+  so a test can fail or truncate a chosen write. Two crash models: a torn
+  prefix, and loss of any subset of the writes in flight since the last fsync.
+  The second is the only way the "fsync before the footer" ordering is
+  observable at all.
+- `TestCheckpointTornWriteExhaustive` runs **every byte position of every
+  write** — 9,073 crash positions over three scenarios covering all five frame
+  kinds — and the durability claim holds at every one of them.
+- One real defect: a checkpoint that failed part way had already cleared the
+  dirty flag of whatever it managed to write, so a **metadata-only** save whose
+  fsync failed reported success on the retry with no footer written at all. The
+  metadata was reported saved and gone at the next open. Fixed with
+  `checkpointPending`, proved by disabling it.
+- Two filesystem gaps: `cmd/pile` still staged with `os.Create` at three sites
+  that rewrite a world file in place, and an atomic replace widened the
+  destination's permission bits (0600 → 0644 on the first save).
+- One control stays green and is recorded as such rather than dressed up: the
+  fsync before the footer is redundant with `verifyRecords` for the
+  *old-or-new* invariant. The combined control proves the model reaches the
+  case and that the record hashes are what save it. The fsync earns its place
+  by keeping acknowledged work rather than rolling it back, which old-or-new
+  cannot express.
+
 ## Open
 
 **Harness** — done, and `HARNESS.md` is the record. Every `Decoded` entry now
@@ -147,6 +176,9 @@ checkpoint falls back to an older one, so a file with a valid earlier checkpoint
 *opens* instead of being rejected. The §5 vectors are built with exactly one
 checkpoint for that reason, and `format/vectors.md` says so where a reader of
 those vectors will meet it.
+
+**Cross-process safety** — a world directory is assumed to have one owner and
+nothing enforces it. `FSBEHAVIOUR.md` §5 says why `O_EXCL` is not a lock.
 
 ## Two method notes, both learned the hard way
 

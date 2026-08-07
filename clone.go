@@ -52,6 +52,32 @@ func createExclusive(path string) (*os.File, error) {
 	return f, nil
 }
 
+// preserveMode copies an existing destination's permission bits onto the file
+// staged to replace it.
+//
+// An atomic replace swaps the inode, so the file that lands carries the
+// staging mode — 0644 less the umask — whatever the one it replaced had. A
+// world an operator had deliberately closed to 0600 became world-readable on
+// its first save, and nothing said so. When the destination does not exist, or
+// is not a regular file, the staging mode stands: a symlink's own bits mean
+// nothing, and the rename replaces the link rather than its target.
+func preserveMode(tmp, dst string) error {
+	fi, err := os.Lstat(dst)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("pile: stat %s: %w", dst, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil
+	}
+	if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
+		return fmt.Errorf("pile: preserve mode of %s: %w", dst, err)
+	}
+	return nil
+}
+
 // safeCompact reduces a chunk's palettes the way dragonfly's Compact does,
 // but only when doing so cannot renumber a layer.
 //

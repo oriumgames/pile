@@ -311,6 +311,10 @@ func (p *Provider) writeFile(path string, d *format.WorldData) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("pile: close %s: %w", tmp, err)
 	}
+	if err := preserveMode(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("pile: rename %s: %w", tmp, err)

@@ -79,6 +79,9 @@ func cmdMode(args []string) error {
 			_ = os.Remove(tmp)
 			return fmt.Errorf("%s: %w", f, err)
 		}
+		if err := preserveMode(tmp, f); err != nil {
+			return err
+		}
 		if err := os.Rename(tmp, f); err != nil {
 			return err
 		}
@@ -132,7 +135,7 @@ func indexedToSolid(src, dst string, reg world.BlockRegistry) error {
 		}
 		d.Columns = append(d.Columns, c)
 	}
-	out, err := os.Create(dst)
+	out, err := createStaged(dst)
 	if err != nil {
 		return err
 	}

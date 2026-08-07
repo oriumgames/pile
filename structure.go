@@ -97,6 +97,10 @@ func (s *Structure) Save(path string) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if err := preserveMode(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}

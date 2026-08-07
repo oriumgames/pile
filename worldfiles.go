@@ -198,6 +198,10 @@ func (wf *WorldFiles) Write(dir string, reg world.BlockRegistry) error {
 		files = append(files, staged{tmp: tmp, path: path})
 	}
 	for _, f := range files {
+		if err := preserveMode(f.tmp, f.path); err != nil {
+			cleanup()
+			return err
+		}
 		if err := os.Rename(f.tmp, f.path); err != nil {
 			cleanup()
 			return err

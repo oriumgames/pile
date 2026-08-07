@@ -163,8 +163,21 @@ Nothing below is optional. Each line names its exit criterion.
       not conclude from a checkpoint hash or a `ContentHash`, and records what
       resource use a decode of a hostile file can reach within the rules, so a
       caller can size its own limits.
-- [ ] Filesystem behaviour is deliberate: path traversal, symlinks on atomic
-      rename, permission bits, temp-file naming.
+- [x] Filesystem behaviour is deliberate: path traversal, symlinks on atomic
+      rename, permission bits, temp-file naming. *Exit: `FSBEHAVIOUR.md` states
+      the decision for each, and `fsbehaviour_test.go` pins every one of them —
+      including the ones whose answer is "it does this on purpose", since a
+      decision recorded only in prose is one that changes silently.* Two gaps
+      were found and closed: the command-line tools still staged with
+      `os.Create`, so the exclusive staging the library gained never reached
+      the three sites that rewrite a world file in place; and an atomic replace
+      carried the staging mode rather than the destination's, so a world an
+      operator had closed to 0600 became world-readable on its first save. The
+      remaining asymmetries are deliberate and named: a solid-mode save
+      replaces a symlink at the dimension path while append mode follows it,
+      and a fixed staging name plus `O_EXCL` is protection against a
+      pre-created path and **not** mutual exclusion between processes — a world
+      directory is assumed to have one owner.
 
 ### Conformance
 

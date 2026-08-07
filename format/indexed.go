@@ -2062,6 +2062,14 @@ func (w *IndexedWorld) Compact() error {
 	if err := nw.closeFile(); err != nil {
 		return fail(err)
 	}
+	// A rename swaps the inode, so the compacted file would carry the staging
+	// mode (0644 less umask) rather than the one the world had. Compaction is
+	// not the place to widen a file an operator closed.
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
+		if err := os.Chmod(tmp, fi.Mode().Perm()); err != nil {
+			return fail(fmt.Errorf("pile: preserve mode of %s: %w", path, err))
+		}
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fail(err)
 	}

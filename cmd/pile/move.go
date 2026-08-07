@@ -146,7 +146,7 @@ func cmdOrigin(args []string) error {
 	}
 
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := createStaged(tmp)
 	if err != nil {
 		return err
 	}
@@ -159,6 +159,9 @@ func cmdOrigin(args []string) error {
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
+		return err
+	}
+	if err := preserveMode(tmp, path); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

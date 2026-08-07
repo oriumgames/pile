@@ -173,6 +173,10 @@ func (p *Provider) Rollback(name string) error {
 		}
 	}
 	for _, f := range files {
+		if err := preserveMode(f.tmp, f.dst); err != nil {
+			cleanup()
+			return fmt.Errorf("pile: rollback %s: %w", name, err)
+		}
 		if err := os.Rename(f.tmp, f.dst); err != nil {
 			cleanup()
 			return fmt.Errorf("pile: rollback %s: %w", name, err)

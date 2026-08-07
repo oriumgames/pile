@@ -240,7 +240,7 @@ func cmdUpgrade(args []string) error {
 			return fmt.Errorf("%s: %w", f, err)
 		}
 		tmp := f + ".upgrade"
-		out, err := os.Create(tmp)
+		out, err := createStaged(tmp)
 		if err != nil {
 			return err
 		}
@@ -258,6 +258,9 @@ func cmdUpgrade(args []string) error {
 		if err != nil {
 			_ = os.Remove(tmp)
 			return fmt.Errorf("%s: %w", f, err)
+		}
+		if err := preserveMode(tmp, f); err != nil {
+			return err
 		}
 		if err := os.Rename(tmp, f); err != nil {
 			return err
