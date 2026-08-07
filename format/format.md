@@ -456,7 +456,7 @@ meta block       §4.1–4.2
 block palette    §3.1
 biome palette    §3.2
 blob table       §3.4
-chunkN           uvarint          (≤ 4 194 304, §8)
+chunkN           uvarint          (≤ 67 108 864, §8)
 record[chunkN]   §4.3, sorted by Morton key of (x, z)
 ```
 
@@ -809,7 +809,7 @@ blockSegN        uvarint
 blockSeg[blockSegN]: frameRef
 biomeSegN        uvarint
 biomeSeg[biomeSegN]: frameRef
-chunkN           uvarint          (≤ 4 194 304, §8)
+chunkN           uvarint          (≤ 67 108 864, §8)
 chunk[chunkN]:                    sorted by Morton key of (x, z)
   dx, dz         svarint          delta from previous entry; the first
                                   entry deltas from (0,0)
@@ -887,7 +887,7 @@ atomically renames it over the original.
 - The directory is a single frame, so the number of entries a conforming
   implementation can address is bounded by its directory decode limit rather
   than by the chunk ceiling of §8. The reference implementation accepts
-  4,194,304 directory entries.
+  67,108,864 directory entries.
 
 ---
 
@@ -1038,7 +1038,7 @@ remain, not from these ceilings.
 | directory entries parsed during one recovery, summed over every candidate tried | 16 777 216 |
 | string length | 65 535 |
 | blob length | 16 MiB |
-| columns decoded per file: chunk records in a solid body, entries in an indexed directory | 4 194 304 |
+| columns decoded per file: chunk records in a solid body, entries in an indexed directory | 67 108 864 |
 | decompressed size of a solid body | 512 MiB |
 | decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
 | decompressed size of an indexed directory frame | 512 MiB |
@@ -1104,17 +1104,21 @@ compounds fit inside the 16 MiB blob limit.
 **The column ceiling is one number for both modes.** Decoders MUST refuse a
 solid body declaring more chunk records than the ceiling above, and an indexed
 directory declaring more entries, and the two are deliberately the same value:
-a column costs the same to hold whichever named it. A solid file holds every
-column at once by design, so 4 194 304 of them is already about four gigabytes
-of live objects — this is a ceiling at the point where a world stops being
-decodable rather than one chosen to be comfortable. For scale, a real overworld
-of ten thousand chunks is four hundred times below it, and every column holding
-a single block already consumes one of the 4 194 304 decoded section storages,
-so the only thing this ceiling newly refuses is a world with more than four
-million *empty* columns. The number it replaces, 2³²−1, was the width of the
-count field and not a bound on anything: an eleven-byte chunk record is legal,
-so it permitted forty-eight thousand times as much decoded state as the 512 MiB
-body ceiling would ever have to deliver.
+a column costs the same to hold whichever named it. 67 108 864 is 8192×8192
+chunks, or 131 072 blocks square, which is past any world a server realistically
+produces while still being a ceiling: the number it replaces, 2³²−1, was the
+width of the count field and not a bound on anything, since an eleven-byte chunk
+record is legal.
+
+This ceiling is what the format may *represent*, and it is deliberately not
+what an unconfigured reader will *spend*. An implementation SHOULD default to a
+lower budget than this and let a caller raise it, because the two questions are
+different: a world of sixty-seven million columns is a legitimate thing to
+store and an unusual thing to be handed by a stranger. This implementation
+defaults to the state a world of 4 194 304 columns costs, about 4.8 GB, and
+refuses beyond that with an error that names the option rather than calling the
+file invalid (§8's note on caller ceilings). A reader that follows the ceiling
+here instead is still conforming; it is simply cheaper to attack.
 
 **Recovery is bounded by its total work and not by its factors.** A reader
 MUST stop recovery, and refuse the file, once the directory entries it has

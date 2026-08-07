@@ -304,11 +304,25 @@ func TestDecodeBudgetClampsUpwardOnly(t *testing.T) {
 			t.Fatalf("a caller asking for %d got %d", n, got)
 		}
 	}
-	// Not a number: §8's own.
+	// Not a number: the default policy budget, which is deliberately *not*
+	// §8's ceiling. The two were the same until maxChunks moved to 2^26 for
+	// big-world support; letting the default follow it would have made every
+	// unconfigured reader sixteen times cheaper to attack in exchange for a
+	// capability nobody asked that reader for.
 	for _, n := range []int64{0, -1, math.MinInt64} {
-		if got := (readConfig{maxDecodedBytes: n}).decodedByteCeiling(); got != decodedBytesCeiling {
-			t.Fatalf("a ceiling of %d resolved to %d, not to §8's %d", n, got, decodedBytesCeiling)
+		if got := (readConfig{maxDecodedBytes: n}).decodedByteCeiling(); got != defaultDecodedBytes {
+			t.Fatalf("a ceiling of %d resolved to %d, not to the default %d", n, got, defaultDecodedBytes)
 		}
+	}
+	// And the default must be reachable from above: a caller holding a world
+	// larger than the default admits has to be able to say so, or the ceiling
+	// is a world-size limit wearing a budget's name.
+	if defaultDecodedBytes >= decodedBytesCeiling {
+		t.Fatalf("the default budget %d is not below §8's ceiling %d, so the option cannot be raised",
+			defaultDecodedBytes, decodedBytesCeiling)
+	}
+	if got := (readConfig{maxDecodedBytes: defaultDecodedBytes * 4}).decodedByteCeiling(); got != defaultDecodedBytes*4 {
+		t.Fatalf("a caller raising the budget to %d got %d", defaultDecodedBytes*4, got)
 	}
 
 	// The behavioural half: a body naming one column more than §8 allows is

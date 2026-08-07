@@ -1032,6 +1032,50 @@ func TestRecoveryWorkIsBounded(t *testing.T) {
 // hostileOpenWithBudget is OpenIndexed with the recovery budget lowered. It
 // mirrors openIndexedOn rather than calling it, because the budget has to be
 // set between construction and load.
+// TestHealthyOpenIsExemptFromTheRecoveryBudget holds the other half of the
+// recovery bound: the budget pays for the fallback walk, and never for the
+// newest checkpoint.
+//
+// maxRecoveryEntries was sized as four directories back when a directory held
+// at most 2^22 entries. maxChunks is 2^26 now, so the same constant is a
+// quarter of one directory, and a budget charged from the first candidate
+// would refuse to open any world above 16.7 million columns -- turning a limit
+// on hostile work into a second, lower ceiling on how large a world may be,
+// which is exactly what raising maxChunks was meant to remove.
+//
+// A world of 2^26 columns is far too large to build here, so this drives the
+// distinction directly instead: at a budget of one entry, a file whose newest
+// checkpoint is intact must still open, and the same file with that checkpoint
+// broken -- so the walk falls back -- must be refused for the budget. One
+// input, two outcomes, and the exemption is the only thing between them.
+func TestHealthyOpenIsExemptFromTheRecoveryBudget(t *testing.T) {
+	reg := testRegistry(t)
+	const entries = 1 << 10
+
+	healthy := filepath.Join(t.TempDir(), "healthy.pile")
+	if err := os.WriteFile(healthy, hostileReplayFile(entries, 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A budget of one entry is far below this directory, so an open that
+	// charges the first candidate cannot survive it.
+	err := hostileOpenWithBudget(healthy, reg, 1)
+	if errors.Is(err, errRecoveryBudget) {
+		t.Fatalf("a file with an intact checkpoint was refused for the recovery budget: %v", err)
+	}
+
+	// hostileReplayFile forges every candidate, so nothing here opens on its
+	// newest checkpoint and the walk must fall back -- which is what the
+	// budget is for. It has to be refused for the budget specifically, not for
+	// whatever else a forged file fails on first.
+	forged := filepath.Join(t.TempDir(), "forged.pile")
+	if err := os.WriteFile(forged, hostileReplayFile(entries, 8), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := hostileOpenWithBudget(forged, reg, entries+1); !errors.Is(err, errRecoveryBudget) {
+		t.Fatalf("a forged chain past the budget: err = %v, want errRecoveryBudget", err)
+	}
+}
+
 func hostileOpenWithBudget(path string, reg world.BlockRegistry, budget int) error {
 	f, err := os.Open(path)
 	if err != nil {
