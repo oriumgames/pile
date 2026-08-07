@@ -1,124 +1,118 @@
-# Format-affecting work that must land before the freeze
+# Format-affecting work: what landed, and what the pass turned up
 
-Every item here changes which files a conforming reader accepts. Each therefore
-has to land **before** `format.Version` is frozen: afterwards, closing one of
-these gaps rejects files that were valid, which is a breaking change.
+Every item here changed which files a conforming reader accepts, which is why
+each had to land **before** `format.Version` is frozen: afterwards, closing one
+of these gaps rejects files that were valid.
 
-Found by a triage pass over the specification against the decoders. Six of the
-seven are rules `format/format.md` states and no code enforces. They were found
-by hand in a single pass, which is the reason to expect more — see the closing
-note.
+All seven items from the triage pass are closed, together with the two entries
+it listed as worth closing while the files were open, and one further gap found
+during the work. Each check was proved by disabling it and watching the test
+that names it fail; the golden suite stayed green throughout with no `-update`
+and no `-format-change`.
 
-## 1. Unused local palette entries (§3.3, rule `5ab4d3d6`)
+## Closed
 
-**Do this one first: it is also a bypass for two rules that are enforced.**
+**1. Unused local palette entries** (§3.3, `5ab4d3d6`). `decodeOneBlob` now
+refuses a section blob declaring a palette entry no index names. This was the
+one that mattered most, because uniformity is read off the local palette's
+length: a palette of `[air, stone]` with all 4096 indices zero is air
+everywhere and read as content, so §4.3's "an all-air section MUST be absent"
+and its trailing-air-layer rule were both bypassable by padding a palette. They
+ran; they did not hold. `TestRejectsUnusedLocalPaletteEntry`.
 
-The spec says a section blob's palette "contains only entries actually used by
-the indices". Nothing checks it — not `decodeOneBlob`, `blobIndices`,
-`applyBlockBlob`, `applyBiomeBlob` or `makeStorage`.
+**2. `blockVersion` must be non-zero** (§2.1, `718f271d`). Both readers now
+compare it: `parseFrame` and `loadDirectory`. The prologue copy is not a copy a
+reader may take on trust from the header — it is the authority over it — so the
+header's check protects nothing there. The rule has its own invariant entry
+now, apart from unknown versions and flag bits. `TestRejectsZeroBlockVersion`.
 
-The consequence is not merely a wasted entry. `uniformAirBlob`
-(`format/decode.go`) returns false whenever `len(b.refs) != 1`, so a blob whose
-local palette is `[air, stone]` with all 4096 indices zero is semantically
-uniform air and still passes `checkSectionCanonical`. That defeats §4.3
-`12bc11b2` (an all-air section MUST be absent) and `a9ee3ac1` (trailing all-air
-layers MUST be dropped). A file can carry present all-air sections and trailing
-air layers today, each a second encoding of a world that already has one.
+**3. Structure decoder parity** (§4.8 `c5770076`, §3.4 `1e589410` +
+`078b2b7d`). `ReadStructure` now resolves cell layers through the same
+`tableBlobSource` a world record uses, so unreferenced blob-table entries and
+blob ids out of first-use order are refused, and it checks the strict (y, z, x)
+ascent of block entities, which carries their uniqueness. The writer refuses
+two at one position as well; it used to emit a file it could not read back.
+That makes the NBT tie-break §4.8 names for structure block entities
+unreachable, since two entries can only tie on position.
 
-Fix: reject a blob with an entry no index references. Note the writer already
-produces only used-entry palettes, so no file this library wrote becomes
-invalid.
+`TestDecodersAgreeOnValidity` is the part that matters beyond the four fixes:
+one shape rendered into both a chunk record and a structure cell, put through
+both decoders, required to get the same answer. Four of the six triaged gaps
+were this drift and nothing asserted against it.
 
-## 2. `blockVersion` must be non-zero (§2.1, rule `718f271d`)
+**4. Uniform-default biome sections** (§4.7, `7984f33b`). `applyRecord` refuses
+a present biome blob uniform on the file's own `defaultBiomeRef`. The rule was
+filed as `WriterOnly` under an argument that covers the neighbouring flag
+decision (`13221d37`) and not this; the two now have separate entries with
+separate labels. `TestRejectsStoredDefaultBiomeSection`.
 
-Zero is the value that means "the palette's own version" and cannot also be a
-version. `parseFrame` (`format/decode.go`) reads the field and never compares
-it to zero; `loadDirectory` (`format/indexed.go`) does the same with the
-prologue copy. Both readers accept a file declaring zero. Fix both.
+**5. Empty palette segments** (§5.3, `2ed66e73`). Both segment loops refuse a
+segment with no entries. A directory naming no segments stays legal. The
+invariant used to name the duplicate-reference test, which passes whatever this
+rule does. `TestRejectsEmptyPaletteSegment`.
 
-## 3. Structure decoder parity (§4.8 `c5770076`, §3.4 `1e589410` + `078b2b7d`)
+**6. Directory offset accumulation.** `poff` is range-checked per step. Note
+what this is and is not: it does not change which files open, because adopting
+a checkpoint reads every record the directory names. It stops
+`e.off+int64(e.length)` wrapping past its bounds test, which is what stands
+between a hundred-byte file and a four-gigabyte allocation in `verifyRecords`.
+Its test therefore asserts *which* check refuses the file.
+`TestRejectsWrappingDirectoryOffset`.
 
-Four of the six gaps are the same shape: **the structure decoder is a second
-implementation of the world decoder and has drifted.** `ReadStructure` is
-missing checks `ReadWorld` has:
+The triage also expected a delta chain that wraps onto legal offsets. There is
+no such input: each entry's offset was already bounded, and a step that
+overflows lands next to the bottom of int64. An explicit overflow test beside
+the range check would have no distinguishing input, so there is not one.
 
-- **Block-entity uniqueness.** At most one per position. `validateStructureData`
-  bounds positions only; `ReadStructure`'s loop has no `seen` map, unlike
-  `applyRecord`'s `seenBE`. Enforced by neither side.
-- **Block-entity ordering.** The world reader checks (y, z, x) then written
-  NBT; the structure reader does not.
-- **Unreferenced blob-table entries** and **blob id first-use order.**
-  `ReadWorld` enforces both through `tableBlobSource`'s `used` and `nextID`
-  parameters. `ReadStructure` resolves cell references with a bare
-  `blobs[ref]` and passes no tracking at all.
+**7. Frame content size** (§2.5, `edd065ba`) — **struck, not enforced.** The
+recommendation to enforce rested on "our `EncodeAll` always sets the field". It
+does not: klauspost omits the frame content size below a few hundred bytes, and
+in indexed mode most frames a file holds are smaller than that. Wiring the
+check in and running the suite is what showed it — the property tests fell over
+on an empty chunk and a 1×1×1 structure, and the golden indexed worlds became
+unreadable. Enforcing would have invalidated a large share of everything this
+library has written to satisfy a rule its writer cannot keep, and nothing rests
+on it: `WithDecoderMaxMemory` bounds a streaming decode by the same ceiling.
+§2.5 now says there is no such requirement, and why, so it is not reintroduced
+as an improvement.
 
-While fixing these, add a test that asserts the two decoders enforce the same
-rule set, or the next divergence is found the same way this one was.
+**Also worth closing.** §5.3 `89ca9097`: `parseSegRefs` now requires strictly
+ascending frame offsets, which is what "the order they were written" means for
+an append-only file. Its strict ascent also refuses a duplicate reference, so
+the seen-set that used to hold that half is gone rather than left where it
+could never fail. `FREEZE.md` and the invariant table disagreed about
+out-of-box cell padding; the checklist was the wrong one and now says so.
 
-## 4. Uniform-default biome sections must be omitted (§4.7, rule `7984f33b`)
+**Found during the work, not on the list.** §5.1 never said a frame ends where
+its content ends, and the meta frame and both kinds of palette segment accepted
+trailing bytes — a padded frame decoded to exactly what the unpadded one did
+while carrying its own length and hash in the directory. The sentence is now in
+§5.1 and all five frame kinds are checked and fixtured.
+`TestRejectsTrailingBytesInFrames`.
 
-When `DefaultBiome` is set, a section whose biomes are uniformly the default
-must be absent. `applyRecord` never checks it, so a file with the flag set and
-a redundantly stored uniform-default section is accepted — a second encoding.
+## Still open, and why the number is not zero
 
-This is also a **mis-classification**: `format/invariants.go` files the rule
-under "the default biome flag is not optional" as `WriterOnly`. That
-justification covers the flag decision (`13221d37`) only. The omission rule is
-fully reader-checkable: the flag is set, `defaultBiomeRef` is known, and a
-present blob uniform on that ref is visibly a violation. Correct the label.
+A sweep of every pinned rule against the code after this work found no further
+sentence the specification states and no code enforces. That is a weaker result
+than it sounds, for the reasons the triage gave and which still hold:
 
-## 5. Empty palette segments (§5.3, rule `2ed66e73`)
+1. **Only sentences containing MUST are pinned.** Layout-table range
+   annotations were spot-checked by hand against the constants this round and
+   agreed, but nothing checks them and nothing will.
+2. **The harness still cannot catch a vacuous claim.** `TestEveryRuleIsClaimed`
+   proves a sentence is claimed and `TestEveryInvariantNamesALiveTest` proves
+   the named test compiles. Neither is evidence the test reaches the rule. The
+   entries touched this round were each proved by disabling the production
+   check; the rest of the table has not been, and `STATUS.md` puts the
+   remainder at roughly a dozen.
+3. **The gap found off-list was not a rule at all** until this round wrote it
+   down. Three of five readers enforced it and two did not, and no amount of
+   checking the table against the specification would have surfaced that,
+   because the specification did not state it. The way that class gets found is
+   reading two implementations of one thing side by side —
+   `TestDecodersAgreeOnValidity` now does that automatically for the pair that
+   has drifted four times.
 
-A segment with no entries must be rejected. `finishDirectory` never checks
-`n == 0` or `len(segRids) == 0`. The invariant claiming this names
-`TestRejectsDuplicateSegmentReference`, which tests a different rule.
-
-## 6. Directory offset accumulation
-
-`poff += doff` in `finishDirectory` is not range-checked, unlike the `px`/`pz`
-beside it. Two consequences: `e.off + int64(e.length)` can wrap past its
-`> w.end` test, and a delta chain that wraps int64 onto legal offsets is a
-second encoding of the same directory. Range-check per step.
-
-## 7. Frame content size (§2.5, rule `edd065ba`) — a decision, not just a fix
-
-The spec says a compressed frame MUST declare its content size. Nothing
-inspects a frame header. There is no safety hole, since `WithDecoderMaxMemory`
-bounds streaming output too; it is a conformance gap.
-
-Either enforce it or delete the sentence — **but not neither, and not after the
-tag.** After freeze, a second implementation that enforced it would reject
-files this one writes, and neither side could be called wrong.
-
-Recommended: enforce. One frame-header parse. Our `EncodeAll` always sets the
-field, so no file this library has written becomes invalid; only a frame from a
-streaming encoder would be refused.
-
-## Also worth closing while the files are open
-
-- §5.3 `89ca9097`: the directory must list segments in the order written. That
-  is reader-checkable as strictly ascending frame offsets; `parseSegRefs` does
-  not check it.
-- `FREEZE.md` lists out-of-box cell padding as a decoder precondition while
-  `format/invariants.go` classes rule `c176f73b` as `WriterOnly` with a written
-  argument. The two documents disagree; edit one.
-
-## Why to expect more
-
-Three structural reasons, all worth fixing before trusting any "clean" result:
-
-1. **The harness cannot catch this class.** `TestEveryRuleIsClaimed` proves a
-   sentence is claimed; `TestEveryInvariantNamesALiveTest` proves the named test
-   compiles. Six claims were false with both green. Until every claim is
-   verified by disabling the production check and watching the named test fail,
-   the number of unenforced rules is unknown.
-2. **Only sentences containing MUST are pinned at all.** Layout tables, range
-   annotations like "1 ≤ layerN ≤ 255", and §5.7's bullets are outside the
-   pinned set and outside the invariant table, so nothing has ever checked them
-   against the code.
-3. **The structure path keeps drifting from the world path.** Four of six gaps
-   were that. Nothing asserts the two enforce the same rules.
-
-What is *not* covered by any of this: the writer side. Rules marked
+What remains untouched by any of this is the writer side. Rules marked
 `WriterOnly` are checkable only by re-encoding, and `ContentHash` round-trip
-coverage over hostile-but-legal input has not been verified.
+coverage over hostile-but-legal input has still not been verified.
