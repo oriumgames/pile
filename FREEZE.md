@@ -136,9 +136,12 @@ rule, and it is why the goldens exist.
 These do not block a freeze because they cannot change the bytes, but they are
 open and should be tracked:
 
-- Memory: the indexed-mode contract is "directory, palettes, and one record at
-  a time". Several paths hold more (per-`Store` palette snapshots, compaction's
-  dictionary sampling, unbounded provider caches, whole-dimension iteration).
 - Performance: benchmarks exist but nothing gates them, and there are no
   recorded baselines.
 - The Go API surface has never been reviewed as a surface.
+
+Memory used to be on this list: the indexed-mode contract is "directory,
+palettes, and one record at a time", and several paths held more. They no
+longer do, and the goldens were green throughout, which is the whole of what
+this section's first sentence claims. `STATUS.md` records the measurements and
+the two shapes that must not be optimised back.
