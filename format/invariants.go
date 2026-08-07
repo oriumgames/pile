@@ -428,8 +428,8 @@ var invariants = []Invariant{
 	{
 		Name: "empty palette segments are not written", Category: Presence, Enforce: Decoded,
 		Rules: []string{"2ed66e73"},
-		Tests: []string{"TestRejectsDuplicateSegmentReference"},
-		Note:  "A segment with no entries is pure garbage two writers could differ on.",
+		Tests: []string{"TestRejectsEmptyPaletteSegment"},
+		Note:  "A segment with no entries is pure garbage two writers could differ on. The fixture is a hand-built file, because the writer never emits one and there is therefore nothing to patch. It has to name a segment of each kind: the two lists are decoded by different functions in different loops. This entry used to name the duplicate-reference test, which is a different sentence about a different amplifier and passes whatever this rule does.",
 	},
 	{
 		Name: "decoders bound the result, not only the input", Category: Bound, Enforce: Decoded,

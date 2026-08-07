@@ -911,6 +911,16 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 		if err != nil {
 			return err
 		}
+		// §5.3: a segment holds the entries new since the last checkpoint, and
+		// one with none is pure garbage -- a frame, a hash and a directory
+		// entry that change no palette. Two writers could differ on whether to
+		// emit it while storing the same world, and the checkpoint hash covers
+		// the difference, so it is a second encoding rather than a harmless
+		// one. A directory naming no segments at all is another matter and
+		// stays legal: that is what a fresh file has.
+		if len(segRids) == 0 {
+			return corruptf("block palette segment at %d has no entries", seg.off)
+		}
 		if len(w.rids)+len(segRids) > maxPalette {
 			return corruptf("cumulative block palette exceeds %d entries", maxPalette)
 		}
@@ -957,6 +967,11 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 		segIDs, segUnknown, segNames, err := decodeBiomePalette(sr)
 		if err != nil {
 			return err
+		}
+		// The biome list has its own decoder and its own loop, so the empty
+		// segment §5.3 forbids has to be refused here as well.
+		if len(segIDs) == 0 {
+			return corruptf("biome palette segment at %d has no entries", seg.off)
 		}
 		if len(w.biomeIDs)+len(segIDs) > maxPalette {
 			return corruptf("cumulative biome palette exceeds %d entries", maxPalette)

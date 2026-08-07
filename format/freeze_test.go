@@ -4730,3 +4730,126 @@ func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
 		t.Fatal("a section stored uniformly the file's own default biome was accepted")
 	}
 }
+
+// indexedWithSegments assembles an indexed file by hand: a header, the given
+// palette segment frames stored uncompressed, a directory naming them and no
+// chunks, and an authenticated footer. Building it rather than patching a
+// written one is what makes an empty segment reachable at all -- the writer
+// never emits one, so there is nothing to patch.
+func indexedWithSegments(t *testing.T, blockSegs, biomeSegs [][]byte) string {
+	t.Helper()
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindWorld)
+	hdr.u8(ModeIndexed)
+	hdr.u32(FlagUncompressed)
+	hdr.i32(chunk.CurrentBlockVersion)
+
+	frames := &writer{}
+	ref := func(body []byte) func(*writer) {
+		off := int64(headerSize) + int64(frames.len())
+		frames.raw(body)
+		hash := xxhash.Sum64(body)
+		return func(w *writer) {
+			w.uvarint(uint64(off))
+			w.uvarint(uint64(len(body)))
+			w.u64(hash)
+		}
+	}
+	var blockRefs, biomeRefs []func(*writer)
+	for _, b := range blockSegs {
+		blockRefs = append(blockRefs, ref(b))
+	}
+	for _, b := range biomeSegs {
+		biomeRefs = append(biomeRefs, ref(b))
+	}
+
+	dir := &writer{}
+	dir.u8(KindWorld)
+	dir.u8(ModeIndexed)
+	dir.u32(FlagUncompressed)
+	dir.i32(chunk.CurrentBlockVersion)
+	for range 2 { // meta and dictionary: both absent
+		dir.uvarint(0)
+		dir.uvarint(0)
+		dir.u64(0)
+	}
+	for _, refs := range [][]func(*writer){blockRefs, biomeRefs} {
+		dir.uvarint(uint64(len(refs)))
+		for _, f := range refs {
+			f(dir)
+		}
+	}
+	dir.uvarint(0) // no chunks: a directory naming none is legal (§5.3)
+	dirOff := int64(headerSize) + int64(frames.len())
+	dirBytes := dir.bytes()
+	frames.raw(dirBytes)
+
+	tail := &writer{}
+	tail.u64(uint64(dirOff))
+	tail.u64(uint64(len(dirBytes)))
+	tail.u64(1) // generation
+	tail.u64(0) // no previous footer
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), dirBytes, tail.bytes()))
+	ftr.raw(tail.bytes())
+
+	path := filepath.Join(t.TempDir(), "w.pile")
+	file := append(append(hdr.bytes(), frames.bytes()...), ftr.bytes()...)
+	if err := os.WriteFile(path, file, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestRejectsEmptyPaletteSegment: §5.3 says a segment holding no entries is
+// never written and decoders must reject one. Nothing did. The invariant
+// claiming the rule named a test for duplicate segment references, which is a
+// different sentence about a different amplifier, so the claim was green and
+// the rule unenforced. Both segment kinds have their own decoder and their own
+// loop, so each needs a fixture.
+func TestRejectsEmptyPaletteSegment(t *testing.T) {
+	reg := testRegistry(t)
+	blockSeg := func(names ...string) []byte {
+		w := &writer{}
+		w.u32(uint32(chunk.CurrentBlockVersion))
+		w.uvarint(uint64(len(names)))
+		for _, n := range names {
+			w.str(n)
+			w.uvarint(0) // no state properties
+		}
+		w.uvarint(0) // no version overrides
+		return w.bytes()
+	}
+	biomeSeg := func(names ...string) []byte {
+		w := &writer{}
+		w.uvarint(uint64(len(names)))
+		for _, n := range names {
+			w.str(n)
+		}
+		return w.bytes()
+	}
+	open := func(blockSegs, biomeSegs [][]byte) error {
+		v, err := OpenIndexed(indexedWithSegments(t, blockSegs, biomeSegs), reg, true)
+		if err == nil {
+			v.Close()
+		}
+		return err
+	}
+	if err := open([][]byte{blockSeg("minecraft:stone")}, [][]byte{biomeSeg("minecraft:plains")}); err != nil {
+		t.Fatalf("segments carrying one entry each were rejected: %v", err)
+	}
+	// A file with no segments at all is a freshly created one, which §5.3
+	// separates from an empty segment in as many words.
+	if err := open(nil, nil); err != nil {
+		t.Fatalf("a directory naming no segments was rejected: %v", err)
+	}
+	if err := open([][]byte{blockSeg()}, nil); err == nil {
+		t.Error("a block palette segment with no entries was accepted")
+	}
+	if err := open(nil, [][]byte{biomeSeg()}); err == nil {
+		t.Error("a biome palette segment with no entries was accepted")
+	}
+}
