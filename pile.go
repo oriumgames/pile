@@ -224,8 +224,8 @@ func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.C
 		p.mu.Lock()
 		ds := p.dim(dim)
 		iw := ds.iw
-		if e, ok := ds.cache.get(key); ok {
-			ds.meta.put(key, chunkMeta{ud: e.ud, side: e.side})
+		if e, ok := ds.cache.Get(key); ok {
+			ds.meta.Put(key, chunkMeta{ud: e.ud, side: e.side})
 			cloned := cloneColumn(e.col)
 			p.mu.Unlock()
 			col = cloned
@@ -249,12 +249,12 @@ func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.C
 			now, still := iw.RecordID(pos[0], pos[1])
 			fresh := still && now == id
 			if fresh {
-				ds.meta.put(key, chunkMeta{ud: fc.UserData, side: side})
+				ds.meta.Put(key, chunkMeta{ud: fc.UserData, side: side})
 			}
 			if ds.cache != nil {
 				if fresh {
 					// The cache owns fc.Col; hand the caller a copy.
-					ds.cache.put(key, cacheEntry{col: fc.Col, ud: fc.UserData, side: side})
+					ds.cache.Put(key, cacheEntry{col: fc.Col, ud: fc.UserData, side: side})
 				}
 				col = cloneColumn(fc.Col)
 			} else {
@@ -404,7 +404,7 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 	if p.conf.appendMode {
 		p.mu.Lock()
 		ds := p.dim(dim)
-		if m, ok := ds.meta.get(key); ok {
+		if m, ok := ds.meta.Get(key); ok {
 			p.mu.Unlock()
 			return m.side
 		}
@@ -450,7 +450,7 @@ func (p *Provider) publishMeta(ds *dimState, iw *format.IndexedWorld, key [2]int
 	if now, still := iw.RecordID(key[0], key[1]); !still || now != id {
 		return
 	}
-	ds.meta.put(key, m)
+	ds.meta.Put(key, m)
 }
 
 // sidecarOf collects a column's preserved-state fields.

@@ -549,3 +549,414 @@ dragonfly registry, because vanilla biome names have no colon, so nothing
 separates it from returning the prefixed name unconditionally. It is a
 normalisation helper on the write path, not a validity check, and reaching it
 needs a custom biome whose own name is namespaced. Left alone and noted.
+
+---
+
+# The rest of the suite: mover, preservation, provider, golden
+
+Everything above covers the tests the invariant table names. This part covers
+the rest, which `FREEZE.md`'s third Correctness box asks for and which had
+never been controlled. The method is the same — locate the production code the
+test exercises, confirm the line with `sed`, disable it with `if false && …`,
+run with `-count=1`, require a named test to fail, restore and confirm — and
+the format of the tables is the same: one row per production check, because an
+entry with three branches and one fixture is three-quarters untested and
+counting entries hides that.
+
+**Line numbers below are as of the parent commit of this one**, since a control
+that names a line in a file this commit also edits is worthless. Anchors are
+quoted; grep for the anchor, not for the number.
+
+## Summary
+
+**82 controls were run against the existing suite. 44 came back green.**
+
+- 41 were vacuous coverage and are fixed: a test now reaches the check, and the
+  same control is red. Every fix is listed with the control that was green
+  before it and the message it produces now.
+- 1 is a guard with no distinguishing input, kept and annotated in the code
+  (`SaveAsync`, below).
+- 2 are golden **fixture** gaps rather than vacuous tests: the golden worlds do
+  not contain the shape, and the rule is held by a named test elsewhere.
+
+Three further controls were run against the two tests written for the
+dictionary eviction work; all three are red. `SECURITY.md` carries that
+measurement.
+
+The ratio is worse than the invariant-table pass (17 checks across 69 entries)
+and the reason is structural: the invariant table at least *names* a test per
+rule, so the failure mode there is a fixture that misses. Out here there was no
+table at all, so whole mechanisms — the mover's clip counters, every read-only
+guard but two, three of the four store-time `SkipMask` bits — had never been
+pointed at by anything.
+
+---
+
+## 1. The mover
+
+26 controls, 9 green. `move.go` line numbers.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| M1 | fast path re-keys the column | `165` `X: c.X + int32(off.X()>>4), …` | `TestMoveFastPath` | RED — the translated chunk does not exist (`leveldb: not found` at the load, before the block assertion) |
+| M2 | spawn translation | `427` `s.Spawn = s.Spawn.Add(off)` | `TestMoveFastPath`, `TestMoveUnaligned` | RED — "spawn not translated" |
+| M3 | marker translation | `438` `ms[i].Pos[0] += …` | `TestMoveFastPath` | RED — "marker not translated" |
+| M4 | pre-move backup | `96` `if opt.Backup {` | `TestMoveFastPath` | RED — "pre-move backup missing" |
+| M5 | fast path translates block entities | `400` the `col.BlockEntities` loop | — | **was green** |
+| M5a | fast path translates scheduled updates | `417` `col.ScheduledBlocks[i].Pos = …Add(off)` | — | **was green** |
+| M5b | fast path translates entities | `408` `if pos, ok := entityPos(e.Data); ok {` | — | **was green** |
+| M6 | slow path applies the X offset | `248` `wx := int(c.X)*16 + int(lx) + off.X()` | `TestMoveUnaligned` | RED (same indirect shape as M1) |
+| M7 | clip refusal | `79` `if report.ClippedTotal() > 0 && !opt.Clip {` | `TestMoveClipRefusalAndForce` | RED — "err = <nil>, want ErrWouldClip" |
+| M8 | dry run writes nothing | `82` `if opt.DryRun {` | `TestMoveClipRefusalAndForce` | RED — "dry run modified the file" |
+| M9 | clipped-block counter | `258` `if ch.Block(…) != air {` | `TestMoveClipRefusalAndForce` | RED — "clip report empty" |
+| M10 | layer traversal ceiling | `191` `layerN := max(maxSourceLayers(ch), sidecarLayers(…))` | `TestMovePreservesAllLayers` | RED — "layer 1 lost in move" |
+| M11 | the ceiling is `MaxLayers`, not 4 | `117` `min(n, format.MaxLayers)` → `min(n, 4)` | `TestMovePreservesDeepLayers` | RED — "layer 7 lost in the move" |
+| M12 | an untranslatable entity is kept | `336` the append in the `!ok` arm | `TestMoveKeepsUnreadableEntities` | RED |
+| M13a | fast path moves the tick sidecar key | `160` `ut.Pos[0] + int32(off.X()), …` | `TestMoveFastPathKeepsSidecars` | RED — "the sidecar key did not move with the update" |
+| M13b | fast path carries the biome sidecar | `168` `UnknownBiomes: c.UnknownBiomes, …` | `TestMoveFastPathKeepsSidecars` | RED |
+| M14 | slow path re-anchors preserved biomes | `270` `if len(c.UnknownBiomes) > 0 {` | `TestMovePreservesUnknownBiomes` | RED |
+| M15 | the sidecar is consulted before the air test | `298` `if !ok && rid == air {` → `if rid == air {` | `TestMoveKeepsUnknownBlocksWithAirPlaceholder` | RED |
+| M16 | state references are rebased | `307` `State: stateBase(tcol) + state` | `TestMoveKeepsUnknownBlocksWithAirPlaceholder` | RED |
+| M17 | whole-storage preserved states | `291` `state, ok = uniform[srcKey{…}]` | — | **was green** |
+| M18 | entities clip on Y | `340` `if wy < float64(r0) \|\| wy > float64(r1)+1 {` | — | **was green** |
+| M19 | block entities clip on Y | `320` `if pos.Y() < r0 \|\| pos.Y() > r1 {` | — | **was green** |
+| M20 | scheduled updates clip on Y | `360` `if pos.Y() < r0 \|\| pos.Y() > r1 {` | — | **was green** |
+| M21 | user data follows the chunk | `381` `t.UserData = cloneBytes(c.UserData)` | — | **was green** |
+| M22 | the column tick follows the chunk | `386` `t.Col.Tick = c.Col.Tick` | — | **was green** |
+| M23 | border translation | `93` `wf.Border = moveBorder(…)` | `TestBorderRoundTripAndMove` | RED |
+
+### What the nine were, and what fixes them
+
+**M5 / M5a / M5b — `moveColumnExtras`, all three halves.** Nothing in the
+repository noticed when any of them stopped translating. Two of the three are
+load-bearing and one is invisible in the file, and telling them apart was the
+work:
+
+- an **entity**'s position is written verbatim into its NBT, so dropping the
+  translation moves the entity nowhere and the file says so;
+- a **scheduled update**'s absolute position is the key `extractColumnRaw`
+  matches its preserved-state sidecar on (`encode.go`, `tickState`), and the
+  fast path translates that sidecar at `move.go:157`. Translate one and not the
+  other and the preserved state is silently dropped by the next write;
+- a **block entity**'s is not visible in the file at all. `projectCollections`
+  strips `x`/`y`/`z` and the record stores the position's low nibbles plus its
+  Y, none of which a chunk-aligned offset with no vertical component changes,
+  and the decoder reinjects `x`/`y`/`z` from the chunk key. So no file-level
+  control is possible; the assertion is on the column `translateColumns`
+  returns.
+
+`TestMoveFastPathTranslatesEveryPosition` pins all three on the returned
+column, and `buildSidecarColumn` now carries a block entity and an entity as
+well as the sidecars. All three controls are red:
+"scheduled update not translated", "entity not translated: [4.5 -60 5.5]",
+"block entity not translated".
+
+**M17 — whole-storage preserved states in the mover.** A preserved state can
+cover an entire storage (`Index == WholeStorage`), which is how a uniformly
+unresolved section decodes, and the slow path resolves that form from a second
+table. No fixture had one. `TestMoveKeepsUniformUnknownBlocks` builds a column
+with one and asserts all 4,096 positions of the section carry it at the
+destination: "uniform preserved state covered 0 positions, want 4096".
+
+**M18 / M19 / M20 — the three clip paths.** `TestMoveClipRefusalAndForce`
+clipped blocks only, so `ClippedEntities`, `ClippedBlockEntities` and
+`ClippedTicks` were never non-zero. `TestMoveClipsCollections` puts one of each
+at Y 2 and moves down 70, with blocks from Y 6 up surviving so the column still
+exists, and asserts each counter. It takes the counts from a `DryRun` so the
+control fails on the count rather than on a writer error further down, then
+performs the move and checks the content is gone. Controls: "ClippedEntities =
+0, want 1", and the same for the other two.
+
+**M21 / M22 — chunk user data and the column tick.** Neither is addressed by a
+position, so the slow path, which builds its destination columns from nothing,
+has to place them by hand, and nothing checked that it did.
+`TestMoveCarriesChunkMetadata`: "chunk user data = "", want "meta"", "column
+tick = 0, want 4321".
+
+---
+
+## 2. Preservation
+
+21 controls, 14 green — the worst ratio of the four areas, and the one where
+the vacuity was closest to the claim. Two of the tests whose names describe a
+check exactly were passing with that check disabled.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| P1 | a store inherits the previous column's sidecar | `pile.go:371` | `TestUnknownStatePreservation`, `TestUnknownSurvivesRangeChange` | RED |
+| P3 | an append store recovers the sidecar from the record | `append.go:45` `cur = sidecarOf(old)` | — | **was green** |
+| P4 | `SaveAs`'s snapshot carries preserved states | `pile.go:724` | `TestUnknownSurvivesSaveAs` | RED |
+| P6 | extraction records preserved states | `structure.go:281` `if ok {` | four tests | RED |
+| P7 | the paste places preserved states | `structure.go:501` `if ok {` | `TestUnknownSurvivesPasteAndImport` | RED |
+| P9 | the paste starts from the column's existing sidecar | `structure.go:400` `unknown: append(…, cur.unknown…)` | — | **was green** |
+| P10 | `columnSidecar` reads through to the record | `pile.go:424` `side := sidecarOf(fc)` | — | **was green** |
+| P11 | rotation carries preserved states | `rotate.go:88` `if ok {` | `TestRotationPreservesMetadataAndStates` | RED |
+| P11b | rotation carries user data | `rotate.go:36` | `TestRotationPreservesMetadataAndStates` | RED |
+| P12 | a store inherits the biome sidecar | `pile.go:372` | — | **was green** |
+| P12b | `SaveAs` carries the biome sidecar | `pile.go:725` | — | **was green** |
+| P13a | extraction resolves whole-storage entries | `structure.go:266` | — | **was green** |
+| P13b | the paste resolves whole-storage entries | `structure.go:499` | — | **was green** |
+| P13c | rotation resolves whole-storage entries | `rotate.go:86` | — | **was green** |
+| P14 | a template instance's first store inherits the base sidecar | `pile.go:382` | — | **was green** |
+| P15 | the paste drops entries it overwrote | `structure.go:524` | — | **was green** |
+| P16 | extraction reaches sidecar-only layers | `structure.go:253` | — | **was green** |
+| P17 | `layerCount` is bumped by the sidecar | `structure.go:165` | `TestPasteKeepsUnknownStatesAboveAllocatedLayers` | RED |
+| P18 | the paste carries the column's biome sidecar | `structure.go:403` | — | **was green** |
+| P19 | extraction rebases per-column state tables | `structure.go:238` | — | **was green** |
+| P20 | the paste's state table keeps the column's prefix | `structure.go:402` | — | **was green** |
+
+### The assertion that was weaker than the claim
+
+Ten of these tests end in `format.UnresolvedStates`, directly or through
+`hasUnknown`. **That function reads the file's block-state palette.** It proves
+a name is somewhere in the file; it says nothing about whether any entry still
+ties that name to a position. A sidecar that lost its entries but kept its
+state table leaves the palette untouched, and in indexed mode the palette is
+append-only, so the name survives even a record that no longer references it.
+
+That is what hid P3 and P9. Both drop the sidecar *entries* while the *state
+table* still reaches the writer, so the palette still names `minecraft:d1rt`
+and `hasUnknown` still said yes.
+
+`preservedStateAt` / `preservedStateAtIndexed` decode the file and return the
+name of the preserved state anchored at a given world position, or `""`. They
+are now the assertion in `TestUnknownStatePreservation`,
+`TestUnknownStatePreservationAppend`, `TestUnknownSurvivesSaveAs`,
+`TestUnknownSurvivesRangeChange`, `TestPasteMergesExistingSidecar` and the two
+new append tests, alongside the palette check rather than instead of it.
+
+### What the fourteen were
+
+**P3 — `TestAppendStoreRecoversSidecarWithoutALoad` (new).** `storeAppend`
+reads the previous record when the position is not in the bounded metadata
+cache. Every append test loaded the column first, which fills that cache, so
+the read-through never ran. The new test loads in one session and stores in a
+second, which is what a server restart looks like and what a cache eviction
+looks like. Control: `preserved state at (1,4,1) = "", want minecraft:d1rt`.
+
+**P10 — `TestAppendSidecarReadsThroughOnAMetaCacheMiss` (new).** The same shape
+one level up. `TestAppendModeStructureExtraction` is named for this path, but
+`ExtractStructure` calls `LoadColumn` before `columnSidecar`, and `LoadColumn`
+publishes to the metadata cache, so the extraction always hit the cache. The
+new test asks for the sidecar with nothing loaded. Control: "read-through
+returned no preserved states".
+
+The **cache** half of `columnSidecar` has no correctness input of its own and
+is not counted above: in append mode every store writes the record through
+immediately, so the cached sidecar and the one on disk are always the same
+value. It saves a frame decode and decides nothing.
+
+**P9 / P18 / P20 — `TestPasteMergesExistingSidecar` was vacuous.** It pasted a
+structure with **no preserved states of its own**, so `sideFor` — the whole
+merge — was never called, the paste handed the provider no sidecar, and the
+destination's states survived by the ordinary inheritance path P1 covers. The
+fixture now extracts its structure from a second corrupted world named
+`minecraft:d2rt`, so the two states can be told apart, and plants a preserved
+biome in the destination as well. Controls: "the paste dropped an entry it did
+not overwrite" (P9), "paste dropped the column's preserved biome, which it
+never touches" (P18), and P20 red on the same assertion because dropping the
+`cur.states` prefix shifts every inherited reference.
+
+**P15 — `TestPasteOverwritesTheStateItReplaces` (new).** A paste landing on a
+position that already carries a preserved state has to drop the inherited
+entry. Leaving it there gives the column two entries for one position, and
+`injectUnknown` gives the placeholder slot to the first one written, so the
+state the paste replaced wins. Control: `preserved state at (1,4,1) =
+"minecraft:d1rt", want minecraft:d2rt`.
+
+**P12 / P12b — the biome sidecar.** Every preservation test used block states.
+`TestBiomeSidecarSurvivesStoreAndSaveAs` plants an unresolvable biome (helper
+`plantUnknownBiome`, factored out of `TestMovePreservesUnknownBiomes`) and
+drives both the store path and the `SaveAs` snapshot, which carry it in
+separate fields. Controls: "a load/store cycle renamed the unresolved biome to
+the runtime fallback", "SaveAs renamed …".
+
+**P13a / P13b / P13c — whole-storage entries in the structure paths.** The same
+gap as M17, in extraction, paste and rotation. `TestPasteCarriesUniformPreservedStates` and `TestRotationCarriesUniformPreservedStates` build a 16-cube of
+placeholder blocks carrying one `WholeStorage` entry, and
+`TestExtractCarriesUniformAndRebasesStates` gets one the way a real file does —
+a section uniformly filled with a block whose name the registry cannot resolve.
+
+**P16 — `TestExtractReachesPreservedLayersTheChunkNeverAllocated` (new).** On a
+registry whose placeholder resolves to air, a preserved state on layer 2 has no
+storage, so `chunkLayers` alone never visits it. Control: "extraction found 0
+preserved states, want 1". This is the extraction half of the defect
+`TestMovePreservesDeepLayers` and `TestPasteKeepsUnknownStatesAboveAllocatedLayers` already cover in the other two directions.
+
+**P19 — `TestExtractRebasesPerColumnStateTables` (new).** This one needed
+thought. Every column of a *file* shares the file's single state table, so an
+extraction straight off disk passes with the rebase deleted: the two copies of
+the table are identical and index 1 means the same name in both. The tables
+diverge only in memory, because a paste appends its structure's states to the
+column it lands in and to no other. The fixture pastes into the second of two
+chunks and extracts across both from the same provider, without a save in
+between. Control: "the second column's states resolved to
+map[minecraft:d1rt:3]: its references were not rebased".
+
+**P14 — `TestTemplateInstanceInheritsPreservedStates` (new).** An instance's
+first store of a template column has no previous column of its own, so it takes
+the base's sidecar. Control: "a template instance's first store dropped the
+base column's preserved states".
+
+---
+
+## 3. The provider
+
+28 controls, 19 green. This is where whole mechanisms turned out to be
+unpointed-at rather than under-covered.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| V1 | `LoadSkip` entities | `pile.go:290` | `TestLoadSkip` | RED |
+| V2 | `LoadSkip` block entities | `pile.go:293` | `TestLoadSkip` | RED |
+| V3 | `LoadSkip` scheduled ticks | `pile.go:296` | — | **was green** |
+| V4 | a store is refused read-only | `pile.go:341` | `TestReadOnly` | RED |
+| V5 | `FilterColumn` | `pile.go:344` | `TestSkipAndFilters` | RED |
+| V6 | `Skip(SkipEntities)` | `pile.go:349` | `TestSkipAndFilters` | RED |
+| V7 | `FilterEntity` | `pile.go:351` | — | **was green** |
+| V8 | `Skip(SkipBlockEntities)` | `pile.go:354` | — | **was green** |
+| V9 | `FilterBlockEntity` | `pile.go:356` | `TestSkipAndFilters` | RED |
+| V10 | `Skip(SkipScheduledTicks)` | `pile.go:359` | — | **was green** |
+| V11 | `Skip(SkipChunkUserData)` | `pile.go:385` | — | **was green** |
+| V13 | `StoreLight` reaches the writer | `save.go:296` | — | **was green** |
+| V14 | `SkipBiomes` reaches the writer | `save.go:295` | — | **was green** |
+| V15 | `Snapshot` refused read-only | `snapshot.go:29` | — | **was green** |
+| V16 | `DeleteSnapshot` refused read-only | `snapshot.go:98` | — | **was green** |
+| V17 | `Rollback` refused read-only | `snapshot.go:111` | — | **was green** |
+| V18 | `SaveAsync` refused read-only | `save.go:36` | — | **green, and no input exists** |
+| V19 | `Save` refused read-only | `save.go:20` | `TestReadOnly` | RED |
+| V20 | a clean dimension is not rewritten | `save.go:149` | — | **was green** |
+| V21 | auto-compact on close | `save.go:381` | `TestAppendAutoCompactOnClose` | RED |
+| V22 | `Close` saves | `save.go:359` | four tests | RED |
+| V23 | `SetChunkUserData` refused read-only | `metadata.go:73` | — | **was green** |
+| V24 | `SetUserData` refused read-only | `metadata.go:19` | — | **was green** |
+| V25 | `SetMarker` refused read-only | `metadata.go:126` | — | **was green** |
+| V26 | `RemoveMarker` refused read-only | `metadata.go:145` | — | **was green** |
+| V27 | `SetBorder` refused read-only | `border.go:70` | — | **was green** |
+| V28 | `SavePlayerSpawnPosition` refused read-only | `pile.go:525` | — | **was green** |
+| V29 | `SaveSettings` refused read-only | `pile.go:205` | — | **was green** |
+
+### Read-only: eleven guards, one test, two checks
+
+`TestReadOnly` drove `StoreColumn` and `Save` and then compared the dimension
+file byte for byte. That is a real check and it caught nothing else, because
+every other guard either returns an error the test never asked for or changes
+state the test never read. `Snapshot`, `DeleteSnapshot` and `Rollback` write to
+disk *directly*, so with their guards removed a read-only provider deletes a
+snapshot on request; the file comparison did not see it because it only looked
+at `overworld.pile`.
+
+`TestReadOnlyRefusesEveryMutator` drives all eleven, asserts `ErrReadOnly`
+where the method returns one and asserts the *observable* where it does not
+(`Settings().Name`, `UserData()`, `Markers()`, `ChunkUserData`, `Border()`, the
+spawn store's map), and finishes by hashing every file under the world
+directory and requiring the map to be unchanged. Nine controls turn it red with
+a message naming the method.
+
+**V18, `SaveAsync`, is the exception and stays green.** Every method that could
+set a dirty flag refuses a read-only provider first — `ds.dirty` and
+`p.metaDirty` are set at eleven places, ten behind a guard and the eleventh in
+`insertColumn`, which only `Builder` calls — so a read-only save finds no dirty
+dimension, writes nothing, and is indistinguishable from the guarded one. There
+is no input that separates them. It is **kept** rather than deleted, unlike the
+four checks removed elsewhere in this document, and the difference is worth
+stating: those were validity checks whose neighbour refused the same inputs, so
+removing them lost nothing; this one is the second line of a safety property
+whose first line is ten other guards. `save.go` now says so at the guard.
+
+### Skip, filter and writer options
+
+`TestSkipAndFilters` set `Skip(SkipEntities|SkipScheduledTicks)` on a fixture
+(`testColumn`) that carries **no scheduled updates and no chunk user data**, and
+used `FilterBlockEntity`, which sits in the `else` arm of `SkipBlockEntities`
+and therefore excludes it. Four of the store path's branches had no input.
+
+- `TestStoreSkipMaskCoversEveryCategory` (new) stores a column carrying all four
+  categories, first with no skipping — asserting the fixture is not empty to
+  begin with, which is what made the old one useless — then with all four bits
+  set. Controls: "SkipBlockEntities ignored: 1 block entities",
+  "SkipScheduledTicks ignored: 1 scheduled updates", "SkipChunkUserData
+  ignored: "ud"".
+- `TestFilterEntityDropsOnStore` (new) uses a provider that does not set
+  `SkipEntities`, which is the only way to reach `FilterEntity` at all.
+- `TestLoadSkip` now stores `tickColumn` and skips scheduled ticks too, and
+  asserts the file still holds all three. Control: "LoadSkip ignored: … 1
+  scheduled updates".
+- `TestStoreLightAndSkipBiomesReachTheWriter` (new) covers the two `Options`
+  fields the save path fills in and nothing asserted on: it checks
+  `FlagStoreLight` in the header of a world saved with `StoreLight()` (and its
+  absence without), and that a biome does not survive `Skip(SkipBiomes)`.
+  `StoreLight` only claims light the records actually carry, so the fixture
+  fills the column's light first — without that the option is invisible.
+
+### The clean-dimension skip
+
+`save.go:149` refuses to rewrite a dimension that is on disk, unmodified, and
+whose world metadata is unmodified. The output is byte-identical either way,
+because the world encodes deterministically, so nothing about the file's
+*contents* can show the difference. `TestSaveSkipsCleanDimensions` sets the
+file's mtime an hour into the past, saves, and requires the mtime not to have
+moved — an atomic replace gives a new file and a new mtime — then dirties a
+column and requires it to move. Control: "a clean dimension was rewritten:
+mtime moved to …".
+
+---
+
+## 4. The golden suite
+
+7 controls, 5 red. The golden tests are the byte lock, so the control is: move
+one byte a writer produces and require them to notice.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| G1 | the `StoreLight` header flag | `format/encode.go:337` | `TestGoldenFormatStability/world_light`, `/world_all` | RED — "the wire format changed" |
+| G3 | the structure writer drops trailing air layers | `format/structure.go:364` | `/structure`, `/structure_zstd` | RED |
+| G7 | the indexed directory's Morton order | `format/indexed.go:1966` (swap `ka`, `kb`) | `/indexed`, `/indexed_zstd`, `/indexed_torn` | RED |
+| G5 | the decoder reinjects a block entity's `x`/`y`/`z` | `format/decode.go:759` | `TestGoldenFormatReadable` | RED — "column (0,0): block entities:" |
+| G6 | worker count must not affect output | `format/encode.go:212` (make `SkipBiomes` depend on `Workers`) | `TestUncoveredOptionPaths` | RED — "Workers=1 produced 493 bytes, parallel produced 504" |
+| G2 | the state-property key sort | `format/palette.go:354` (`slices.Sort` then `Reverse`) | goldens **green** | fixture gap, see below |
+| G4 | the world writer drops trailing air layers | `format/encode.go:874` | goldens **green** | held by `TestTrailingAirLayersDropped` |
+
+**G2 is a real gap and it cannot be closed here.** Reversing the sort of a
+block state's property keys does not move a single golden byte, which means no
+block in any golden world has **two or more state properties**. That is a
+common shape — any stair, any fence — and the canonical order of its keys is
+therefore not byte-locked by the goldens. It is enforced: §3.2's reader check
+(`palette.go:444`, `:447`) and `TestWriterSortsStateProperties` both hold it,
+and both have controls in the table above. Closing the *golden* gap means
+adding a block to a golden world, which regenerates the fixtures, and this pass
+is forbidden from running `-update`. **Whoever regenerates the goldens next
+should add a two-property block state to `goldenWorld`.** Until then the sort
+order is held by a unit test and not by the byte lock.
+
+G4 is the same shape and less interesting: the rule has a named test that is
+red under the control, and the golden worlds simply do not have a section with
+a spare trailing air layer.
+
+`TestUncoveredOptionPaths`'s second claim — that `FastCompression` does not
+change the content hash — has no control of its own, and the reason is
+structural rather than an omission: the fast and default paths feed identical
+bytes to the same encoder and differ only in zstd's concurrency setting, so
+there is no edit that changes one and not the other. What the assertion buys is
+a regression guard against the dependency, which is worth having and is not the
+same thing as a check with an input.
+
+---
+
+## 5. Two tests written in this pass
+
+Listed here so the document stays the whole record; the measurement is in
+`SECURITY.md`.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| D1 | both dictionary cache bounds | `format/zstdpool.go` `dictCacheEntries`, `dictCacheBytes` | `TestDictCodecCacheIsBounded` | RED — "64 codecs held after 64 distinct dictionaries, bound is 16" |
+| D1b | the same | the same | `TestEvictedDictCodecStaysUsable` | RED — "the codec under test was never evicted; the fixture does not reach the case" |
+| D2 | a decoder closed under its reader | `format/zstdpool.go` `decodeAll`, `d.Close()` before `DecodeAll` | `TestEvictedDictCodecStaysUsable` | RED — "decoder used after Close" |
+
+`TestDictCodecCacheIsBounded` asserts against the literals 16 and 16 MiB rather
+than against `dictCacheEntries` and `dictCacheBytes`, and separately requires
+the constants to equal them. A bound asserted against its own constant moves
+with the constant and cannot fail — the same trap `SECURITY.md` records for the
+column ceiling's writer half. The first version of this test had it, and D1 was
+green until it was fixed.

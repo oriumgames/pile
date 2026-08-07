@@ -475,22 +475,67 @@ It no longer grows with the candidate count, which was the denial of service.
 
 ### Process-global caches keyed by attacker-controlled bytes
 
-`zstdpool.go` memoises `dictCodec`s in a process-wide map keyed by the
-dictionary's content and length. A hostile indexed file can carry any
-dictionary up to `maxDictLen` (1 MiB), and opening it installs a parsed
-decoder for that dictionary which is **never evicted**. Opening a thousand
-files with a thousand distinct dictionaries pins a thousand of them for the
-life of the process.
+**Fixed.** `zstdpool.go` memoised `dictCodec`s in a process-wide map keyed by
+the dictionary's content and length. A hostile indexed file can carry any
+dictionary up to `maxDictLen` (1 MiB), and opening it installed a parsed
+decoder for that dictionary which was **never evicted**, so a sequence of files
+carrying distinct dictionaries pinned one megabyte each for the life of the
+process.
 
-This is documented in `zstdpool.go` as deliberate — the map "grows with the
-number of distinct dictionaries a process meets (one per compacted file), not
-with the number of handles open on them" — and that reasoning is right for
-files the operator wrote. It is not right for files an attacker supplies. The
-fix is an LRU on `dictCodecs`, and it is safe (evicting only means the next
-open rebuilds; a handle still using a codec keeps it alive through its own
-reference). It was not made in this pass because it is a change to shared codec
-lifetime rather than to a decode path, and it belongs with whoever owns the
-memory work.
+The map was documented as deliberate — it "grows with the number of distinct
+dictionaries a process meets (one per compacted file), not with the number of
+handles open on them" — and that reasoning is right for files the operator
+wrote and wrong for files an attacker supplies, because the key is bytes the
+file chooses.
+
+`dictCodecs` is now the bounded LRU the memory pass built for the provider's
+column and metadata caches, moved to `internal/lru` so both packages can use
+one implementation rather than two. It was moved rather than copied for the
+only reason it could not simply be imported: `format` is imported by `pile`, so
+a type declared in `pile` is unreachable from `format`, and `internal/` is
+where a type both need belongs. It fits without change — it is already bounded
+by entry count *and* by a weight budget, which is exactly the shape this needs,
+since one entry can be a megabyte on its own.
+
+**The bound is 16 entries and a 16 MiB budget** (`dictCacheEntries`,
+`dictCacheBytes`). Sixteen covers a world's three dimensions, the second handle
+a compaction opens over each, and headroom; a dictionary this package trains is
+at most 16 KiB, so sixteen of those weigh a quarter of a megabyte and the count
+is what binds. At `maxDictLen` the two bounds bind at the same point, which is
+how the budget was chosen.
+
+Measured on one machine, installing 128 distinct dictionaries of exactly
+`maxDictLen` bytes each and reading `HeapAlloc` after two collections:
+
+| | entries held | retained |
+|---|---|---|
+| before | 128, and unbounded | **134,253,408 bytes (128.03 MiB)**, 1,048,854 per dictionary |
+| after | **15** | **15,734,152 bytes (15.01 MiB)** |
+
+Fifteen rather than sixteen because the weight budget bites first at that size:
+16 × (1 MiB + 512) is over 16 MiB. The per-dictionary figure is essentially the
+dictionary itself; the parsed decoders live in a `sync.Pool` the collector
+empties, so they are not part of the standing cost, which is why
+`dictCodecWeight` charges the dictionary bytes and a fixed allowance and not a
+guess at the decoder.
+
+**Eviction cannot break a live handle, because it does not close anything.**
+`lru.Cache.evict` unlinks: it removes the map entry and the list element and
+leaves the value alone. An `*IndexedWorld` takes its `dictCodec` at open and
+holds it for its lifetime, so a codec evicted mid-read is still reachable
+through the reader that is using it and still decodes. Nothing here may close a
+codec on eviction — the cache has no way to know when the last handle is done —
+and `zstdpool.go` says so at `sharedDictCodec`. `TestEvictedDictCodecStaysUsable`
+runs four readers through a handle's codec while another goroutine installs 64
+distinct dictionaries, verifies afterwards that the codec really was evicted
+(or the fixture proves nothing), and reads through it again. Green under
+`-race`; red when `decodeAll` is made to close its decoder before using it
+("decoder used after Close").
+
+The cost of the bound is one dictionary parse on the next open of a file whose
+codec was evicted. A handle already holding one never re-fetches, and
+compaction stays deterministic: a rebuilt encoder is built from the same
+dictionary at the same level with concurrency 1.
 
 The same shape, without the attacker control, applies to `encoders` and
 `decPools`, which are keyed by a small fixed set of levels and ceilings.
@@ -550,6 +595,20 @@ And the four validity tightenings, each disabled the same way:
 | B′ | the same, and separately the independent walker's own wrap check in `format/vectorwalk_test.go` | `TestConformanceVectorsNegative/override_index_chain_wraps` | **FAIL** — with B, the reader accepted the vector; with the walker's check disabled, the walker accepted it |
 | C | `format/decode.go`, `r.count(maxChunks, "chunk")` → `r.count(1<<32-1, ...)` | `TestHostileDecodedColumnCeiling` | **FAIL** — 4,194,305 columns were accepted by the count and refused later for a different reason |
 | D | `format/indexed.go`, `finishDirectory`'s `w.recoveryLeft -= chunkN; w.recoveryLeft < 0` → `; false` | `TestRecoveryWorkIsBounded` | **FAIL** — recovery walked the whole candidate list |
+
+And the dictionary bound:
+
+| # | production line disabled | test | result with it disabled |
+|---|--------------------------|------|-------------------------|
+| E | `format/zstdpool.go`, `dictCacheEntries` 16 → 4096 and `dictCacheBytes` 16 MiB → 16 GiB | `TestDictCodecCacheIsBounded` | **FAIL** — 64 codecs held after 64 distinct dictionaries, bound is 16 |
+| E′ | the same | `TestEvictedDictCodecStaysUsable` | **FAIL** — "the codec under test was never evicted; the fixture does not reach the case" |
+| E″ | `format/zstdpool.go`, `decodeAll`'s `d.Close()` inserted before `DecodeAll` | `TestEvictedDictCodecStaysUsable` under `-race` | **FAIL** — "decoder used after Close" |
+
+E and E′ are what a bound asserted against its own constant would not catch:
+`TestDictCodecCacheIsBounded` asserts the literals 16 and 16 MiB and separately
+requires the constants to equal them, and the eviction test installs an
+absolute 64 dictionaries rather than a multiple of the bound. The first draft
+of both did neither, and E was green.
 
 The recovery measurement in item D was taken in both directions on one machine
 — the bound disabled and then restored — rather than extrapolated, which is why

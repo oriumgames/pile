@@ -435,13 +435,13 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 
 	stale := chunkMeta{side: sidecar{states: []format.BlockState{{Name: "audit:stale", Version: 1}}}}
 	p.mu.Lock()
-	ds.meta.drop(key)
+	ds.meta.Drop(key)
 	p.mu.Unlock()
 
 	// An identity no record has: the decode this stands for was superseded.
 	p.publishMeta(ds, ds.iw, key, id+1, stale)
 	p.mu.Lock()
-	_, published := ds.meta.get(key)
+	_, published := ds.meta.Get(key)
 	p.mu.Unlock()
 	if published {
 		t.Fatal("a sidecar from a superseded record was published")
@@ -451,7 +451,7 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 	// refusing everything.
 	p.publishMeta(ds, ds.iw, key, id, stale)
 	p.mu.Lock()
-	got, published := ds.meta.get(key)
+	got, published := ds.meta.Get(key)
 	p.mu.Unlock()
 	if !published || len(got.side.states) != 1 || got.side.states[0].Name != "audit:stale" {
 		t.Fatalf("a current sidecar was not published: %v %v", published, got.side.states)
@@ -478,7 +478,7 @@ func TestChunkMetaCacheBounded(t *testing.T) {
 		}
 	}
 	p.mu.Lock()
-	held := p.dim(world.Overworld).meta.ll.Len()
+	held := p.dim(world.Overworld).meta.Len()
 	p.mu.Unlock()
 	if held > metaCacheColumns {
 		t.Fatalf("%d positions of metadata retained after %d stores, bound is %d", held, n, metaCacheColumns)
@@ -511,16 +511,16 @@ func TestChunkMetaCacheWeighed(t *testing.T) {
 	c := newMetaCache(0)
 	big := make([]byte, metaCacheBytes/4)
 	for i := range 8 {
-		c.put([2]int32{int32(i), 0}, chunkMeta{ud: big})
+		c.Put([2]int32{int32(i), 0}, chunkMeta{ud: big})
 	}
-	if c.weight > metaCacheBytes {
-		t.Fatalf("cache holds %d bytes, budget is %d", c.weight, metaCacheBytes)
+	if c.Weight() > metaCacheBytes {
+		t.Fatalf("cache holds %d bytes, budget is %d", c.Weight(), metaCacheBytes)
 	}
-	if c.ll.Len() >= 8 {
-		t.Fatalf("byte budget evicted nothing: %d entries", c.ll.Len())
+	if c.Len() >= 8 {
+		t.Fatalf("byte budget evicted nothing: %d entries", c.Len())
 	}
 	// The most recent entry survives: a caller gets back what it just put in.
-	if _, ok := c.get([2]int32{7, 0}); !ok {
+	if _, ok := c.Get([2]int32{7, 0}); !ok {
 		t.Fatal("the entry just stored was evicted")
 	}
 }

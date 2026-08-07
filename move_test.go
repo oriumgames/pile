@@ -304,7 +304,9 @@ func TestMoveFastPathKeepsSidecars(t *testing.T) {
 	}
 }
 
-// buildSidecarColumn makes a column carrying every preservation sidecar.
+// buildSidecarColumn makes a column carrying every preservation sidecar, plus
+// one of each positioned collection so a mover that re-keys the column without
+// translating them is visible.
 func buildSidecarColumn(t *testing.T, reg world.BlockRegistry) format.Column {
 	t.Helper()
 	ch := chunk.New(reg, cube.Range{-64, 319})
@@ -312,13 +314,218 @@ func buildSidecarColumn(t *testing.T, reg world.BlockRegistry) format.Column {
 	ch.SetBlock(0, -64, 0, 0, stone)
 	return format.Column{
 		X: 0, Z: 0,
-		Col: &chunk.Column{Chunk: ch, ScheduledBlocks: []chunk.ScheduledBlockUpdate{
-			{Pos: cube.Pos{2, -60, 3}, Block: stone, Tick: 40},
-		}},
+		Col: &chunk.Column{
+			Chunk: ch,
+			BlockEntities: []chunk.BlockEntity{{
+				Pos:  cube.Pos{4, -60, 5},
+				Data: map[string]any{"id": "minecraft:chest", "x": int32(4), "y": int32(-60), "z": int32(5)},
+			}},
+			Entities: []chunk.Entity{{ID: 5, Data: map[string]any{
+				"identifier": "minecraft:armor_stand",
+				"Pos":        []any{float32(4.5), float32(-60), float32(5.5)},
+			}}},
+			ScheduledBlocks: []chunk.ScheduledBlockUpdate{
+				{Pos: cube.Pos{2, -60, 3}, Block: stone, Tick: 40},
+			},
+		},
 		UnknownStates:     []format.BlockState{{Name: "audit:missing", Version: 1}},
 		UnknownTicks:      []format.UnknownTick{{Pos: [3]int32{2, -60, 3}, At: 40, State: 0}},
 		UnknownBiomeNames: []string{"audit:biome"},
 		UnknownBiomes:     []format.UnknownBlock{{Section: -4, Index: format.WholeStorage, State: 0}},
+	}
+}
+
+// TestMoveFastPathTranslatesEveryPosition: the fast path re-keys columns and
+// never rewrites the block data, so every position held outside that data has
+// to be translated by hand. Two of the three are visible in the file — an
+// entity's Pos is written verbatim into its NBT, and a scheduled update's
+// absolute position is the key the encoder matches its preserved-state sidecar
+// on — and the third is not: a block entity's x/y/z are stripped on encode and
+// reinjected on decode from its position's low nibbles and its Y, none of which
+// a chunk-aligned offset with no vertical component moves. All three are
+// therefore pinned on the translated column rather than through a file.
+func TestMoveFastPathTranslatesEveryPosition(t *testing.T) {
+	reg := testRegistry(t)
+	col := buildSidecarColumn(t, reg)
+	moved, err := translateColumns([]format.Column{col}, reg, cube.Pos{16, 0, -32}, &MoveReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := moved[0]
+	if len(got.Col.BlockEntities) != 1 || got.Col.BlockEntities[0].Pos != (cube.Pos{20, -60, -27}) {
+		t.Fatalf("block entity not translated: %+v", got.Col.BlockEntities)
+	}
+	if x := got.Col.BlockEntities[0].Data["x"]; x != int32(20) {
+		t.Fatalf(`block entity data["x"] = %v, want 20`, x)
+	}
+	if len(got.Col.Entities) != 1 {
+		t.Fatalf("entity lost: %+v", got.Col.Entities)
+	}
+	if pos, ok := entityPos(got.Col.Entities[0].Data); !ok || pos != [3]float64{20.5, -60, -26.5} {
+		t.Fatalf("entity not translated: %v (readable %v)", pos, ok)
+	}
+	if len(got.Col.ScheduledBlocks) != 1 || got.Col.ScheduledBlocks[0].Pos != (cube.Pos{18, -60, -29}) {
+		t.Fatalf("scheduled update not translated: %+v", got.Col.ScheduledBlocks)
+	}
+	// The encoder matches a preserved tick state to its update by absolute
+	// position, so the two have to move together or the state is dropped by
+	// the next write.
+	st := got.Col.ScheduledBlocks[0].Pos
+	if got.UnknownTicks[0].Pos != ([3]int32{int32(st.X()), int32(st.Y()), int32(st.Z())}) {
+		t.Fatalf("preserved tick key %v no longer names its update at %v", got.UnknownTicks[0].Pos, st)
+	}
+}
+
+// TestMoveKeepsUniformUnknownBlocks: a preserved state can cover a whole
+// storage rather than a single index, and the slow path resolves that form
+// from a table of its own. Every position of the section carries the state at
+// the destination, and a move that consults only the per-index table drops all
+// of them.
+func TestMoveKeepsUniformUnknownBlocks(t *testing.T) {
+	reg := testRegistry(t)
+	col := format.Column{
+		X: 0, Z: 0,
+		Col:           &chunk.Column{Chunk: chunk.New(reg, cube.Range{-64, 319})},
+		UnknownStates: []format.BlockState{{Name: "audit:uniform", Version: 1}},
+		Unknown: []format.UnknownBlock{
+			{Section: -4, Layer: 0, Index: format.WholeStorage, State: 0},
+		},
+	}
+	// An unaligned offset takes the slow path and splits the source column
+	// over two destinations, so the state references also have to be rebased.
+	moved, err := translateColumns([]format.Column{col}, reg, cube.Pos{1, 0, 0}, &MoveReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range moved {
+		for _, u := range c.Unknown {
+			if int(u.State) >= len(c.UnknownStates) {
+				t.Fatalf("state reference %d past the %d-entry table", u.State, len(c.UnknownStates))
+			}
+			if name := c.UnknownStates[u.State].Name; name != "audit:uniform" {
+				t.Fatalf("preserved state resolved to %q, want audit:uniform", name)
+			}
+			n++
+		}
+	}
+	if n != 16*16*16 {
+		t.Fatalf("uniform preserved state covered %d positions, want %d: the whole-storage table was not consulted", n, 16*16*16)
+	}
+}
+
+// TestMoveClipsCollections: the three positioned collections each clip on
+// their own Y, and each has a counter in the report. Nothing else in the move
+// removes them, so a missing bound silently carries an entity below the
+// world's floor.
+func TestMoveClipsCollections(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	stone := reg.BlockRuntimeID(block.Stone{})
+
+	b := NewBuilder(reg, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{2, 10, 2}, block.Stone{})
+	b.AddBlockEntity(cube.Pos{1, 2, 1}, map[string]any{"id": "minecraft:chest"})
+	b.AddEntity(map[string]any{
+		"identifier": "minecraft:armor_stand",
+		"Pos":        []any{float32(1.5), float32(2), float32(1.5)},
+	})
+	p := b.Provider()
+	col, err := p.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.ScheduledBlocks = append(col.ScheduledBlocks, chunk.ScheduledBlockUpdate{
+		Pos: cube.Pos{1, 2, 1}, Block: stone, Tick: 7,
+	})
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	// All three sit at Y 2, which -70 puts at -68, below the range floor.
+	// Blocks from Y 6 up survive, so the column itself still exists.
+	report, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{0, -70, 0}, Clip: true, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ClippedBlockEntities != 1 {
+		t.Fatalf("ClippedBlockEntities = %d, want 1", report.ClippedBlockEntities)
+	}
+	if report.ClippedEntities != 1 {
+		t.Fatalf("ClippedEntities = %d, want 1", report.ClippedEntities)
+	}
+	if report.ClippedTicks != 1 {
+		t.Fatalf("ClippedTicks = %d, want 1", report.ClippedTicks)
+	}
+
+	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{0, -70, 0}, Clip: true}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	cols := 0
+	for pos, c := range q.Columns(world.Overworld) {
+		cols++
+		if len(c.BlockEntities) != 0 || len(c.Entities) != 0 || len(c.ScheduledBlocks) != 0 {
+			t.Fatalf("clipped content survived at %v: %d block entities, %d entities, %d ticks",
+				pos, len(c.BlockEntities), len(c.Entities), len(c.ScheduledBlocks))
+		}
+	}
+	if cols == 0 {
+		t.Fatal("the surviving blocks were clipped too; the fixture proves nothing")
+	}
+}
+
+// TestMoveCarriesChunkMetadata: a column's user data and its tick are not
+// addressed by a position, so the slow path — which builds its destination
+// columns from nothing — has to place them explicitly.
+func TestMoveCarriesChunkMetadata(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	b := NewBuilder(reg, cube.Range{-64, 319})
+	b.Fill(cube.Pos{0, 0, 0}, cube.Pos{2, 0, 2}, block.Stone{})
+	p := b.Provider()
+	col, err := p.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col.Tick = 4321
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("meta")); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SaveAs(dir); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Close()
+
+	// Unaligned, so the slow path runs; blocks at X 0..2 all land in chunk 1.
+	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{20, 0, 0}, Backup: false}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	moved, err := q.LoadColumn(world.ChunkPos{1, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Tick != 4321 {
+		t.Fatalf("column tick = %d, want 4321: the move dropped it", moved.Tick)
+	}
+	if got := q.ChunkUserData(world.ChunkPos{1, 0}, world.Overworld); !bytes.Equal(got, []byte("meta")) {
+		t.Fatalf("chunk user data = %q, want %q: the move dropped it", got, "meta")
 	}
 }
 

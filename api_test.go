@@ -14,12 +14,12 @@ func TestLoadSkip(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	p, _ := Open(dir)
-	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, tickColumn(t, reg)); err != nil {
 		t.Fatal(err)
 	}
 	_ = p.Close()
 
-	q, err := Open(dir, LoadSkip(SkipEntities|SkipBlockEntities))
+	q, err := Open(dir, LoadSkip(SkipEntities|SkipBlockEntities|SkipScheduledTicks))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,15 +28,17 @@ func TestLoadSkip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(col.Entities) != 0 || len(col.BlockEntities) != 0 {
-		t.Fatalf("LoadSkip ignored: %d entities, %d block entities", len(col.Entities), len(col.BlockEntities))
+	if len(col.Entities) != 0 || len(col.BlockEntities) != 0 || len(col.ScheduledBlocks) != 0 {
+		t.Fatalf("LoadSkip ignored: %d entities, %d block entities, %d scheduled updates",
+			len(col.Entities), len(col.BlockEntities), len(col.ScheduledBlocks))
 	}
 	// The file still contains them: a plain open sees them.
 	r, _ := Open(dir, ReadOnly())
 	defer r.Close()
 	full, _ := r.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
-	if len(full.Entities) != 1 {
-		t.Fatal("entities missing from file")
+	if len(full.Entities) != 1 || len(full.BlockEntities) != 1 || len(full.ScheduledBlocks) != 1 {
+		t.Fatalf("the fixture is missing a category in the file: %d entities, %d block entities, %d scheduled updates",
+			len(full.Entities), len(full.BlockEntities), len(full.ScheduledBlocks))
 	}
 }
 

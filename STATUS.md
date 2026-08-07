@@ -122,6 +122,28 @@ the short version:
 
 ## Open
 
+**Negative controls for the rest of the suite** — done. `FREEZE.md`'s third
+Correctness box is ticked and `HARNESS.md` carries the record: 82 controls over
+the mover, preservation, provider and golden tests, 44 of them green, 41 fixed.
+The ratio is worse than the invariant-table pass and the reason is structural —
+that table at least names a test per rule, so its failure mode is a fixture
+that misses, while out here whole mechanisms had nothing pointed at them at
+all. Three recurred often enough to be worth naming: an option whose fixture
+does not carry the category it skips (four of the store path's branches); a
+guard whose observable is a return value nobody read (nine of the eleven
+read-only guards); and an assertion that reads a weaker artefact than the claim
+(`UnresolvedStates` reads the palette, not the entries that anchor a state to a
+position, and that is what hid two tests named for the exact check they were
+not making).
+
+**The dictionary codec map** — bounded. `dictCodecs` was a process-global map
+keyed by bytes a file supplies and never evicted; 128 hostile dictionaries at
+the 1 MiB ceiling pinned 128.03 MiB permanently, and now pin 15.01 MiB. The
+provider's LRU moved to `internal/lru` and serves both packages rather than
+being copied, since `format` cannot import `pile`. Eviction unlinks and never
+closes, which is what keeps a codec safe under a reader that is still using it;
+`SECURITY.md` has the measurement and the controls.
+
 **Harness** — done, and `HARNESS.md` is the record. Every `Decoded` entry now
 has a control that turns a named test red, every `WriterOnly` entry states what
 evidence is missing, and the exceptions to both are written down where the

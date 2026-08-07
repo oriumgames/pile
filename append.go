@@ -33,7 +33,7 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 		ds.onDisk = true
 	}
 	key := [2]int32{pos[0], pos[1]}
-	m, cached := ds.meta.get(key)
+	m, cached := ds.meta.Get(key)
 	userData, cur := m.ud, m.side
 	if side != nil {
 		cur = *side
@@ -62,8 +62,8 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 	}); err != nil {
 		return err
 	}
-	ds.meta.put(key, chunkMeta{ud: userData, side: cur})
-	ds.cache.drop(key)
+	ds.meta.Put(key, chunkMeta{ud: userData, side: cur})
+	ds.cache.Drop(key)
 	ds.dirty = true
 	return nil
 }

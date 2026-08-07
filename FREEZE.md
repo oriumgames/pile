@@ -71,11 +71,26 @@ Nothing below is optional. Each line names its exit criterion.
       reconstruct and which §3.1 forbids it from checking. `HARNESS.md` says so
       under "Rules a reader could check and must not". Neither may be turned
       into a reader check: both would reject files this version wrote.
-- [ ] No test in the suite passes with its subject reverted. *Exit: a
+- [x] No test in the suite passes with its subject reverted. *Exit: a
       recorded negative-control result per canonicality test.*
-      Partly done: every test the invariant table names now has one, in
-      `HARNESS.md`. The rest of the suite — the mover, preservation, provider
-      and golden tests — has not been controlled.
+      Done in two passes, both in `HARNESS.md`. The first covered every test
+      the invariant table names. The second covered the rest — the mover,
+      preservation, provider and golden tests — with **82 controls, of which 44
+      came back green**: 41 were vacuous coverage and are fixed, one is a
+      read-only guard with no distinguishing input (kept, annotated at the
+      guard, and explained), and two are golden *fixture* gaps whose rules are
+      held by named tests elsewhere. One of those two is worth carrying
+      forward: **no golden world contains a block state with two or more
+      properties**, so the canonical order of a state's property keys is not
+      byte-locked by the goldens, only by `TestWriterSortsStateProperties` and
+      the reader's own check. Closing it means regenerating the goldens, which
+      a pass forbidden `-update` cannot do; whoever regenerates them next
+      should add such a block to `goldenWorld`.
+      Two tests were also found to assert something weaker than their name:
+      ten preservation tests ended in `format.UnresolvedStates`, which reads
+      the file's *palette* and so passes on a file whose sidecar entries are
+      gone but whose state table survived. They now assert on the state
+      anchored at the position as well.
 - [x] The structure decoder enforces the rules the world decoder does:
       duplicate block-entity positions and their order, unreferenced
       blob-table entries, blob id first-use order, all-air section and

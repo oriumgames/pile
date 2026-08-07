@@ -7,6 +7,7 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/klauspost/compress/zstd"
+	"github.com/oriumgames/pile/internal/lru"
 )
 
 // Shared zstd machinery.
@@ -213,20 +214,54 @@ type dictKey struct {
 	hash  uint64
 }
 
-var (
-	dictMu     sync.Mutex
-	dictCodecs = map[dictKey]*dictCodec{}
+// Bounds for the dictionary codec cache.
+//
+// The key is the dictionary's own bytes, and a file supplies those: opening a
+// hostile indexed file installs a codec for whatever dictionary it carries, up
+// to maxDictLen. Memoizing without a bound made that permanent, so a sequence
+// of files carrying distinct dictionaries pinned one megabyte each for the
+// life of the process and nothing ever gave it back.
+//
+// The count is a working set. A process meets one dictionary per compacted
+// file per compression level, so sixteen covers a world's three dimensions,
+// the second handle a compaction opens over each, and room to spare; a
+// dictionary this package trains is at most 16 KiB, so sixteen of those is a
+// quarter of a megabyte. The byte budget is what keeps the count meaningful
+// against a file that carries the largest dictionary the format allows: at
+// maxDictLen the two bounds bind at the same point.
+//
+// Missing costs one dictionary parse on the next open of a file using it. A
+// handle already holding the codec is unaffected — see sharedDictCodec.
+const (
+	dictCacheEntries = 16
+	dictCacheBytes   = 16 << 20
 )
 
+var (
+	dictMu     sync.Mutex
+	dictCodecs = lru.New[dictKey, *dictCodec](dictCacheEntries, dictCacheBytes, dictCodecWeight)
+)
+
+// dictCodecWeight is what a cached codec keeps alive: the dictionary bytes,
+// which both the decoder pool and the lazy encoder hold a reference to, plus a
+// fixed allowance for the structs around them. The parsed decoders live in a
+// sync.Pool the collector empties, so they are not part of the standing cost.
+func dictCodecWeight(c *dictCodec) int { return len(c.dec.dict) + 512 }
+
 // sharedDictCodec returns the codecs for a dictionary at a compression level.
-// The map it memoizes into is keyed by dictionary content, so it grows with
-// the number of distinct dictionaries a process meets (one per compacted
-// file), not with the number of handles open on them.
+// Codecs are shared by dictionary content, so any number of handles on one
+// dictionary hold one copy of it.
+//
+// The cache is bounded, and eviction is safe because it only unlinks: a caller
+// that already has the *dictCodec keeps it alive through its own reference and
+// goes on decoding through it after the cache has forgotten it. Nothing is
+// closed here, and nothing may be: a codec is in use by whoever asked for it,
+// and the cache has no way to know when they are done.
 func sharedDictCodec(dict []byte, level CompressionLevel) (*dictCodec, error) {
 	k := dictKey{level: zstdLevel(level), size: len(dict), hash: xxhash.Sum64(dict)}
 	dictMu.Lock()
 	defer dictMu.Unlock()
-	if c, ok := dictCodecs[k]; ok {
+	if c, ok := dictCodecs.Get(k); ok {
 		return c, nil
 	}
 	dec := &decPool{maxMemory: maxDecodedFrame, dict: dict}
@@ -239,7 +274,7 @@ func sharedDictCodec(dict []byte, level CompressionLevel) (*dictCodec, error) {
 	}
 	dec.pool.Put(d)
 	c := &dictCodec{enc: &lazyEncoder{level: k.level, conc: 1, dict: dict}, dec: dec}
-	dictCodecs[k] = c
+	dictCodecs.Put(k, c)
 	return c, nil
 }
 

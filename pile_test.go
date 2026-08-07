@@ -3,17 +3,23 @@ package pile
 import (
 	"bytes"
 	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	_ "github.com/df-mc/dragonfly/server/world/biome" // populate the biome registry
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/df-mc/goleveldb/leveldb"
+	"github.com/google/uuid"
+	"github.com/oriumgames/pile/format"
 )
 
 var regOnce sync.Once
@@ -173,6 +179,184 @@ func TestReadOnly(t *testing.T) {
 	}
 }
 
+// TestReadOnlyRefusesEveryMutator: every method that changes state has its own
+// read-only guard, and Save's guard covers only itself. Snapshot, Rollback and
+// DeleteSnapshot write to disk directly, and the setters change what the
+// provider reports whether or not a save follows, so a test on Save alone
+// leaves ten guards with nothing behind them.
+func TestReadOnlyRefusesEveryMutator(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	p.SaveSettings(&world.Settings{Name: "original", TickRange: 6})
+	p.SetUserData([]byte("original"))
+	p.SetMarker(Marker{Name: "keep", Kind: "spawn"})
+	if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("original")); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetBorder(&Border{Min: [2]int32{-8, -8}, Max: [2]int32{8, 8}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Snapshot("base"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := worldFingerprint(t, dir)
+
+	r, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawns := &memSpawnStore{m: map[uuid.UUID]cube.Pos{}}
+	s, err := Open(dir, ReadOnly(), WithSpawnStore(spawns))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.SaveSettings(&world.Settings{Name: "changed"})
+	if got := r.Settings().Name; got != "original" {
+		t.Fatalf("SaveSettings changed a read-only provider: name %q", got)
+	}
+	r.SetUserData([]byte("changed"))
+	if got := r.UserData(); !bytes.Equal(got, []byte("original")) {
+		t.Fatalf("SetUserData changed a read-only provider: %q", got)
+	}
+	r.SetMarker(Marker{Name: "added", Kind: "spawn"})
+	if ms := r.Markers(); len(ms) != 1 || ms[0].Name != "keep" {
+		t.Fatalf("SetMarker changed a read-only provider: %+v", ms)
+	}
+	if r.RemoveMarker("keep") {
+		t.Fatal("RemoveMarker reported a removal on a read-only provider")
+	}
+	if ms := r.Markers(); len(ms) != 1 {
+		t.Fatalf("RemoveMarker changed a read-only provider: %+v", ms)
+	}
+	if err := r.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("changed")); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("SetChunkUserData on read-only = %v, want ErrReadOnly", err)
+	}
+	if got := r.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld); !bytes.Equal(got, []byte("original")) {
+		t.Fatalf("SetChunkUserData changed a read-only provider: %q", got)
+	}
+	if err := r.SetBorder(&Border{Min: [2]int32{-1, -1}, Max: [2]int32{1, 1}}); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("SetBorder on read-only = %v, want ErrReadOnly", err)
+	}
+	if b := r.Border(); b == nil || b.Max != [2]int32{8, 8} {
+		t.Fatalf("SetBorder changed a read-only provider: %+v", b)
+	}
+	if err := r.Snapshot("forbidden"); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("Snapshot on read-only = %v, want ErrReadOnly", err)
+	}
+	if err := r.DeleteSnapshot("base"); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("DeleteSnapshot on read-only = %v, want ErrReadOnly", err)
+	}
+	if err := r.Rollback("base"); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("Rollback on read-only = %v, want ErrReadOnly", err)
+	}
+	if err := s.SavePlayerSpawnPosition(uuid.Nil, cube.Pos{1, 2, 3}); err != nil {
+		t.Fatalf("SavePlayerSpawnPosition on read-only = %v, want nil", err)
+	}
+	if len(spawns.m) != 0 {
+		t.Fatalf("SavePlayerSpawnPosition wrote through a read-only provider: %+v", spawns.m)
+	}
+	// A background save and a Close must both leave the files alone too.
+	r.SaveAsync()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if after := worldFingerprint(t, dir); !maps.Equal(before, after) {
+		t.Fatalf("a read-only provider changed the world directory:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+// worldFingerprint hashes every regular file under dir, so a test can assert
+// that nothing at all was written.
+func worldFingerprint(t *testing.T, dir string) map[string]uint64 {
+	t.Helper()
+	out := map[string]uint64{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		out[rel] = xxhash.Sum64(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestSaveSkipsCleanDimensions: a dimension that is on disk, unchanged, and
+// whose world metadata is unchanged is not rewritten. The bytes would be
+// identical either way — the world encodes deterministically — so the only
+// thing that can show it is that no file was replaced.
+func TestSaveSkipsCleanDimensions(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Save(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "overworld.pile")
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Save(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.ModTime().Equal(old) {
+		t.Fatalf("a clean dimension was rewritten: mtime moved to %v", st.ModTime())
+	}
+
+	// And a dirty one still is, so the skip is not simply refusing every save.
+	if err := p.StoreColumn(world.ChunkPos{1, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if st.ModTime().Equal(old) {
+		t.Fatal("a dirty dimension was not rewritten")
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSkipAndFilters(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
@@ -199,6 +383,202 @@ func TestSkipAndFilters(t *testing.T) {
 	}
 	if len(col.BlockEntities) != 0 {
 		t.Fatal("filtered block entity persisted")
+	}
+}
+
+// tickColumn is testColumn plus a scheduled update and a distinctive biome,
+// so a test can exercise the store categories testColumn leaves empty.
+func tickColumn(t testing.TB, reg world.BlockRegistry) *chunk.Column {
+	t.Helper()
+	col := testColumn(t, reg)
+	col.ScheduledBlocks = []chunk.ScheduledBlockUpdate{
+		{Pos: cube.Pos{1, -60, 1}, Block: reg.BlockRuntimeID(block.Stone{}), Tick: 9},
+	}
+	return col
+}
+
+// TestStoreSkipMaskCoversEveryCategory: SkipMask has five bits and the store
+// path acts on four of them in four separate branches. The existing fixture
+// set two and carried no scheduled update and no chunk user data, so three of
+// the four could be disabled with the suite still green.
+func TestStoreSkipMaskCoversEveryCategory(t *testing.T) {
+	reg := testRegistry(t)
+
+	// First, without any skipping, so the fixture is known to carry all four.
+	plain := t.TempDir()
+	p, err := Open(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, tickColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("ud")); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(plain, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := q.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Entities) != 1 || len(full.BlockEntities) != 1 || len(full.ScheduledBlocks) != 1 ||
+		len(q.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld)) == 0 {
+		t.Fatalf("fixture is missing a category: %d entities, %d block entities, %d ticks, %d user data bytes",
+			len(full.Entities), len(full.BlockEntities), len(full.ScheduledBlocks),
+			len(q.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld)))
+	}
+	_ = q.Close()
+
+	dir := t.TempDir()
+	r, err := Open(dir, Skip(SkipEntities|SkipBlockEntities|SkipScheduledTicks|SkipChunkUserData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// User data attaches to a stored column, and the store is what drops it,
+	// so the second store is the one under test.
+	if err := r.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, tickColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("ud")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, tickColumn(t, reg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entities) != 0 {
+		t.Fatalf("SkipEntities ignored: %d entities", len(got.Entities))
+	}
+	if len(got.BlockEntities) != 0 {
+		t.Fatalf("SkipBlockEntities ignored: %d block entities", len(got.BlockEntities))
+	}
+	if len(got.ScheduledBlocks) != 0 {
+		t.Fatalf("SkipScheduledTicks ignored: %d scheduled updates", len(got.ScheduledBlocks))
+	}
+	if ud := s.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld); len(ud) != 0 {
+		t.Fatalf("SkipChunkUserData ignored: %q", ud)
+	}
+}
+
+// TestFilterEntityDropsOnStore: FilterEntity sits in the else arm of
+// SkipEntities, so a fixture that sets SkipEntities can never reach it.
+func TestFilterEntityDropsOnStore(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir, FilterEntity(func(e chunk.Entity) bool {
+		return e.Data["identifier"] != "minecraft:cow"
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := testColumn(t, reg)
+	col.Entities = append(col.Entities, chunk.Entity{ID: 8, Data: map[string]any{
+		"identifier": "minecraft:pig", "UniqueID": int64(8),
+	}})
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	got, err := q.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entities) != 1 || got.Entities[0].Data["identifier"] != "minecraft:pig" {
+		t.Fatalf("FilterEntity ignored on store: %+v", got.Entities)
+	}
+}
+
+// TestStoreLightAndSkipBiomesReachTheWriter: both options are carried into the
+// encoder's Options by one field each in the save path, and nothing else
+// carries them, so a suite that never asserts on the resulting file cannot see
+// either field go.
+func TestStoreLightAndSkipBiomesReachTheWriter(t *testing.T) {
+	reg := testRegistry(t)
+	desert, ok := world.BiomeByName("desert")
+	if !ok {
+		t.Skip("registry has no desert biome")
+	}
+	lit := t.TempDir()
+	p, err := Open(lit, StoreLight())
+	if err != nil {
+		t.Fatal(err)
+	}
+	col := testColumn(t, reg)
+	col.Chunk.SetBiome(0, -60, 0, uint32(desert.EncodeBiome()))
+	// StoreLight only claims light the records actually carry, so the column
+	// has to hold some.
+	chunk.LightArea([]*chunk.Chunk{col.Chunk}, 0, 0).Fill()
+	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, flags, err := fileHeader(filepath.Join(lit, "overworld.pile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags&format.FlagStoreLight == 0 {
+		t.Fatalf("StoreLight did not reach the writer: flags %#x", flags)
+	}
+
+	// SkipBiomes, in its own world so the two assertions cannot borrow each
+	// other's file.
+	nobio := t.TempDir()
+	q, err := Open(nobio, Skip(SkipBiomes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	col2 := testColumn(t, reg)
+	col2.Chunk.SetBiome(0, -60, 0, uint32(desert.EncodeBiome()))
+	if err := q.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col2); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, flags, err = fileHeader(filepath.Join(nobio, "overworld.pile")); err != nil {
+		t.Fatal(err)
+	}
+	if flags&format.FlagStoreLight != 0 {
+		t.Fatalf("StoreLight set without the option: flags %#x", flags)
+	}
+	r, err := Open(nobio, ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := r.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Chunk.Biome(0, -60, 0) == uint32(desert.EncodeBiome()) {
+		t.Fatal("SkipBiomes did not reach the writer: the biome survived")
 	}
 }
 

@@ -33,6 +33,12 @@ func (p *Provider) Save() error {
 // SaveAsync schedules a background save. Multiple calls coalesce; the last
 // scheduled save always observes the latest state. No-op when read-only.
 func (p *Provider) SaveAsync() {
+	// This guard has no input of its own and no test can give it one: every
+	// method that could set a dirty flag refuses a read-only provider first,
+	// so a read-only save finds nothing to write and produces no file either
+	// way. It is kept as the second line of that defence rather than removed,
+	// because what stands behind it is ten other guards and not an argument.
+	// HARNESS.md records the control that stays green and why.
 	if p.conf.readOnly {
 		return
 	}

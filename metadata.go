@@ -31,7 +31,7 @@ func (p *Provider) ChunkUserData(pos world.ChunkPos, dim world.Dimension) []byte
 		p.mu.Lock()
 		ds := p.dim(dim)
 		key := [2]int32{pos[0], pos[1]}
-		if m, ok := ds.meta.get(key); ok {
+		if m, ok := ds.meta.Get(key); ok {
 			out := cloneBytes(m.ud)
 			p.mu.Unlock()
 			return out
@@ -50,7 +50,7 @@ func (p *Provider) ChunkUserData(pos world.ChunkPos, dim world.Dimension) []byte
 		}
 		p.mu.Lock()
 		if now, still := iw.RecordID(pos[0], pos[1]); still && now == id {
-			ds.meta.put(key, chunkMeta{ud: fc.UserData, side: sidecarOf(fc)})
+			ds.meta.Put(key, chunkMeta{ud: fc.UserData, side: sidecarOf(fc)})
 		}
 		p.mu.Unlock()
 		return cloneBytes(fc.UserData)
@@ -92,8 +92,8 @@ func (p *Provider) SetChunkUserData(pos world.ChunkPos, dim world.Dimension, b [
 		}
 		key := [2]int32{pos[0], pos[1]}
 		fc.UserData = cloneBytes(b)
-		ds.meta.put(key, chunkMeta{ud: fc.UserData, side: sidecarOf(fc)})
-		ds.cache.drop(key)
+		ds.meta.Put(key, chunkMeta{ud: fc.UserData, side: sidecarOf(fc)})
+		ds.cache.Drop(key)
 		ds.dirty = true
 		return ds.iw.Store(fc)
 	}
