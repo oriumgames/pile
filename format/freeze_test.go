@@ -4282,7 +4282,7 @@ func TestRejectsOutOfSpanPositions(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = applyRecord(&rr, testRegistry(t), nil, nil, 0, 0, false, -1, nil, nil, nil, nil)
+		_, err = applyRecord(&rr, testRegistry(t), nil, nil, 0, 0, 0, false, -1, nil, nil, nil, nil)
 		return err
 	}
 	if err := apply(5); err != nil {
@@ -4676,5 +4676,57 @@ func TestDecodersAgreeOnValidity(t *testing.T) {
 		if sErr == nil {
 			t.Errorf("%s: the structure decoder accepted it", c.rule)
 		}
+	}
+}
+
+// TestRejectsStoredDefaultBiomeSection: §4.7 requires a section whose biomes
+// are uniformly the file's default to be omitted from biomePresence, and the
+// rule was filed as a writer's obligation on the strength of an argument that
+// covers the neighbouring rule instead. Whether a writer should have set the
+// flag is indeed unknowable from a file that did not; whether a file that did
+// set it then stored a section it promised to omit is plain on the wire. A
+// stored one is a second encoding of a chunk that already has one.
+func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
+	reg := testRegistry(t)
+	// Two biomes, so a present section can be uniformly the one that is not
+	// the default and stay legal.
+	body := func(secRef uint64) []byte {
+		w := &writer{}
+		for range 4 {
+			w.blob(nil)
+		}
+		w.uvarint(0) // block palette
+		w.uvarint(0) // version overrides
+		w.uvarint(2) // biome palette
+		w.str("minecraft:plains")
+		w.str("minecraft:desert")
+		w.uvarint(1) // blob table: one uniform biome blob
+		w.uvarint(1)
+		w.uvarint(secRef)
+		w.u8(widthUniform)
+		w.uvarint(1) // one record
+		w.svarint(0)
+		w.svarint(0)
+		rec := &writer{}
+		rec.svarint(0) // minSection
+		rec.uvarint(1) // sectionN
+		rec.u8(0)      // no block sections
+		rec.u8(0x01)   // the one biome section is present
+		rec.uvarint(0)
+		rec.uvarint(0) // block entities
+		rec.uvarint(0) // entities
+		rec.svarint(0) // column tick
+		rec.uvarint(0) // scheduled updates
+		rec.blob(nil)
+		w.raw(rec.bytes())
+		return w.bytes()
+	}
+	// Biome reference 0 is the declared default.
+	flags := FlagUncompressed | FlagDefaultBiome
+	if _, err := ReadWorld(solidFileFlags(body(1), flags), reg); err != nil {
+		t.Fatalf("a section uniformly a non-default biome was rejected: %v", err)
+	}
+	if _, err := ReadWorld(solidFileFlags(body(0), flags), reg); err == nil {
+		t.Fatal("a section stored uniformly the file's own default biome was accepted")
 	}
 }

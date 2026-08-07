@@ -242,12 +242,14 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	// here instead would make the decode depend on the running game version.
 	defaultBiome := fallbackBiomeID()
 	defaultUnknown := int32(-1)
+	defaultRef := uint32(0)
 	haveDefault := h.flags&FlagDefaultBiome != 0
 	if haveDefault {
 		ref := h.flags >> defaultBiomeShift
 		if int(ref) >= len(biomeIDs) {
 			return nil, corruptf("default biome reference %d out of range", ref)
 		}
+		defaultRef = ref
 		defaultBiome = biomeIDs[ref]
 		if bioUnknown != nil {
 			defaultUnknown = bioUnknown[ref]
@@ -344,7 +346,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	cols := make([]Column, len(raws))
 	errs := make([]error, len(raws))
 	parallelFor(len(raws), 0, func(i int) {
-		cols[i], errs[i] = applyRecord(&raws[i], reg, rids, biomeIDs, air, defaultBiome, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
+		cols[i], errs[i] = applyRecord(&raws[i], reg, rids, biomeIDs, air, defaultBiome, defaultRef, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
 	})
 	for _, err := range errs {
 		if err != nil {
@@ -620,7 +622,7 @@ func parseRecordBodyBudgeted(r *reader, src blobSource, haveLight bool, x, z int
 
 // applyRecord turns a parsed record into a Column: chunk construction, blob
 // application and NBT decoding. Safe to run in parallel across records.
-func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string) (Column, error) {
+func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome, defaultRef uint32, haveDefault bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string) (Column, error) {
 	x, z := rr.x, rr.z
 	rng := cube.Range{int(rr.minSection) * 16, int(rr.minSection+int64(rr.sectionN))*16 - 1}
 	ch := chunk.New(reg, rng)
@@ -686,6 +688,17 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 			continue
 		}
 		blob := rr.biomes[bioCur]
+		// §4.7: when the file names a default biome, a section uniformly that
+		// biome is required to be absent, and storing it anyway is a second
+		// encoding of the same chunk. Every part of that is visible here -- the
+		// flag is set, the reference is known, and the blob's own width says it
+		// is uniform -- so it is a reader's rule, not a writer's convention.
+		// Width alone settles uniformity only because §3.3 forbids a palette
+		// entry no index names; without that a padded palette would hide it.
+		if haveDefault && blob.width == widthUniform && blob.refs[0] == defaultRef {
+			return Column{}, corruptf("section %d stores biomes uniformly the file's default, which must be omitted",
+				int32(rr.minSection)+int32(i))
+		}
 		if err := applyBiomeBlob(ch, i, blob, biomeIDs); err != nil {
 			return Column{}, err
 		}
@@ -808,12 +821,12 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 
 // decodeRecordBody parses and applies a chunk record in one step (indexed
 // mode's single-column path).
-func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome uint32, haveDefault, haveLight bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
+func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome, defaultRef uint32, haveDefault, haveLight bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
 	rr, err := parseRecordBody(r, src, haveLight, x, z)
 	if err != nil {
 		return Column{}, err
 	}
-	return applyRecord(&rr, reg, rids, biomeIDs, air, defaultBiome, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
+	return applyRecord(&rr, reg, rids, biomeIDs, air, defaultBiome, defaultRef, haveDefault, defaultUnknown, unknown, unkStates, bioUnknown, bioNames)
 }
 
 // blobIndices decodes a blob's 4096 local indices into out, validating them

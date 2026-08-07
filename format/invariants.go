@@ -266,9 +266,15 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "the default biome flag is not optional", Category: Omission, Enforce: WriterOnly,
-		Rules: []string{"13221d37", "7984f33b"},
+		Rules: []string{"13221d37"},
 		Tests: []string{"TestUnknownDefaultBiomePreserved", "TestDefaultBiomeFlagIsSet"},
 		Note:  "Declining the flag is a second encoding of the same world, but a file that declined it decodes to that world all the same and nothing in it says which sections were uniform before the writer chose. Verified by re-encoding.",
+	},
+	{
+		Name: "uniform-default biome sections are omitted", Category: Omission, Enforce: Decoded,
+		Rules: []string{"7984f33b"},
+		Tests: []string{"TestRejectsStoredDefaultBiomeSection", "TestUnknownDefaultBiomePreserved"},
+		Note:  "Held apart from the flag decision, which is genuinely writer-only, because this half is not. Once a file has set the flag it has named a reference, and a present blob uniform on that reference is a section the file promised to omit -- all of it on the wire, none of it needing to know what the writer was thinking. Filing the two together let the flag's argument stand in for this one and nothing checked it at all.",
 	},
 	{
 		Name: "the biome fallback is version stable", Category: Normalisation, Enforce: Decoded,

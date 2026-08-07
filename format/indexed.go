@@ -1487,7 +1487,7 @@ func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unk
 	// Indexed mode never elides a biome section, so it names no default; a
 	// section absent because biomes were skipped still takes the version-stable
 	// fallback rather than a numeric id.
-	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), fallbackBiomeID(), false, storeLight, -1, unknown, unkStates,
+	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), fallbackBiomeID(), 0, false, storeLight, -1, unknown, unkStates,
 		bioUnknown, bioNames,
 		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z)
 	if err != nil {
