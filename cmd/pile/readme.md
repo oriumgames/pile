@@ -31,10 +31,13 @@ pile inspect suspect/overworld.pile             # header + metadata only, no chu
 pile verify  suspect --max-decoded 67108864     # full decode, bounded at 64 MiB
 ```
 
-The ceiling charges decoded columns and section storages. It charges nothing for
-entities, block entities or scheduled updates, and a single legal column may
-hold a million of each — see `SECURITY.md`, "Loading a file somebody sent you",
-for what that means and what to do about it.
+The ceiling charges everything a decode produces: columns, section storages, and
+the block entities, entities and scheduled updates inside them. A file refused
+under it reports a decode-budget error rather than a corruption error, so a
+ceiling set too low is distinguishable from a bad file.
+
+This is a resource bound, not an authenticity check. A pile file's hashes detect
+corruption, not tampering.
 
 ## Conversion
 

@@ -111,8 +111,8 @@ commands:
 
 every command that decodes chunk content also takes:
   --max-decoded n       refuse a file whose decode would exceed n bytes of live
-                        state (0, the default: the format's own ceiling). Set it
-                        for files you did not write; see SECURITY.md, "Loading a
-                        file somebody sent you"
+                        state, e.g. 256MiB. Set it for files you did not write:
+                        a valid file of a few kilobytes can decode into
+                        gigabytes. 0, the default, is the format's own ceiling
 `)
 }

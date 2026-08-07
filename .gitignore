@@ -1,2 +1,5 @@
 .DS_Store
 .claude/
+
+# Working notes: kept locally, not part of the published module.
+/[A-Z][A-Z0-9_-]*.md
