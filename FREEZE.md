@@ -80,12 +80,25 @@ Nothing below is optional. Each line names its exit criterion.
       read-only guard with no distinguishing input (kept, annotated at the
       guard, and explained), and two are golden *fixture* gaps whose rules are
       held by named tests elsewhere. One of those two is worth carrying
-      forward: **no golden world contains a block state with two or more
-      properties**, so the canonical order of a state's property keys is not
+      forward: **no golden world contained a block state with two or more
+      properties**, so the canonical order of a state's property keys was not
       byte-locked by the goldens, only by `TestWriterSortsStateProperties` and
-      the reader's own check. Closing it means regenerating the goldens, which
-      a pass forbidden `-update` cannot do; whoever regenerates them next
-      should add such a block to `goldenWorld`.
+      the reader's own check.
+      **That is now closed**, along with two more of the same shape found by
+      sweeping every writer-side ordering decision rather than by inspection:
+      structure block-entity order and structure entity order, which no golden
+      could see because every structure fixture held exactly one of each. Two new
+      golden fixtures, `world_props` and `structure_collections`, byte-lock all
+      three rules, and `HARNESS.md` §6 records the controls. The
+      fixtures are additive on purpose: adding the states to `goldenWorld`
+      would have moved eleven existing goldens, and moving an existing golden
+      is the event this check exists to catch. `-update` ran without
+      `-format-change`, which is itself the proof that no existing fixture
+      moved. The sweep also found two sites the suite cannot see and should
+      not: a redundant pre-sort whose order no input can distinguish, and
+      `Compact`'s record placement, which is indexed layout and explicitly not
+      frozen. Both are recorded in `HARNESS.md` §6.2 so they are not mistaken
+      for holes later.
       Two tests were also found to assert something weaker than their name:
       ten preservation tests ended in `format.UnresolvedStates`, which reads
       the file's *palette* and so passes on a file whose sidecar entries are
@@ -162,8 +175,26 @@ Nothing below is optional. Each line names its exit criterion.
       so no world of 65,536 columns or fewer can ever meet it. Measured on one
       machine, 16 forged footers over a directory at the ceiling went from
       17.5 s to 4.2 s and stopped growing with the candidate count.
-- [ ] Decoders never panic on any input. *Exit: the four fuzz targets run
+- [x] Decoders never panic on any input. *Exit: the four fuzz targets run
       clean for an extended session, not the 10s smoke run.*
+      Twenty minutes per target, all four `PASS`, no crashers. The counts are
+      what the box is really about, and one of them was not what it looked
+      like: `FuzzReadWorld` 11.4M, `FuzzReadStructure` 12.5M, `FuzzNBTStability`
+      16.6M — and `FuzzOpenIndexed` **168k**, about 2/s, which is not an
+      extended session by any measure that matters. The entry point with the
+      most machinery behind it was the one barely being exercised.
+      The cause was measured rather than guessed, and the obvious suspect was
+      wrong: it is not that recovery is expensive (the whole cached corpus
+      replays in 2.6 ms) but that the harness wrote every input to a fresh
+      `t.TempDir` and the reader then `pread`s every frame — 85.6% of the
+      decode's CPU was in syscalls. The target now runs over an in-memory
+      `indexedFile`, which `openIndexedOn` already accepted, so every recovery
+      path is still reached. Re-run for twenty minutes: **37,722,587
+      executions**, ~31,400/s, `PASS`. `HARNESS.md` §6.5 has the measurements.
+      One caveat kept in the open: its corpus was still taking new inputs at
+      the twenty-minute mark, so this target has more to find than the other
+      three have. It is now exploring at their order of magnitude, which is
+      what this box asks for; it is not exhausted.
 - [x] Crash durability is tested, not merely implemented. *Exit: an injectable
       filesystem that fails or truncates at each write during a checkpoint,
       asserting the result is always either the old checkpoint or the new one.*
@@ -274,6 +305,20 @@ produces, so the goldens were green throughout with no flags.
 `SECURITY.md`, "Format changes: made", gives each one's before-and-after
 measurement, what became invalid, why the writer cannot emit the refused shape,
 and the negative control.
+
+**A fifth change is in that list and is deliberately not one of these.** A
+caller may now set a stricter decode ceiling than §8's
+(`format.MaxDecodedBytes`, `pile.MaxDecodedBytes`), because §8's ceilings are
+set at what the format can represent and a legal 1,161-byte file still decodes
+into 1.12 GiB. It changes no file's validity: the default is §8's own ceiling
+and is set one column above the most §8 permits any decode to cost, so it
+cannot fire on a conforming file. A refusal under a caller's ceiling reports
+`format.ErrDecodeBudget`, which does **not** wrap `ErrCorrupt`, and §8 now
+carries a paragraph saying that such a refusal is not a claim the file is
+invalid and that a caller-supplied ceiling may only tighten. That paragraph is
+the format change, and it is the whole of it: without it a second
+implementation reads the limit as a validity rule, refuses conforming files and
+blames the file. See `SECURITY.md` item E.
 
 ## After the freeze
 

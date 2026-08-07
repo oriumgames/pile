@@ -97,13 +97,17 @@ func unresolvedOf(entries []parsedState, reg world.BlockRegistry, blockVersion i
 // it as a whole-file identity. Within one dimension, two files with the same
 // ContentHash hold the same world, and a compressor upgrade changes the file's
 // bytes but not this value.
-func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
+//
+// It takes ReadOptions because it decodes internally: without them it would be
+// the one path a caller's ceiling could not reach, and identifying a file would
+// cost more than reading it.
+func ContentHash(file []byte, reg world.BlockRegistry, opts ...ReadOption) (uint64, error) {
 	h, _, err := parseFrame(file)
 	if err != nil {
 		return 0, err
 	}
 	if h.kind == KindStructure {
-		s, err := ReadStructure(file, reg)
+		s, err := ReadStructure(file, reg, opts...)
 		if err != nil {
 			return 0, err
 		}
@@ -124,7 +128,7 @@ func ContentHash(file []byte, reg world.BlockRegistry) (uint64, error) {
 	// dimension is the one such field, and the doc comment says so rather
 	// than this being repaired here, because ContentHash is the format's
 	// declared identity and moving it moves every recorded hash.
-	d, err := ReadWorld(file, reg)
+	d, err := ReadWorld(file, reg, opts...)
 	if err != nil {
 		return 0, err
 	}

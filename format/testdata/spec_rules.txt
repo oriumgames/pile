@@ -42,10 +42,12 @@
 6fbfdbc2 **The NBT container budget charges every container nested inside another.** Decoders MUST charge a compound or a list that is an element of a list, and a compound or a list that is a field of a compound, and MUST NOT charge the blob's own root compound, which is the blob rather than something inside it.
 70802cc1 Decoders MUST therefore bound the **result** as well as the input, and the decoded ceilings above exist for exactly that.
 718f271d MUST be non-zero, for the reason §3.1 gives for overrides:
+781a9694 Such a refusal MUST be reported distinguishably from a refusal for invalidity, because the file may be entirely conforming and another reader, or the same reader with a wider limit, will accept it.
 7984f33b Sections whose biomes are uniformly that biome MUST be omitted from `biomePresence`, and decoders MUST fill absent sections with the default.
 7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
 7b6bfb2d Readers MUST refuse a frame that asks for more.
 7c4f5f2c record frames, palette segment frames and meta frames are compressed with the dictionary; the **directory frame and the dictionary frame itself MUST be compressed without it** (they are read before the dictionary can be loaded).
+80e86ca1 A caller-supplied ceiling MUST NOT raise any limit in this section; it may only tighten one.
 8745186e - The **window size** MUST NOT exceed 8 MiB.
 89ca9097 The directory MUST list the segments in the order they were written, since entry indices are cumulative across segments and reordering the list renumbers every palette reference in the file.
 8e623ce0 Writers MUST store `UniqueID` as a long and readers MUST take it verbatim.

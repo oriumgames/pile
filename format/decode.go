@@ -175,7 +175,14 @@ func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border
 
 // ReadMeta parses header fields and metadata blobs from a complete file
 // without decoding any chunk data.
-func ReadMeta(file []byte) (*Meta, error) {
+//
+// It accepts ReadOptions so that a caller can hand the same policy to every
+// reader, but it decodes no columns and no section storages, so a
+// MaxDecodedBytes ceiling cannot bind here. What ReadMeta can spend is
+// transient allocation inside the metadata blobs, which §8 bounds with the NBT
+// container ceiling instead.
+func ReadMeta(file []byte, opts ...ReadOption) (*Meta, error) {
+	_ = newReadConfig(opts)
 	h, stored, err := parseFrame(file)
 	if err != nil {
 		return nil, err
@@ -199,7 +206,10 @@ func ReadMeta(file []byte) (*Meta, error) {
 // ReadWorld decodes a complete world file. The registry must be finalized;
 // palette entries that cannot be resolved against it decode as
 // minecraft:info_update. Records are parsed serially and applied in parallel.
-func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
+// A MaxDecodedBytes option bounds this one call: a solid file holds every
+// column at once by design, so the whole decode is what the ceiling covers.
+func ReadWorld(file []byte, reg world.BlockRegistry, opts ...ReadOption) (*WorldData, error) {
+	cfg := newReadConfig(opts)
 	h, stored, err := parseFrame(file)
 	if err != nil {
 		return nil, err
@@ -273,13 +283,21 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	// wire: the first reference must be 0, and each later one must either
 	// repeat an id already seen or be exactly the next unseen id. A table
 	// numbered any other way is a second encoding of the same file.
-	budget := &storageBudget{limit: maxDecodedStorages}
+	budget := newStorageBudget(cfg)
 	used := make([]bool, len(blobs))
 	nextID := uint64(0)
 	src := tableBlobSource(blobs, used, &nextID)
 	var prevX, prevZ int64
 	var prevKey uint64
 	for range chunkN {
+		// Charged before the record is parsed, so a hostile file that declares
+		// a million eleven-byte records stops at the caller's ceiling rather
+		// than a million columns later. Every record costs one column whether
+		// or not it marks a section present, which is precisely the case §8's
+		// count ceiling was raised to bound.
+		if err := budget.chargeColumns(1); err != nil {
+			return nil, err
+		}
 		dx, err := r.svarint()
 		if err != nil {
 			return nil, err
@@ -426,9 +444,26 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 	return parseRecordBodyBudgeted(r, src, haveLight, x, z, &storageBudget{limit: maxDecodedStorages})
 }
 
-// storageBudget bounds how many paletted storages one file decodes into.
+// storageBudget bounds how many paletted storages one file decodes into, and
+// alongside it how many bytes of live decoded state the caller is willing to
+// pay for.
+//
+// The two are one type on purpose. They are charged at the same places and
+// differ only in who set them: limit is §8's, a validity rule, and exceeding it
+// makes the file invalid; byteLimit is the caller's, and exceeding it makes the
+// file merely bigger than this caller wants. Keeping them together is what
+// makes it impossible to add a charge site for one and forget the other.
 type storageBudget struct {
 	limit, used int
+	// byteLimit is the caller's MaxDecodedBytes ceiling, already clamped to
+	// §8's. Zero means the ceiling was never resolved, which only happens on
+	// the budgets test helpers build by hand, and is treated as §8's own.
+	byteLimit, byteUsed int64
+}
+
+// newStorageBudget builds the budget one whole-file decode is held to.
+func newStorageBudget(cfg readConfig) *storageBudget {
+	return &storageBudget{limit: maxDecodedStorages, byteLimit: cfg.decodedByteCeiling()}
 }
 
 func (b *storageBudget) charge(n int) error {
@@ -438,6 +473,30 @@ func (b *storageBudget) charge(n int) error {
 	b.used += n
 	if b.used > b.limit {
 		return corruptf("file decodes into more than %d section storages", b.limit)
+	}
+	return b.chargeBytes(int64(n) * storageBytes)
+}
+
+// chargeColumns charges n whole decoded columns: a solid chunk record, an
+// indexed directory entry, or an indexed record being decoded on demand.
+func (b *storageBudget) chargeColumns(n int) error {
+	if b == nil {
+		return nil
+	}
+	return b.chargeBytes(int64(n) * columnBytes)
+}
+
+// chargeBytes is the caller's half. It reports ErrDecodeBudget, which does not
+// wrap ErrCorrupt: nothing here is a claim that the file is invalid.
+func (b *storageBudget) chargeBytes(n int64) error {
+	limit := b.byteLimit
+	if limit <= 0 {
+		limit = decodedBytesCeiling
+	}
+	b.byteUsed += n
+	if b.byteUsed > limit {
+		return fmt.Errorf("%w: decode reached %d bytes, the caller's limit is %d",
+			ErrDecodeBudget, b.byteUsed, limit)
 	}
 	return nil
 }
@@ -821,8 +880,11 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 
 // decodeRecordBody parses and applies a chunk record in one step (indexed
 // mode's single-column path).
-func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome, defaultRef uint32, haveDefault, haveLight bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32) (Column, error) {
-	rr, err := parseRecordBody(r, src, haveLight, x, z)
+func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint32, air, defaultBiome, defaultRef uint32, haveDefault, haveLight bool, defaultUnknown int32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, src blobSource, x, z int32, budget *storageBudget) (Column, error) {
+	if err := budget.chargeColumns(1); err != nil {
+		return Column{}, err
+	}
+	rr, err := parseRecordBodyBudgeted(r, src, haveLight, x, z, budget)
 	if err != nil {
 		return Column{}, err
 	}

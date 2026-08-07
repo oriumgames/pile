@@ -1114,6 +1114,20 @@ torn write needs — a damaged checkpoint's directory frame usually fails its ow
 hash and costs nothing to skip — and it is also 256 times 65 536, so no world
 of 65 536 columns or fewer can ever be refused by it.
 
+**A caller may be given a stricter ceiling, and that is not a validity rule.**
+An implementation MAY let its caller set a lower limit than the decoded
+ceilings above and refuse a file that would exceed it. Such a refusal MUST be
+reported distinguishably from a refusal for invalidity, because the file may be
+entirely conforming and another reader, or the same reader with a wider limit,
+will accept it. A caller-supplied ceiling MUST NOT raise any limit in this
+section; it may only tighten one. A reader that accepted a file this section
+requires it to refuse would fork the format exactly as surely as one that
+refused a file this section requires it to accept, so an implementation that
+offers the limit clamps the number it is handed to the values above rather than
+trusting it. This paragraph exists because without it the limit reads as a
+validity rule, and a second implementation that took it for one would refuse a
+conforming file and report the file as the reason.
+
 Positions are part of this: a record's declared span is validated, so every
 block-entity and scheduled-update position it carries MUST lie inside that
 span. A reader that accepts one outside it hands its caller a coordinate the

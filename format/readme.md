@@ -100,11 +100,39 @@ go test ./format -run TestGolden -update
 the stored file, which is the direction that matters for worlds already on
 disk.
 
+## Bounding a decode
+
+Every reader — `ReadWorld`, `ReadStructure`, `ReadMeta`, `OpenIndexed` and
+`ContentHash` — takes optional `ReadOption`s:
+
+```go
+d, err := format.ReadWorld(file, reg, format.MaxDecodedBytes(64<<20))
+w, err := format.OpenIndexed(path, reg, true, format.MaxDecodedBytes(64<<20))
+```
+
+`MaxDecodedBytes` caps the live decoded state a call may produce, counted over
+decoded columns and section storages. §8's own ceilings are set at what the
+format can represent rather than at what a deployment wants to spend, so this
+is the dial for anything reading files it did not write. Passing nothing, or
+`0`, is the format's ceiling and decodes exactly what a reader without the
+option decodes. A larger value is clamped back down to it: the ceiling can be
+tightened, never raised.
+
+It is **per handle** for `OpenIndexed` — the directory it keeps resident plus
+one decoded record — because indexed mode decodes a record at a time and a
+per-call number would bound nothing.
+
+A refusal under it is `format.ErrDecodeBudget`, which is the one decode error
+that does **not** wrap `ErrCorrupt`. The file may be entirely conforming; it is
+just larger than you asked to decode.
+
 ## Safety properties
 
 - Decoders never panic on arbitrary input (fuzzed continuously); all
   violations are errors wrapping `format.ErrCorrupt` (or `ErrChecksum`,
-  `ErrUnsupportedVersion`, `ErrUnsupportedMode`, `ErrUnknownFlags`).
+  `ErrUnsupportedVersion`, `ErrUnsupportedMode`, `ErrUnknownFlags`), with the
+  single exception of `ErrDecodeBudget` above, which reports the caller's own
+  limit rather than a defect in the file.
 - Files written against older Minecraft block versions upgrade on read, once
   per unique state.
 - The codec reaches into dragonfly's chunk internals through layout-asserted

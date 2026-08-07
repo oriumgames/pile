@@ -797,6 +797,14 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 	// are broken later by the final palette reference (see sortTicks), which
 	// is registry-independent. Sorting by runtime ID at this point would make
 	// the bytes depend on how a registry happened to number its states.
+	//
+	// This sort has no negative control and cannot have one, which HARNESS.md
+	// records under §6.2 so it is not mistaken for a coverage hole. sortTicks
+	// imposes a total order on (y, x, z, tick, final palette reference)
+	// afterwards, and two updates that tie on all five encode as identical
+	// bytes, so no input distinguishes this order from any other. It is kept
+	// because a stable sort wants a deterministic base, not because the wire
+	// can tell.
 	ticks := slices.Clone(c.Col.ScheduledBlocks)
 	slices.SortStableFunc(ticks, func(a, b chunk.ScheduledBlockUpdate) int {
 		if v := comparePos(a.Pos, b.Pos); v != 0 {

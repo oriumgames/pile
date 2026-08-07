@@ -106,6 +106,8 @@ var goldenVariants = []struct {
 	// Preserved unresolved block and biome states travel as ordinary palette
 	// entries, so their encoding needs its own lock.
 	{name: "world_unknown", opts: Options{Compression: CompressionNone}, world: goldenUnknownWorld},
+	// States carrying two or more properties, which nothing else here has.
+	{name: "world_props", opts: Options{Compression: CompressionNone}, world: goldenPropsWorld},
 	// Wide palettes, deep layer stacks, a full-height range and coordinates at
 	// the int32 extremes: the encoding paths the small reference world is too
 	// small to reach.
@@ -229,6 +231,48 @@ func goldenUnknownWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 	c.UnknownTicks = []UnknownTick{{
 		Pos: [3]int32{0, -60, 0}, At: 99, State: 1,
 	}}
+	return d
+}
+
+// goldenPropsWorld byte-locks §3.1's property block: a state's property keys
+// ascend bytewise, and each key carries its own type byte.
+//
+// Every other golden world holds states with at most one property, so the sort
+// in encodeProps moved no golden byte — reversing it left the whole golden
+// suite green, and the rule was held only by TestWriterSortsStateProperties
+// and the reader's own check. After the freeze the goldens are the arbiter, so
+// a canonical rule they cannot see is a rule the freeze check does not protect.
+// This fixture is that byte lock, and it is additive: it changes no existing
+// golden.
+//
+// Two states, for two different reasons. props_a carries four keys of three
+// property types, so the order is pinned across type boundaries rather than
+// within one. props_b pins the comparison as **bytewise**, which is a real
+// choice and not the only plausible one: its keys are "a", "aa" and "b", and a
+// length-then-bytes order — the shape a fixed-width or length-prefixed
+// comparison falls into — puts "b" before "aa" where a bytewise one does not.
+// Keys of equal length cannot tell the two apart, so nothing else here would.
+func goldenPropsWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
+	t.Helper()
+	d := goldenWorld(t, reg)
+	c := &d.Columns[0]
+	placeholder := placeholderRid(reg)
+	c.Col.Chunk.SetBlock(1, -64, 1, 0, placeholder)
+	c.Col.Chunk.SetBlock(2, -64, 2, 0, placeholder)
+	// Listed out of sorted order on purpose: the map hides it, and the point is
+	// that the writer imposes the order rather than inheriting it.
+	c.UnknownStates = []BlockState{
+		{Name: "audit:props_a", Properties: map[string]any{
+			"gamma": uint8(3), "alpha": int32(1), "delta": int32(4), "beta": "two",
+		}, Version: 17825806},
+		{Name: "audit:props_b", Properties: map[string]any{
+			"b": "x", "a": int32(0), "aa": int32(1),
+		}, Version: 18040335},
+	}
+	c.Unknown = []UnknownBlock{
+		{Section: -4, Layer: 0, Index: uint16(1)<<8 | uint16(1)<<4 | 0, State: 0},
+		{Section: -4, Layer: 0, Index: uint16(2)<<8 | uint16(2)<<4 | 0, State: 1},
+	}
 	return d
 }
 
@@ -386,6 +430,15 @@ func TestGoldenFormatStability(t *testing.T) {
 		}
 		newHashes["structure_zstd"] = xxhash.Sum64(buf.Bytes())
 		compareGolden(t, filepath.Join(goldenDir, "golden_structure_zstd.pile"), buf.Bytes())
+	})
+
+	t.Run("structure_collections", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := WriteStructure(&buf, goldenStructureCollections(t, reg), reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		newHashes["structure_collections"] = xxhash.Sum64(buf.Bytes())
+		compareGolden(t, filepath.Join(goldenDir, "golden_structure_collections.pile"), buf.Bytes())
 	})
 
 	t.Run("indexed", func(t *testing.T) {
@@ -603,6 +656,48 @@ func goldenStructure(t *testing.T, reg world.BlockRegistry) *StructureData {
 	return data
 }
 
+// goldenStructureCollections byte-locks §6's collection ordering: a structure's
+// block entities ascend by y, then z, then x, and its entities ascend by their
+// encoded NBT.
+//
+// goldenStructure carries exactly one of each, so neither sort had anything to
+// order and reversing either moved no golden byte. Both rules were held only by
+// the structure_full conformance vector. That is real coverage and it is not
+// the coverage the freeze relies on: FREEZE.md's post-freeze rule is "run the
+// golden suite, and if it passes the change is permitted", so a canonical-form
+// rule no golden can see is one that check does not protect.
+//
+// The block entities are supplied in exactly the reverse of their canonical
+// order, so the fixture fails if the writer stops imposing one rather than
+// merely if it imposes a different one. The entity order is decided by a
+// bytewise compare of encoded NBT, which is not predictable by eye; three
+// distinct entities are enough, since reversing any three distinct elements
+// changes their order.
+func goldenStructureCollections(t *testing.T, reg world.BlockRegistry) *StructureData {
+	t.Helper()
+	data := goldenStructure(t, reg)
+	data.UserData = []byte("golden-structure-collections")
+	// Pos is [x, y, z] and the order is (y, z, x), so each of the three
+	// comparison rungs decides exactly one adjacent pair here: y separates the
+	// first from the second, z the second from the third, x the third from the
+	// fourth. A sort that dropped any one rung would still reorder the rest.
+	data.BlockEntities = []StructureBlockEntity{
+		{Pos: [3]int32{4, 2, 5}, Data: map[string]any{"id": "minecraft:hopper"}},
+		{Pos: [3]int32{1, 2, 5}, Data: map[string]any{"id": "minecraft:barrel"}},
+		{Pos: [3]int32{1, 2, 3}, Data: map[string]any{"id": "minecraft:chest", "CustomName": "golden"}},
+		{Pos: [3]int32{1, 0, 3}, Data: map[string]any{"id": "minecraft:furnace"}},
+	}
+	data.Entities = []map[string]any{
+		{"identifier": "minecraft:zombie", "UniqueID": int64(13),
+			"Pos": []any{float32(9.5), float32(1), float32(2.5)}},
+		{"identifier": "minecraft:pig", "UniqueID": int64(12),
+			"Pos": []any{float32(5.5), float32(0), float32(6.5)}},
+		{"identifier": "minecraft:cow", "UniqueID": int64(11),
+			"Pos": []any{float32(1.5), float32(2), float32(3.5)}},
+	}
+	return data
+}
+
 // TestGoldenFormatReadable checks that the current decoder still reads the
 // stored files: the direction that matters for worlds already on disk.
 func TestGoldenFormatReadable(t *testing.T) {
@@ -689,6 +784,34 @@ func TestGoldenFormatReadable(t *testing.T) {
 		}
 	})
 
+	// Same reasoning for the property fixture: it is the only golden that puts
+	// two properties on one state, so if it ever degrades to one the sort in
+	// encodeProps goes back to moving no golden byte and nobody finds out.
+	t.Run("props_still_multi", func(t *testing.T) {
+		file, err := os.ReadFile(filepath.Join(goldenDir, "golden_world_props.pile"))
+		if err != nil {
+			t.Skipf("no property golden yet: %v", err)
+		}
+		d, err := ReadWorld(file, reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		multi, widest := 0, 0
+		for _, c := range d.Columns {
+			for _, st := range c.UnknownStates {
+				if len(st.Properties) >= 2 {
+					multi++
+				}
+				widest = max(widest, len(st.Properties))
+			}
+		}
+		if multi < 2 || widest < 4 {
+			t.Fatalf("property golden has %d states with two or more properties (widest %d): "+
+				"the canonical order of property keys is no longer byte-locked by any golden",
+				multi, widest)
+		}
+	})
+
 	t.Run("structure", func(t *testing.T) {
 		file, err := os.ReadFile(filepath.Join(goldenDir, "golden_structure.pile"))
 		if err != nil {
@@ -707,6 +830,34 @@ func TestGoldenFormatReadable(t *testing.T) {
 		if len(s.BlockEntities) != 1 || len(s.Entities) != 1 {
 			t.Fatalf("golden structure contents: %d block entities, %d entities",
 				len(s.BlockEntities), len(s.Entities))
+		}
+	})
+
+	// The collection fixture earns its place only while it still holds enough
+	// of each to have an order at all: at one element per collection it goes
+	// back to locking nothing, which is the state it was added to fix.
+	t.Run("structure_collections", func(t *testing.T) {
+		file, err := os.ReadFile(filepath.Join(goldenDir, "golden_structure_collections.pile"))
+		if err != nil {
+			t.Skipf("no collection structure golden yet: %v", err)
+		}
+		s, err := ReadStructure(file, reg)
+		if err != nil {
+			t.Fatalf("the current decoder cannot read the collection structure: %v", err)
+		}
+		if len(s.BlockEntities) < 4 || len(s.Entities) < 3 {
+			t.Fatalf("collection structure holds %d block entities and %d entities: "+
+				"§6's collection order is no longer byte-locked by any golden",
+				len(s.BlockEntities), len(s.Entities))
+		}
+		// The order the file was written in, read back: y, then z, then x.
+		for i := 1; i < len(s.BlockEntities); i++ {
+			a, b := s.BlockEntities[i-1].Pos, s.BlockEntities[i].Pos
+			if !(a[1] < b[1] ||
+				(a[1] == b[1] && a[2] < b[2]) ||
+				(a[1] == b[1] && a[2] == b[2] && a[0] < b[0])) {
+				t.Fatalf("collection structure block entities are not in (y,z,x) order: %v then %v", a, b)
+			}
 		}
 	})
 

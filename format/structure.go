@@ -532,7 +532,12 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 }
 
 // ReadStructure decodes a structure file.
-func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error) {
+//
+// A MaxDecodedBytes option bounds this one call. A structure has no columns, so
+// what the ceiling covers here is its decoded section storages, which are its
+// bulk: an absent cell is a nil pointer and costs nothing.
+func ReadStructure(file []byte, reg world.BlockRegistry, opts ...ReadOption) (*StructureData, error) {
+	cfg := newReadConfig(opts)
 	h, stored, err := parseFrame(file)
 	if err != nil {
 		return nil, err
@@ -624,7 +629,7 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	}
 
 	air := reg.AirRuntimeID()
-	budget := &storageBudget{limit: maxDecodedStorages}
+	budget := newStorageBudget(cfg)
 	// The same blob source a world record reads through, and for the same two
 	// reasons. §3.4 assigns ids in first-use order over the stream of stored
 	// units, which for a structure is its ascending cells and their ascending

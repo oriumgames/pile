@@ -960,3 +960,182 @@ the constants to equal them. A bound asserted against its own constant moves
 with the constant and cannot fail — the same trap `SECURITY.md` records for the
 column ceiling's writer half. The first version of this test had it, and D1 was
 green until it was fixed.
+
+---
+
+## 6. The caller decode ceiling, and three golden fixture gaps
+
+A third pass. It added `MaxDecodedBytes` (`SECURITY.md`, "Format changes:
+made", item E), closed G2 above, and re-ran the golden gap hunt as a systematic
+sweep rather than by inspection — which found two more gaps of the same shape
+that reading had missed.
+
+### 6.1 G2 closed: the state-property key sort
+
+`goldenWorld` could not gain a two-property block state without moving eleven
+existing goldens, and moving an existing golden is what the freeze check exists
+to catch. The fixture is therefore **additive**: a new variant `world_props`,
+whose column carries two preserved states: one with four property keys across
+three property types, so the order is pinned across type boundaries; and one
+whose keys are `a`, `aa` and `b`, which pins the order as **bytewise** rather
+than length-then-bytes — the two disagree on `aa` against `b`, and keys of
+equal length cannot tell them apart.
+
+`-update` was run with **no `-format-change`**, which is itself the proof that
+nothing moved: the guard refuses to bless a changed hash while `format.Version`
+stays at 2, so a silent regeneration of an existing fixture could not have
+succeeded. Verified again by comparing the manifests as sets — sixteen entries
+before, seventeen after, **no existing hash changed**.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| H1 | the state-property key sort | `format/palette.go:354` (`slices.Sort` then `Reverse`) | `TestGoldenFormatStability` | **RED** — `/world_props`, and **only** `/world_props`: the other sixteen goldens stayed green, which is the gap G2 recorded, measured directly |
+| H1b | the same | the same | `TestConformanceVectors` | RED — `/world_preserved`. The vectors never had this gap: `world_preserved` has carried a two-property state all along, so no new vector was needed. Established by the same control rather than by reading the fixture. |
+| H1c | bytewise order specifically | `format/palette.go:354` replaced with a length-then-bytes comparator | `TestGoldenFormatStability` | **RED** — `/world_props`. This is why `props_b` holds `a`, `aa` and `b`: keys of equal length cannot separate the two orders, and every other property fixture in the tree has equal-length keys. |
+| H2 | the property fixture degrading to one property | `goldenPropsWorld`'s states reduced to one property each, then `-update` | `TestGoldenFormatReadable/props_still_multi` | **RED** — "property golden has 1 states with two or more properties (widest 3)" |
+
+### 6.2 The sweep: every writer-side ordering decision, against the goldens
+
+Fifteen sort sites across `encode.go`, `palette.go`, `blob.go`, `structure.go`,
+`nbt.go` and `indexed.go`, each reversed in turn with the golden suite run at
+no flags. Eleven were caught. The four that were not:
+
+| site | rule | verdict |
+|---|---|---|
+| `format/structure.go:447` | structure block entities ascend by (y, z, x) | **golden fixture gap.** `goldenStructure` holds exactly one block entity, so the sort had nothing to order and no golden byte moved. The `structure_full` conformance vector does catch it, so the rule was enforced — just not by the artefact the freeze check consults. **Closed**, see 6.3. |
+| `format/structure.go:460` | structure entities ascend by encoded NBT | **golden fixture gap**, same shape, same cause, same vector catching it. **Closed**, see 6.3. |
+| `format/encode.go:809` | the solid writer's pre-sort of scheduled ticks | **not a gap.** Uncaught by the whole suite, and uncatchable: `sortTicks` (`encode.go:1321`) imposes a total order on (y, x, z, tick, final palette reference) afterwards, and two ticks that tie on all five encode as identical bytes. The pre-sort is a stable sort whose stability can never be observed on the wire. Annotated at the site. |
+| `format/indexed.go:2116` | the order `Compact` rewrites records in | **not a canonical rule.** Uncaught by the whole suite, and correctly so: `FREEZE.md` states that indexed byte layout is history-dependent and not frozen, and `golden_indexed_compact.pile` is deliberately not byte-locked because dictionary training is not reproducible. This decides physical record placement, which is a locality choice. The directory frame's own Morton order is a different site (`indexed.go:2031`) and is caught by three goldens. |
+
+### 6.3 The structure collection fixture
+
+`golden_structure_collections`, additive as above. Four block entities supplied
+in exactly the reverse of their canonical order, positioned so that each of the
+three comparison rungs (y, then z, then x) decides exactly one adjacent pair —
+a sort that dropped any one rung still reorders the rest. Three entities, which
+is enough because reversing three distinct elements always changes their order.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| H3 | structure block entity order | `format/structure.go:458` (`slices.Reverse(bes)` after the sort) | `TestGoldenFormatStability` | **RED** — `/structure_collections`. Green on every golden before this fixture existed. |
+| H4 | structure entity order | `format/structure.go:460` (`slices.Reverse(ents)` after it) | `TestGoldenFormatStability` | **RED** — `/structure_collections`. Green on every golden before. |
+| H5 | the fixture degrading | `goldenStructureCollections` reduced to one block entity, then `-update` | `TestGoldenFormatReadable/structure_collections` | **RED** — "collection structure holds 1 block entities and 3 entities" |
+
+A note on method, because the first attempt got it wrong: reversing a sort
+means inserting `slices.Reverse` **after the closing `})` of the sort call**,
+not inside the comparator. An insertion inside the comparator compiles, mutates
+the slice during the sort, and produced a spurious "uncaught by the whole
+suite" verdict for H3. Line numbers were confirmed with `sed` before each edit
+after that.
+
+### 6.4 The caller decode ceiling
+
+Twelve controls, all red. The subject in each case is a single line or clause.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| B1 | the default ceiling being §8's | `format/format.go`, `decodedByteCeiling()` returns 4096 | `TestDecodeBudgetDefaultChangesNothing` | RED — "the default ceiling refused a file as over budget" |
+| B2 | the clamp to §8's ceiling | `format/format.go`, drop `\|\| c.maxDecodedBytes > decodedBytesCeiling` | `TestDecodeBudgetClampsUpwardOnly` | RED — "a caller asking for 9223372036854775807 got a ceiling of 9223372036854775807" |
+| B3 | the one column of headroom | `format/format.go`, drop `+ columnBytes` from `decodedBytesCeiling` | `TestDecodeBudgetCeilingIsUnreachableByDefault` | RED — "the default ceiling is 4831838208 and §8 permits a decode to reach 4831838208" |
+| B4 | `ReadWorld` charging a column per record | `format/decode.go`, `if false` over `chargeColumns(1)` | `TestDecodeBudgetChargesColumnsWithNoStorages` | RED |
+| B5 | `ReadStructure` honouring the ceiling | `format/structure.go`, `newStorageBudget(cfg)` → a bare `&storageBudget{}` | `TestDecodeBudgetReachesEveryReader/ReadStructure` | RED — "a one-byte ceiling decoded the whole fixture" |
+| B6 | `ContentHash` passing options down | `format/check.go`, drop `opts...` | `TestDecodeBudgetReachesEveryReader/ContentHash` | RED |
+| B7 | `OpenIndexed` resolving the ceiling | `format/indexed.go`, drop the assignment to `w.decodedByteCeiling` | `TestDecodeBudgetReachesEveryReader/OpenIndexed` | RED |
+| B8 | the directory being charged at open | `format/indexed.go`, `false &&` on the `finishDirectory` check | `TestIndexedDecodeBudgetIsPerHandle` | RED — "a ceiling of 16383 opened a directory of 16 entries costing 16384" |
+| B9 | a record paying for the directory | `format/indexed.go`, `recordBudget` ignores `len(w.dir)` | `TestIndexedDecodeBudgetIsPerHandle` | RED — "a column decoded with the whole ceiling already spent on the directory" |
+| B10 | the indexed record's own column charge | `format/decode.go`, `if false` over `chargeColumns(1)` in `decodeRecordBody` | `TestIndexedDecodeBudgetChargesTheRecordColumn` | RED |
+| B11 | a budget refusal stopping recovery | `format/indexed.go`, `false &&` on the `ErrDecodeBudget` break | `TestIndexedDecodeBudgetDoesNotFallBack` | RED — "the open succeeded with 1 columns: it fell back to an older checkpoint" |
+| B12 | the sentinel not wrapping `ErrCorrupt` | `format/format.go`, make `ErrDecodeBudget` wrap it | `TestDecodeBudgetSentinelIsNotCorrupt` | RED |
+| B13 | the provider passing the ceiling down | `options.go`, `readOpts` returns nil | `TestProviderMaxDecodedBytes` | RED — "the option is not reaching the reader" |
+
+**Two of these were green on the first attempt and are the reason the fixture
+`emptyColumnWorld` exists.** B4 and B10 were written against fixtures carrying
+blocks, and a ceiling tight enough to refuse such a file is refused by the
+*storage* charge whether columns are charged or not — so both tests stayed
+green with the column charge deleted. The column charge can only be isolated by
+a file that decodes into columns and no storages at all: 96 bytes, 64 records,
+each declaring one section and marking none present, which is the shape
+`SECURITY.md` records as the 1,161-byte residual. Both controls are red against
+it.
+
+### 6.4b A race the ceiling introduced, and the test that was missing
+
+`recordBudget` derives a record's budget from `len(w.dir)`, and `Column`
+releases `w.mu` before decoding — so the first version read the live directory
+after the unlock, racing a concurrent `Store`. The surrounding code says
+plainly that everything a decode needs is snapshotted under the lock; the
+budget was not.
+
+It was found by reading the diff rather than by a test, and that is the finding:
+**nothing in the suite drove `Column` against a concurrent `Store`**, so
+`go test -race` was green with the race present. The budget is now snapshotted
+alongside the palettes, and there is a test.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| B15 | snapshotting the record budget under the lock | `format/indexed.go`, move `w.recordBudget()` below `w.mu.Unlock()` | `TestIndexedColumnDecodesOutsideTheLockSafely` (`-race`) | **RED** — `WARNING: DATA RACE`, write by `mapaccess2_fast64` against the reader |
+
+The test guards more than the budget: the palette snapshot has the same shape
+and had the same absence of coverage.
+
+### 6.5 The indexed fuzz harness
+
+The stated hypothesis for `FuzzOpenIndexed`'s 168k executions over 20 minutes
+(against 11-16 million for the other three targets) was that recovery is
+legitimately expensive — the §8 total-work bound measures ~4.2 s at its
+ceiling. **Measured, and refuted.** Replaying the target's entire 50-entry
+cached corpus through the harness body took **2.6 ms in total**, mean 52 us,
+slowest entry 320 us. Nothing in the corpus is expensive.
+
+Where the time actually went, in two measurements:
+
+- `sample(1)` on the fuzz workers: their non-idle time is in `mkdir`, `open`,
+  `write`, `openat`, `close`, `fdopendir`/`getdirentries64`, `unlinkat` and
+  `rmdir` — the harness's per-execution `t.TempDir()`, `os.WriteFile` and
+  cleanup, not the decoder.
+- A CPU profile of the decode alone: **85.6% in `syscall.rawsyscalln`**, 63%
+  cumulative under `readFrame`, whose body is one `w.f.ReadAt`. Every frame an
+  indexed reader touches is a `pread`. `FuzzReadWorld` reads a `[]byte`; that is
+  the whole difference between 4.5k/s and 2/s.
+
+Benchmarked per execution on this machine: **3.64 ms** with a fresh temp dir,
+**1.43 ms** reusing one path, **0.15 ms** with no file at all.
+
+So the fix is not a decode budget — Job 1's ceiling would have bought nothing
+here, because the target was never decode-bound. The harness now opens through
+`memFile`, an in-memory `indexedFile`. `openIndexedOn` already takes that
+interface (it is how the durability suite injects a file that tears), so every
+recovery path is still reached; the only thing skipped is `OpenIndexed`'s own
+`os.OpenFile`.
+
+Result, 20 minutes on the same machine, `PASS`, no crashers:
+
+| | before | after |
+|---|---|---|
+| executions | 168,000 | **37,722,587** |
+| rate | ~2/s (0/s for the final 25 s) | **~31,400/s** |
+| corpus | 50, still growing | 94 -> 146 |
+
+**Still not saturated, and saying so.** The corpus was still taking new
+interesting inputs in the final minutes (the 52nd landed at 19m39s), so the
+target has not plateaued the way the other three had. What changed is the
+budget it has to find them with: 225x more executions per unit of wall time.
+The honest statement is that this target now explores at the same order of
+magnitude as the others, not that it is finished.
+
+| # | check disabled | anchor | test | result |
+|---|---|---|---|---|
+| B14 | the in-memory file model agreeing with a real one | `format/fuzz_test.go`, corrupt the last byte of every `memFile.ReadAt` | `TestMemFileMatchesOsFile` | **RED** — "the two file models disagree on the verdict: disk `<nil>`, mem pile: corrupt file: no valid checkpoint" |
+
+Guards the harness rather than the format: `FuzzOpenIndexed` now reads through
+`memFile`, so a `memFile` that behaved differently from `os.File` would be
+fuzzing the model rather than the decoder. All four indexed goldens must open,
+list and decode identically through both.
+
+A note on H2 and H5, because the first attempt at both was wrong in an
+instructive way. Degrading the fixture *builder* and running the guard leaves
+it green: the guard reads the checked-in `.pile`, which the builder has not
+touched. The real regression is a future pass that degrades the builder **and
+regenerates**, so the control has to do both — and the guard is then what
+catches a fixture that has quietly stopped covering its rule. Both controls
+above run `-update` before the assertion for exactly that reason.

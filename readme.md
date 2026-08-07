@@ -39,8 +39,16 @@ defer p.Close() // saves
 Options: `pile.ReadOnly()`, `pile.Compression(...)`, `pile.AppendMode()`,
 `pile.Skip(pile.SkipEntities|...)`, `pile.FilterEntity(...)`,
 `pile.LoadSkip(...)`, `pile.CacheColumns(n)`, `pile.FastSaves()`,
-`pile.StoreLight()`, `pile.Registry(...)`, `pile.WithSpawnStore(...)`.
-Player data never lives in pile files.
+`pile.StoreLight()`, `pile.Registry(...)`, `pile.WithSpawnStore(...)`,
+`pile.MaxDecodedBytes(n)`. Player data never lives in pile files.
+
+`pile.MaxDecodedBytes(n)` is the one to reach for if you open worlds you did
+not write. The format's own ceilings are set at what it can represent rather
+than at what a server wants to spend, so a legal file of about a kilobyte
+decodes into a gigabyte; this caps it. A world refused under the cap fails with
+`format.ErrDecodeBudget`, which does **not** wrap `format.ErrCorrupt` — the file
+is too big for your limit, not broken, so do not quarantine it as though it
+were. See `SECURITY.md`.
 
 ## Two file modes
 

@@ -2,12 +2,15 @@ package pile
 
 import (
 	"bytes"
+	"errors"
+	"slices"
 	"testing"
 
 	"github.com/df-mc/dragonfly/server/block"
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/google/uuid"
+	"github.com/oriumgames/pile/format"
 )
 
 func TestLoadSkip(t *testing.T) {
@@ -188,5 +191,60 @@ func TestColumnsIterator(t *testing.T) {
 	defer r.Close()
 	if err := r.Snapshot("x"); err == nil {
 		t.Fatal("in-memory snapshot accepted")
+	}
+}
+
+// TestProviderMaxDecodedBytes threads the provider's decode ceiling down to the
+// format readers, in both storage modes.
+//
+// The provider is where the option is actually reached from, so a format-level
+// test alone would leave the wiring unproved: pile.MaxDecodedBytes could set a
+// field nothing reads and every format test would stay green.
+func TestProviderMaxDecodedBytes(t *testing.T) {
+	reg := testRegistry(t)
+	for _, mode := range []struct {
+		name string
+		opts []Option
+	}{
+		{"solid", nil},
+		{"append", []Option{AppendMode()}},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p, err := Open(dir, mode.opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for x := int32(0); x < 8; x++ {
+				if err := p.StoreColumn(world.ChunkPos{x, 0}, world.Overworld, testColumn(t, reg)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := p.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			// The default opens it.
+			q, err := Open(dir, mode.opts...)
+			if err != nil {
+				t.Fatalf("the world does not open at the default ceiling: %v", err)
+			}
+			if err := q.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			// A ceiling of one byte does not, and says so as policy rather than
+			// as corruption.
+			_, err = Open(dir, append(slices.Clone(mode.opts), MaxDecodedBytes(1))...)
+			if err == nil {
+				t.Fatal("a one-byte ceiling opened the world: the option is not reaching the reader")
+			}
+			if !errors.Is(err, format.ErrDecodeBudget) {
+				t.Fatalf("refused, but not as a budget refusal: %v", err)
+			}
+			if errors.Is(err, format.ErrCorrupt) {
+				t.Fatalf("a policy refusal claimed the world is corrupt: %v", err)
+			}
+		})
 	}
 }

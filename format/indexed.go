@@ -186,6 +186,40 @@ type IndexedWorld struct {
 	// value; only tests set it, so the bound can be reached without building a
 	// file that takes a quarter of a minute to parse.
 	recoveryBudget int
+
+	// decodedByteCeiling is the caller's MaxDecodedBytes ceiling, resolved once
+	// at open and clamped to §8's.
+	//
+	// It is per handle rather than per call, and that is the whole point:
+	// indexed mode decodes one record at a time, so a per-call ceiling would let
+	// a file with four million directory entries spend the caller's whole budget
+	// four million times over and the number would bound nothing. What the
+	// handle's ceiling covers is the state the handle actually holds at once —
+	// the directory, charged as it loads and retained for the handle's life —
+	// plus whatever one record decode costs on top of it, which is released when
+	// the Column is dropped. That is exactly indexed mode's memory contract:
+	// directory, palettes, and one record at a time.
+	decodedByteCeiling int64
+}
+
+// recordBudget is the budget for decoding one record: §8's storage ceiling, and
+// whatever the caller's ceiling has left once the live directory is paid for.
+//
+// The directory's share is recomputed from the live map rather than remembered
+// from load time, so a handle that has since stored columns charges for the
+// ones it now holds. That is why this reads w.dir and why **the caller must
+// hold w.mu**: a concurrent Store grows the map, and Column decodes outside the
+// lock, so the budget is snapshotted alongside the palettes rather than taken
+// off the struct once the lock is gone.
+func (w *IndexedWorld) recordBudget() *storageBudget {
+	left := w.decodedByteCeiling - int64(len(w.dir))*columnBytes
+	if left < 1 {
+		// The directory alone has reached the ceiling. One column is charged
+		// before a record is parsed, so any value below columnBytes refuses at
+		// the first charge; zero would be read as "no ceiling resolved".
+		left = 1
+	}
+	return &storageBudget{limit: maxDecodedStorages, byteLimit: left}
 }
 
 // frameRef locates a stored frame and authenticates it: every frame the
@@ -305,7 +339,12 @@ func createIndexedOn(f indexedFile, path string, reg world.BlockRegistry, opts O
 
 // OpenIndexed opens an existing indexed world file, recovering to the last
 // valid checkpoint if the file ends in a torn write.
-func OpenIndexed(path string, reg world.BlockRegistry, readOnly bool) (*IndexedWorld, error) {
+//
+// A MaxDecodedBytes option is **per handle**, not per call: it covers the
+// directory this open loads and retains, plus whatever one record decode costs
+// on top of it. See IndexedWorld.decodedByteCeiling for why per call would
+// bound nothing.
+func OpenIndexed(path string, reg world.BlockRegistry, readOnly bool, opts ...ReadOption) (*IndexedWorld, error) {
 	mode := os.O_RDWR
 	if readOnly {
 		mode = os.O_RDONLY
@@ -314,17 +353,18 @@ func OpenIndexed(path string, reg world.BlockRegistry, readOnly bool) (*IndexedW
 	if err != nil {
 		return nil, err
 	}
-	return openIndexedOn(f, path, reg, readOnly)
+	return openIndexedOn(f, path, reg, readOnly, opts...)
 }
 
 // openIndexedOn is OpenIndexed with the file already open, so a test can
 // supply one that fails or tears at a chosen write.
-func openIndexedOn(f indexedFile, path string, reg world.BlockRegistry, readOnly bool) (*IndexedWorld, error) {
+func openIndexedOn(f indexedFile, path string, reg world.BlockRegistry, readOnly bool, opts ...ReadOption) (*IndexedWorld, error) {
 	w, err := newIndexedWorld(f, path, reg, Options{Compression: CompressionDefault}, readOnly)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
+	w.decodedByteCeiling = newReadConfig(opts).decodedByteCeiling()
 	if err := w.load(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -343,6 +383,11 @@ func newIndexedWorld(f indexedFile, path string, reg world.BlockRegistry, opts O
 		// A full budget from the start, so a directory loaded outside
 		// adoptCheckpoint is not charged against a budget nobody set.
 		recoveryLeft: maxRecoveryEntries,
+		// Likewise §8's own decode ceiling, so a handle built by a path that
+		// takes no ReadOptions (CreateIndexed, the durability suite's
+		// openIndexedOn callers) is held to exactly what §8 permits rather than
+		// to zero.
+		decodedByteCeiling: decodedBytesCeiling,
 	}, nil
 }
 
@@ -633,6 +678,15 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 				// The budget is spent, so every remaining candidate would cost
 				// what this one could not afford. Stop rather than walk the
 				// rest of the chain refusing each in turn.
+				break
+			}
+			if errors.Is(lerr, ErrDecodeBudget) {
+				// Policy, not damage. Recovery exists to step back past a
+				// checkpoint that is broken, and this one is not: it is merely
+				// larger than the caller allowed. Falling back would hand the
+				// caller an older world and call it a successful open, which is
+				// data loss chosen by a resource limit. Report it instead, and
+				// let the caller widen the ceiling or decline the file.
 				break
 			}
 			continue
@@ -987,6 +1041,15 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 	// quarter of it.
 	if w.recoveryLeft -= chunkN; w.recoveryLeft < 0 {
 		return fmt.Errorf("%w: directory of %d entries", errRecoveryBudget, chunkN)
+	}
+	// And against the caller's ceiling, for the same reason and in the same
+	// place: a directory this handle cannot afford should cost nothing to
+	// refuse. This is what makes the ceiling bite at open rather than at the
+	// first Column read, which is the only point at which a caller can still
+	// decline the file.
+	if n := int64(chunkN) * columnBytes; n > w.decodedByteCeiling {
+		return fmt.Errorf("%w: directory of %d entries needs %d bytes, the caller's limit is %d",
+			ErrDecodeBudget, chunkN, n, w.decodedByteCeiling)
 	}
 	var px, pz, poff int64
 	var prevKey uint64
@@ -1620,11 +1683,14 @@ func (w *IndexedWorld) Store(c Column) error {
 func (w *IndexedWorld) Column(x, z int32) (Column, error) {
 	w.mu.Lock()
 	body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, err := w.fetchRecordLocked(x, z)
+	// Snapshotted under the lock for the same reason the palettes above are:
+	// recordBudget reads the live directory, which a concurrent Store grows.
+	budget := w.recordBudget()
 	w.mu.Unlock()
 	if err != nil {
 		return Column{}, err
 	}
-	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z)
+	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z, budget)
 }
 
 // columnHeld is Column with w.mu held for the entire call (used by Compact so
@@ -1634,7 +1700,7 @@ func (w *IndexedWorld) columnHeld(x, z int32) (Column, error) {
 	if err != nil {
 		return Column{}, err
 	}
-	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z)
+	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z, w.recordBudget())
 }
 
 // fetchRecordLocked reads, verifies and decompresses a record frame. Caller
@@ -1676,14 +1742,14 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 }
 
 // applyRecordBody decodes a fetched record body into a Column.
-func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, storeLight bool, x, z int32) (Column, error) {
+func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, storeLight bool, x, z int32, budget *storageBudget) (Column, error) {
 	r := &reader{b: body}
 	// Indexed mode never elides a biome section, so it names no default; a
 	// section absent because biomes were skipped still takes the version-stable
 	// fallback rather than a numeric id.
 	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), fallbackBiomeID(), 0, false, storeLight, -1, unknown, unkStates,
 		bioUnknown, bioNames,
-		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z)
+		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z, budget)
 	if err != nil {
 		return Column{}, err
 	}

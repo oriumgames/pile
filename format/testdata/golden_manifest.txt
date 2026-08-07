@@ -3,6 +3,7 @@ indexed d81db679fca0bf61
 indexed_torn 6f2586adabd13764
 indexed_zstd 3729d220b061189e
 structure c26a0330a6beee3c
+structure_collections 9a07b2d5bfc28fe1
 structure_zstd 8c0a52b537b95f70
 world_all 13e230c19ab02638
 world_dense 57eb8e7167a3cbd5
@@ -10,6 +11,7 @@ world_dense_zstd 3afbcaa4b5ba6ee9
 world_light 46c3fd847621fa27
 world_nobiomes a4e8e890b31bcf6f
 world_plain ff28ac1070ff000f
+world_props 3dc5cf81b843793a
 world_stats 388051b0624f6cdc
 world_unknown 87eee29ea0c1da5d
 world_zstd bbf4562aa38eaa3f

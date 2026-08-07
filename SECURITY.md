@@ -69,6 +69,11 @@ hostile file will make it do exactly that within the rules.
 
 - Treat a decode of a foreign file the way you would treat an image decode:
   memory-safe, bounded, but not free, and not to be run unbounded in parallel.
+- Set your own ceiling if you know what your worlds cost.
+  `pile.MaxDecodedBytes` on the provider, `format.MaxDecodedBytes` on the
+  readers. A file refused under it fails with `format.ErrDecodeBudget`, which
+  does not wrap `format.ErrCorrupt`: the file is not being called invalid, and
+  must not be quarantined as though it were.
 - Do not treat a checkpoint hash, a frame hash or a `ContentHash` as evidence
   that a file came from you. If you need that, sign the file.
 - The dragonfly `world.Provider` this library implements is intended for worlds
@@ -97,6 +102,8 @@ under `-race`.
 | `TestHostileOverrideDeltaWraps` | The one integer computation that wrapped before its bounds check. |
 | `TestHostileDecodedColumnCeiling` | The §8 column ceiling, and that a count at the ceiling is refused for its records rather than for the ceiling. |
 | `TestRecoveryWorkIsBounded` | The §8 total-work limit on recovery, spent across candidates rather than per candidate. |
+| `TestMemFileMatchesOsFile` | That `FuzzOpenIndexed`'s in-memory file model decodes identically to a real file, so the fuzzing behind the "decoders never panic" claim is of the decoder and not of the model. |
+| `format/budget_test.go` (ten tests) | The caller's decode ceiling: that the default decodes exactly what a reader without it decodes over every golden and every vector, that a tight ceiling refuses a conforming file as policy rather than as corruption, that every decoding entry point honours it, that it clamps downward only, and that an indexed handle charges its directory once and each record against the remainder. |
 
 Two of those tests used to assert that a hostile input is **accepted**. They
 were characterisation tests for the two findings that could not be closed
@@ -224,6 +231,9 @@ not read as an oversight.
 ---
 
 ## Format changes: made
+
+Four validity rules were tightened, and one thing that is deliberately **not** a
+validity rule was added: a caller-supplied decode ceiling (item E).
 
 Four validity rules were tightened. Every one of them **rejects files this
 reader used to accept**, which is what makes them format changes rather than
@@ -417,6 +427,71 @@ either way it is now bounded by a limit no candidate count can multiply.
   forged the footers. Checked by reading `checkpointLocked` and `Compact`: both
   write one footer per checkpoint over the directory they just wrote.
 
+### E. The caller may set a stricter decode ceiling — which is not a validity rule
+
+The one item here that changes no file's validity, and the only reason it sits
+under "format changes" at all is that getting it wrong in either direction
+would be one.
+
+The residual this pass could not close is item C's: a legal **1,161-byte** file
+decodes into **1.12 GiB**, and §8's column ceiling sits four times higher again
+at 4,194,304. Refusing that file outright means a world-size ceiling below
+1024x1024 chunks, and that trade was refused deliberately. But a lobby server
+opening maps it did not write and an operator storing a genuine four-million
+column world do not want the same number, and no constant serves both. The
+number is therefore the caller's.
+
+- **API.** `format.MaxDecodedBytes(n int64) ReadOption`, accepted as a variadic
+  by `ReadWorld`, `ReadStructure`, `ReadMeta`, `OpenIndexed` and `ContentHash`.
+  `ContentHash` is in the list because it decodes internally: without it, the
+  one way to make a reader do the whole job with no ceiling over it would be to
+  ask it to identify the file. The provider re-exports it as
+  `pile.MaxDecodedBytes(n int64) Option`.
+- **What it charges.** Decoded columns at 1,024 bytes each and decoded section
+  storages at 128, the two quantities §8 already bounds by count and the two
+  that dominate a decode's live footprint. Both figures come from measurements
+  already recorded here: 1,048,576 empty columns at 1.12 GiB retained is about
+  1,150 bytes each, and §8 puts a stored layer at "about a hundred bytes". It
+  does not charge transient allocation inside an NBT blob, which has its own §8
+  ceiling and is released before the decode returns; `ReadMeta` therefore
+  accepts the option and documents that it cannot bind there.
+- **Per call, except for `OpenIndexed`, which is per handle.** A solid file
+  holds every column at once, so one call is the whole decode. An indexed
+  handle decodes one record at a time, so a per-call ceiling would let a file
+  with four million directory entries spend the caller's whole budget four
+  million times over and bound nothing. The handle's ceiling covers the
+  directory it loads and retains, charged at open so the file can still be
+  declined, plus whatever one record costs on top of it — which is exactly
+  indexed mode's stated memory contract.
+- **It only tightens.** `n <= 0` selects §8's ceiling; anything else is clamped
+  down to it. A reader that accepted what a conforming reader must refuse would
+  fork the format as surely as one that refused what it must accept.
+- **A refusal is not a claim of invalidity.** `format.ErrDecodeBudget` is a
+  distinct sentinel that deliberately does **not** wrap `ErrCorrupt` — the sole
+  documented exception to §8's "decoding errors wrap ErrCorrupt unless stated
+  otherwise", and §8 now states otherwise. A caller that quarantines or deletes
+  files on `ErrCorrupt` must not do either on this one, and a second
+  implementation that read the ceiling as a validity rule would refuse
+  conforming files and blame the file. §8 carries a paragraph saying so.
+- **The default changed nothing, proved two ways.** By sweeping every golden and
+  all 76 conformance vectors, accepted and refused alike, through `ContentHash`
+  with and without the option and requiring the same verdict, the same error
+  *string* and the same hash (`TestDecodeBudgetDefaultChangesNothing`); and by
+  arithmetic, since the default ceiling is set one column above the most §8
+  permits any decode to cost, so it cannot fire on a conforming file rather
+  than merely not firing on the fixtures that exist
+  (`TestDecodeBudgetCeilingIsUnreachableByDefault`). All 59 negative vectors are
+  still refused for the rule each is named after, which
+  `TestConformanceVectorsNegative` asserts by substring rather than by merely
+  seeing an error.
+- **What it does not do.** It does not lower the worst case a *default* caller
+  faces; that is still four gigabytes, and the paragraph below still applies to
+  anyone who does not set it. What it adds is a dial, and a name for the
+  refusal.
+- **Negative controls:** thirteen, in `HARNESS.md` §6.4, all red. Two of them
+  were green when first written, and the fixture that fixed them — a 96-byte
+  file of 64 columns and no section storages — is recorded there.
+
 ## What remains
 
 Everything here is bounded — no unbounded loop, no unbounded allocation — and
@@ -457,6 +532,12 @@ A caller that decodes solid files it did not write should therefore still size
 its own limits as though a decode can cost a gigabyte, and should not run such
 decodes unbounded in parallel. What changed is the ceiling above it: forty-eight
 gigabytes was reachable within the rules before, and four is now.
+
+Or it can set the ceiling itself: `format.MaxDecodedBytes`, and
+`pile.MaxDecodedBytes` on the provider, bound the columns and section storages
+one decode may produce. See item E above. That is the answer to this row for a
+caller that knows what its worlds cost; the row stands as written for one that
+does not set it, which is the default.
 
 ### Recovery work
 

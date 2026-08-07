@@ -508,4 +508,24 @@ var invariants = []Invariant{
 		Tests: []string{"TestRejectsOutOfSpanPositions"},
 		Note:  "The span is validated; its contents were not. A block-entity Y outside it is a coordinate the caller's own array cannot address.",
 	},
+	{
+		Name: "a caller's ceiling is policy, and tightens only", Category: Bound, Enforce: Decoded,
+		Rules: []string{"781a9694", "80e86ca1"},
+		Tests: []string{
+			"TestDecodeBudgetDefaultChangesNothing",
+			"TestDecodeBudgetCeilingIsUnreachableByDefault",
+			"TestDecodeBudgetRefusesByPolicyNotValidity",
+			"TestDecodeBudgetChargesColumnsWithNoStorages",
+			"TestDecodeBudgetReachesEveryReader",
+			"TestDecodeBudgetClampsUpwardOnly",
+			"TestDecodeBudgetSentinelIsNotCorrupt",
+			"TestIndexedDecodeBudgetIsPerHandle",
+			"TestIndexedDecodeBudgetChargesTheRecordColumn",
+			"TestIndexedDecodeBudgetDoesNotFallBack",
+		},
+		Note: "The one entry in this table that is not about which files are valid. §8's ceilings are set at what the format can represent, and a legal 1,161-byte file still decodes into 1.12 GiB, so no single constant serves both a server opening maps it did not write and an operator storing a genuine four-million-column world. MaxDecodedBytes hands that choice to the caller. " +
+			"It is listed here because the two ways of getting it wrong are both format changes. Refusing under a caller's ceiling and reporting it as invalidity would teach a second implementation that the number is a validity rule, and it would then refuse conforming files and blame the file; ErrDecodeBudget therefore does not wrap ErrCorrupt, which is the sole documented exception to §8's convention. Letting a caller raise the ceiling past §8's would make this reader accept what a conforming reader must refuse, so the value is clamped downward and only downward. " +
+			"The default has to be exactly the old behaviour, and is proved so twice: by sweeping every golden and every conformance vector for an unchanged verdict, reason and ContentHash, and by arithmetic — the default ceiling is set above the most §8 permits any decode to cost, so it cannot fire on a conforming file rather than merely not firing on the fixtures there are. " +
+			"Enforce is Decoded because a reader is what applies it, but the enforcement is of the caller's policy and not of the format: no file is invalid for exceeding it.",
+	},
 }

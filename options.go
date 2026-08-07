@@ -55,6 +55,8 @@ type config struct {
 	registry     world.BlockRegistry
 	spawns       SpawnStore
 
+	maxDecoded int64
+
 	skip      SkipMask
 	loadSkip  SkipMask
 	filterEnt func(chunk.Entity) bool
@@ -64,6 +66,18 @@ type config struct {
 
 func defaultConfig() config {
 	return config{compression: format.CompressionBest, registry: world.DefaultBlockRegistry}
+}
+
+// readOpts translates the provider's decode policy into format ReadOptions.
+// It returns nil when there is no policy to state, so the default path calls
+// the readers with no options at all rather than with an option carrying the
+// zero value — the two are defined to mean the same thing, and this way the
+// default does not depend on that definition holding.
+func (c config) readOpts() []format.ReadOption {
+	if c.maxDecoded <= 0 {
+		return nil
+	}
+	return []format.ReadOption{format.MaxDecodedBytes(c.maxDecoded)}
 }
 
 // ReadOnly opens the provider in read-only mode: all mutating operations are
@@ -106,6 +120,25 @@ func Registry(reg world.BlockRegistry) Option {
 		}
 	}
 }
+
+// MaxDecodedBytes bounds the live decoded state a world file may produce, in
+// bytes. 0 (the default) is the format's own ceiling, which is where §8 of the
+// specification sets it: near what the format can represent, not near what a
+// deployment wants to spend. A legal 1,161-byte file decodes into 1.12 GiB, and
+// the ceiling above it is four times higher again.
+//
+// Set it when the worlds being opened are not worlds you wrote. A value above
+// the format's ceiling is clamped down to it, so this can tighten the limit and
+// cannot loosen it.
+//
+// A file refused under this ceiling is not a corrupt file. The error satisfies
+// errors.Is(err, format.ErrDecodeBudget) and deliberately does not satisfy
+// errors.Is(err, format.ErrCorrupt): it says the file is larger than this
+// provider was told to decode, not that anything is wrong with it.
+//
+// In append mode the limit is per open world file rather than per column read:
+// it covers the directory the file keeps resident plus one decoded column.
+func MaxDecodedBytes(n int64) Option { return func(c *config) { c.maxDecoded = n } }
 
 // WithSpawnStore plugs an external player spawn store into the provider.
 func WithSpawnStore(s SpawnStore) Option { return func(c *config) { c.spawns = s } }

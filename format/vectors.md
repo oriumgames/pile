@@ -374,3 +374,14 @@ Stated plainly, so the appendix is not read as more complete than it is.
   hostile-input tests, each with a recorded negative control.
 - **Zstandard's window ceiling (§2.5).** Every positive vector is uncompressed,
   so no frame here asks for a window at all.
+- **A caller's own decode ceiling (§8).** Not an omission: it is not a validity
+  rule and a vector could not express it. §8 lets an implementation offer its
+  caller a stricter ceiling than §8's own, and a file refused under one is
+  *not* invalid — another reader, or the same reader with a wider ceiling, must
+  accept it. A vector says "every conforming reader must refuse this file", and
+  that is exactly what is not being claimed. Two things about it are normative
+  and are stated in §8 rather than shown here: such a refusal must be
+  distinguishable from a refusal for invalidity, and a caller's ceiling may
+  only tighten, never raise, the limits §8 sets. A second implementation that
+  offers no such ceiling is conforming; one that offers a ceiling a caller can
+  raise past §8's is not.

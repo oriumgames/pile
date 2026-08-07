@@ -219,6 +219,40 @@ checkpoint falls back to an older one, so a file with a valid earlier checkpoint
 checkpoint for that reason, and `format/vectors.md` says so where a reader of
 those vectors will meet it.
 
+**The decode ceiling is the caller's** — done, and it is the one thing this
+round added that is *not* a validity change. The 1,161-byte file above stays
+legal and nothing about which files are valid moved; what changed is that a
+caller can now say how much decoding it is willing to pay for.
+`format.MaxDecodedBytes` on the four readers and `ContentHash`,
+`pile.MaxDecodedBytes` on the provider, `format.ErrDecodeBudget` for the
+refusal. §8 has a paragraph saying an implementation MAY enforce a stricter
+caller ceiling, that refusing under it is not a claim the file is invalid, and
+that the ceiling may only tighten — without which a second implementation reads
+the number as a validity rule and the format forks quietly.
+
+Two design points worth carrying: the ceiling is **per handle** for
+`OpenIndexed` rather than per call, because indexed mode decodes one record at
+a time and a per-call number would let a four-million-entry directory spend the
+budget four million times; and it is **clamped downward only**, because a
+reader that accepted what a conforming reader must refuse forks the format just
+as surely as one that refused what it must accept. `SECURITY.md` item E has the
+rest, `HARNESS.md` §6.4 the thirteen controls.
+
+**The extended fuzzing session** — done, and it turned up a measurement worth
+keeping. All four targets pass twenty minutes with no crashers, but
+`FuzzOpenIndexed` was managing 168k executions to the others' eleven to
+sixteen million, so the box was being ticked by a target that had barely run.
+The suspected cause (recovery is expensive) was wrong: its whole corpus
+replays in 2.6 ms. The real cause was that the harness did filesystem work per
+execution and the indexed reader `pread`s every frame, so 85.6% of the decode's
+CPU was syscalls. Reading through an in-memory `indexedFile` — the interface
+`openIndexedOn` already took for the durability suite, so no recovery path is
+skipped — took it to **37.7 million executions**, ~31,400/s. Its corpus was
+still growing at twenty minutes, which is recorded rather than glossed.
+
+The general point: **an exit criterion phrased as "it runs clean" is satisfied
+by a target that hardly runs.** Check the throughput, not just the verdict.
+
 **Cross-process safety** — a world directory is assumed to have one owner and
 nothing enforces it. `FSBEHAVIOUR.md` §5 says why `O_EXCL` is not a lock.
 
@@ -234,6 +268,15 @@ turned out to patch bytes inside the wrong structure entirely.
 file will be replaced at the first occurrence, and the resulting control tells
 you nothing. Grep by line number, confirm with `sed -n`, and re-read the
 function afterwards. Always `-count=1`: cached results lie.
+
+**A test that cannot see the rule is not coverage, and a passing suite will not
+tell you.** The property-key sort was held by a unit test and by the reader, and
+reversing it moved no golden byte, because no golden world had a block state
+with two properties. Sweeping every writer-side ordering decision — reverse the
+sort, run the goldens, record whether they noticed — found two more of exactly
+that shape in the structure writer. The sweep is cheap and mechanical and found
+in minutes what reading had missed across several rounds. Do it for orderings,
+not just for validity checks.
 
 **A check with no distinguishing input is not enforcement.** One was written
 and removed the same day: rejecting an all-air section separately from a

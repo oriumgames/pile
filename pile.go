@@ -132,7 +132,7 @@ func (p *Provider) loadFromDisk() error {
 		}
 
 		if p.conf.appendMode {
-			iw, err := format.OpenIndexed(path, p.conf.registry, p.conf.readOnly)
+			iw, err := format.OpenIndexed(path, p.conf.registry, p.conf.readOnly, p.conf.readOpts()...)
 			if errors.Is(err, format.ErrUnsupportedMode) {
 				return fmt.Errorf("pile: %s is a solid file; convert it with `pile mode %s indexed` before using AppendMode", path, p.dir)
 			} else if err != nil {
@@ -151,7 +151,7 @@ func (p *Provider) loadFromDisk() error {
 		if err != nil {
 			return fmt.Errorf("pile: open %s: %w", path, err)
 		}
-		d, err := format.ReadWorld(file, p.conf.registry)
+		d, err := format.ReadWorld(file, p.conf.registry, p.conf.readOpts()...)
 		if errors.Is(err, format.ErrUnsupportedMode) {
 			return fmt.Errorf("pile: %s is an indexed file; open the world with pile.AppendMode()", path)
 		} else if err != nil {

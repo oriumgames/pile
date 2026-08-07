@@ -168,7 +168,80 @@ var (
 	ErrUnsupportedMode    = errors.New("pile: unsupported body mode")
 	ErrUnknownFlags       = errors.New("pile: unknown required feature flags")
 	ErrChecksum           = errors.New("pile: body checksum mismatch")
+
+	// ErrDecodeBudget reports that a decode was stopped because it would have
+	// passed the ceiling the caller set with MaxDecodedBytes.
+	//
+	// It deliberately does **not** wrap ErrCorrupt, which is the one documented
+	// exception to the sentence above. Every other decode error is the reader
+	// saying the file is invalid; this one is the reader saying the file is
+	// larger than this caller is willing to decode, which is a statement about
+	// the caller and not about the file. A file refused under it may be
+	// perfectly conforming, and another caller — or the same caller with a
+	// wider ceiling — will decode it. Callers that quarantine or delete files
+	// on ErrCorrupt must not do so on this.
+	ErrDecodeBudget = errors.New("pile: decode exceeds the caller's budget")
 )
+
+// ReadOption configures a decode. Options are caller policy, never format:
+// passing none decodes exactly what §8 permits, byte for byte and file for
+// file, which is what every reader did before options existed.
+type ReadOption func(*readConfig)
+
+type readConfig struct {
+	// maxDecodedBytes is the caller's ceiling in decoded bytes. Zero (the zero
+	// value, and so the default) means §8's own.
+	maxDecodedBytes int64
+}
+
+// MaxDecodedBytes bounds the live decoded state one decode may produce, in
+// bytes, measured under the cost model of columnBytes and storageBytes below.
+//
+// It exists because §8's ceilings are set at what the format can represent and
+// not at what a deployment wants to spend: a legal 1,161-byte file decodes into
+// 1.12 GiB of columns, and the §8 column ceiling sits four times higher again.
+// No single constant serves both a lobby server opening maps it did not write
+// and an operator storing a genuine four-million-column world, so the choice
+// belongs to the caller.
+//
+//   - n <= 0 selects §8's own ceiling, which is the default and is exactly the
+//     behaviour of a reader that never heard of this option.
+//   - Any other value is **clamped downward** to §8's ceiling. A caller can
+//     tighten the limit and cannot loosen it: a reader that accepted what a
+//     conforming reader must refuse would fork the format just as surely as one
+//     that refused what it must accept.
+//
+// A decode stopped by this ceiling fails with ErrDecodeBudget, which does not
+// wrap ErrCorrupt. The file is not being called invalid.
+//
+// What it charges is decoded columns and decoded section storages — the two
+// quantities §8 bounds by count and the two that dominate a decode's live
+// footprint. It does not charge transient allocation inside an NBT blob, which
+// has its own §8 ceiling (containers per blob) and is released before the
+// decode returns. ReadMeta decodes neither columns nor storages, so it accepts
+// the option for uniformity and the ceiling cannot bind there.
+func MaxDecodedBytes(n int64) ReadOption {
+	return func(c *readConfig) { c.maxDecodedBytes = n }
+}
+
+func newReadConfig(opts []ReadOption) readConfig {
+	var c readConfig
+	for _, o := range opts {
+		if o != nil {
+			o(&c)
+		}
+	}
+	return c
+}
+
+// decodedByteCeiling resolves the caller's ceiling against §8's, which is the
+// one direction the clamp works in.
+func (c readConfig) decodedByteCeiling() int64 {
+	if c.maxDecodedBytes <= 0 || c.maxDecodedBytes > decodedBytesCeiling {
+		return decodedBytesCeiling
+	}
+	return c.maxDecodedBytes
+}
 
 // checkpointHash authenticates a file's semantic header and footer control
 // words alongside its stored payload. Hashing the payload alone would leave
@@ -305,4 +378,34 @@ const (
 	maxFrameLen = 1<<32 - 1
 	// lightArrayLen is the byte length of one 16-cube light nibble array.
 	lightArrayLen = 2048
+)
+
+// The cost model behind MaxDecodedBytes. These are not validity rules and not
+// wire constants: they convert the two quantities §8 bounds by count into the
+// bytes a caller actually cares about, so that one number can express a policy
+// over both. They are rounded, and deliberately so — a budget is a policy dial,
+// not a measurement, and a caller that needs a byte-exact accounting of a
+// decode should measure its own process rather than trust a per-unit constant.
+const (
+	// columnBytes is what one decoded column costs in live objects: a recRaw, a
+	// chunk.Chunk and a Column. SECURITY.md measures 1,048,576 empty columns at
+	// 1.12 GiB retained, which is about 1,150 bytes each; §8 rounds the same
+	// figure to "about a kilobyte".
+	columnBytes = 1024
+	// storageBytes is what one decoded section storage costs. §8's note on
+	// maxDecodedStorages puts a stored layer at "about a hundred bytes of live
+	// objects".
+	storageBytes = 128
+	// decodedBytesCeiling is the most a decode can cost under this model while
+	// still obeying §8, and so the value a caller's ceiling is clamped to.
+	//
+	// The trailing columnBytes is one column of headroom, and it is load
+	// bearing rather than decorative. An indexed handle spends this ceiling
+	// once on its directory and then gives each record decode whatever is left
+	// (see IndexedWorld.recordBudget), so without the headroom a directory at
+	// the entry ceiling would leave a remainder one column short of what §8
+	// still permits a single record to reach. The default ceiling has to be
+	// unreachable, not nearly unreachable: the zero value must accept exactly
+	// the files a reader without this option accepts.
+	decodedBytesCeiling = int64(maxChunks)*columnBytes + int64(maxDecodedStorages)*storageBytes + columnBytes
 )
