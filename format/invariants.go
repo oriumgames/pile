@@ -195,8 +195,8 @@ var invariants = []Invariant{
 	{
 		Name: "section blobs are canonical", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7", "9c7d6645", "34f2544c"},
-		Tests: []string{"TestRejectsNonCanonicalBlob", "TestRejectsOutOfRangePaletteIndex"},
-		Note:  "The blob decoder checks the palette and the width; the index bytes are checked only where the section is applied, and each width has its own loop, so the two halves need separate fixtures.",
+		Tests: []string{"TestRejectsNonCanonicalBlob", "TestRejectsOutOfRangePaletteIndex", "TestRejectsUnusedLocalPaletteEntry"},
+		Note:  "The blob decoder checks the palette, the width and that every entry is named by some index; whether an index is in range is checked only where the section is applied, and each width has its own loop, so the halves need separate fixtures. The used-entry half is load-bearing for other rules: uniformity is read off the local palette's length, so an unused entry is how a present all-air section, a trailing air layer or a uniform-default biome section gets past the rules that require it to be absent.",
 	},
 	{
 		Name: "identical blobs share one table entry", Category: Normalisation, Enforce: Decoded,

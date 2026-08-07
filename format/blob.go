@@ -251,6 +251,44 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 	default:
 		return decBlob{}, corruptf("unknown index width %d", width)
 	}
+	// Canonical form: the local palette holds only entries the indices actually
+	// use. An unused entry is not merely dead weight two writers could differ
+	// on; it hides what the section really is. A blob whose palette is
+	// [air, stone] with all 4096 indices zero is uniform air, and every rule
+	// that turns on uniformity -- §4.3's "an all-air section MUST be absent",
+	// §4.3's trailing-all-air-layer rule, §4.7's uniform-default biome omission
+	// -- reads the palette length to decide. With an unused entry admitted,
+	// each of those is bypassed by padding the palette, so this check is what
+	// makes them hold at all.
+	//
+	// An index at or past paletteN marks nothing here and is rejected where the
+	// section is applied; two entries cannot both be justified by one index, so
+	// a blob that survives this has a use for every entry it declares.
+	if idx != nil {
+		used := make([]bool, pn)
+		unseen := pn
+		step := 1
+		if width == widthU16 {
+			step = 2
+		}
+		for i := 0; i < len(idx) && unseen > 0; i += step {
+			li := int(idx[i])
+			if step == 2 {
+				li |= int(idx[i+1]) << 8
+			}
+			if li < pn && !used[li] {
+				used[li] = true
+				unseen--
+			}
+		}
+		if unseen > 0 {
+			for li, u := range used {
+				if !u {
+					return decBlob{}, corruptf("section palette entry %d is never used by the indices", li)
+				}
+			}
+		}
+	}
 	return decBlob{refs: refs, width: width, idx: idx}, nil
 }
 

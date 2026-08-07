@@ -60,6 +60,118 @@ func TestRejectsNonCanonicalBlob(t *testing.T) {
 	}
 }
 
+// TestRejectsUnusedLocalPaletteEntry: §3.3 requires a section blob's local
+// palette to hold only entries the indices actually use. The rule matters more
+// than a wasted varint suggests, so this drives both halves: the blob decoder
+// directly, and then a whole file, where a padded palette is the way an all-air
+// section is smuggled past §4.3's requirement that it be absent.
+func TestRejectsUnusedLocalPaletteEntry(t *testing.T) {
+	narrow := func(fill func(idx []byte)) []byte {
+		w := &writer{}
+		w.uvarint(2)
+		w.uvarint(0)
+		w.uvarint(1)
+		w.u8(widthU8)
+		idx := make([]byte, 4096)
+		fill(idx)
+		w.raw(idx)
+		return w.bytes()
+	}
+	if _, err := decodeOneBlob(&reader{b: narrow(func(idx []byte) { idx[7] = 1 })}); err != nil {
+		t.Fatalf("a blob using both its entries was rejected: %v", err)
+	}
+	if _, err := decodeOneBlob(&reader{b: narrow(func([]byte) {})}); err == nil {
+		t.Error("a u8 blob declaring an entry no index names was accepted")
+	}
+
+	// The wide half has its own stride, so a check written for one width says
+	// nothing about the other.
+	wide := func(fill func(idx []byte)) []byte {
+		w := &writer{}
+		w.uvarint(257)
+		for i := range 257 {
+			w.uvarint(uint64(i))
+		}
+		w.u8(widthU16)
+		idx := make([]byte, 8192)
+		fill(idx)
+		w.raw(idx)
+		return w.bytes()
+	}
+	if _, err := decodeOneBlob(&reader{b: wide(func(idx []byte) {
+		for i := range 4096 {
+			v := min(i, 256)
+			idx[i*2], idx[i*2+1] = uint8(v), uint8(v>>8)
+		}
+	})}); err != nil {
+		t.Fatalf("a u16 blob using all 257 entries was rejected: %v", err)
+	}
+	if _, err := decodeOneBlob(&reader{b: wide(func(idx []byte) {
+		for i := range 4096 {
+			v := min(i, 255) // 0..255: entry 256 is declared and never named
+			idx[i*2], idx[i*2+1] = uint8(v), uint8(v>>8)
+		}
+	})}); err == nil {
+		t.Error("a u16 blob declaring an entry no index names was accepted")
+	}
+
+	// What the rule is really protecting. A section holding nothing but air
+	// must be absent (§4.3), and the reader decides uniformity from the local
+	// palette's length. A palette padded with an entry no index names is
+	// therefore an all-air section that reads as content: a second encoding of
+	// a world that already has one, and the same trick omits nothing from
+	// trailing air layers or default biomes either.
+	reg := testRegistry(t)
+	body := func(pad bool) []byte {
+		w := &writer{}
+		for range 4 {
+			w.blob(nil)
+		}
+		w.uvarint(2) // global block palette
+		w.str("minecraft:air")
+		w.uvarint(0)
+		w.str("minecraft:stone")
+		w.uvarint(0)
+		w.uvarint(0) // no version overrides
+		w.uvarint(0) // no biome palette
+		w.uvarint(1) // one blob
+		if pad {
+			w.uvarint(2) // local palette [air, stone]
+			w.uvarint(0)
+			w.uvarint(1)
+			w.u8(widthU8)
+			w.raw(make([]byte, 4096)) // every position is air
+		} else {
+			w.uvarint(1) // local palette [stone]
+			w.uvarint(1)
+			w.u8(widthUniform)
+		}
+		w.uvarint(1) // one record
+		w.svarint(0)
+		w.svarint(0)
+		rec := &writer{}
+		rec.svarint(0)
+		rec.uvarint(1) // one section
+		rec.u8(0x01)   // present
+		rec.uvarint(1) // one layer
+		rec.uvarint(0) // blob 0
+		rec.u8(0)      // no biome sections
+		rec.uvarint(0) // block entities
+		rec.uvarint(0) // entities
+		rec.svarint(0) // column tick
+		rec.uvarint(0) // scheduled ticks
+		rec.blob(nil)
+		w.raw(rec.bytes())
+		return w.bytes()
+	}
+	if _, err := ReadWorld(solidFile(body(false)), reg); err != nil {
+		t.Fatalf("a section of solid stone was rejected: %v", err)
+	}
+	if _, err := ReadWorld(solidFile(body(true)), reg); err == nil {
+		t.Fatal("a present all-air section wearing a padded palette was accepted")
+	}
+}
+
 // TestRejectsOutOfRangePaletteIndex: an index selects a local palette entry,
 // so one at or past paletteN names nothing. The blob decoder validates the
 // palette and the width but never looks at the index bytes, so this rule is
@@ -87,6 +199,11 @@ func TestRejectsOutOfRangePaletteIndex(t *testing.T) {
 		w.uvarint(1)
 		w.u8(widthU8)
 		cells := make([]byte, 4096)
+		// Entry 1 is named by a position of its own, so the blob still uses
+		// every entry it declares when the last index is pushed out of range.
+		// Without that, the unused-entry rule (§3.3) refuses the fixture first
+		// and this test would be watching the wrong check.
+		cells[0] = 1
 		cells[4095] = idx
 		w.raw(cells)
 		w.uvarint(1) // one record
