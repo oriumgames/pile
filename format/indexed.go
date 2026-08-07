@@ -764,6 +764,13 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		if err != nil {
 			return err
 		}
+		// §5.1: a frame ends where its structure ends. The record and directory
+		// frames were the only two that checked; a meta frame padded with
+		// anything at all decoded to the same four blobs and was a second
+		// encoding of them, with its own length and hash in the directory.
+		if mr.remaining() != 0 {
+			return corruptf("%d trailing bytes in the meta frame", mr.remaining())
+		}
 		w.settings, w.userData = cloneBytes(s), cloneBytes(u)
 		w.markers, w.border = cloneBytes(m), cloneBytes(b)
 	}
@@ -942,6 +949,9 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 		if len(segRids) == 0 {
 			return corruptf("block palette segment at %d has no entries", seg.off)
 		}
+		if sr.remaining() != 0 {
+			return corruptf("%d trailing bytes in the block palette segment at %d", sr.remaining(), seg.off)
+		}
 		if len(w.rids)+len(segRids) > maxPalette {
 			return corruptf("cumulative block palette exceeds %d entries", maxPalette)
 		}
@@ -993,6 +1003,9 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 		// segment §5.3 forbids has to be refused here as well.
 		if len(segIDs) == 0 {
 			return corruptf("biome palette segment at %d has no entries", seg.off)
+		}
+		if sr.remaining() != 0 {
+			return corruptf("%d trailing bytes in the biome palette segment at %d", sr.remaining(), seg.off)
 		}
 		if len(w.biomeIDs)+len(segIDs) > maxPalette {
 			return corruptf("cumulative biome palette exceeds %d entries", maxPalette)

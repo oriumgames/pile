@@ -56,6 +56,7 @@ ad7fe57e In **mode 0** â€” that is, in a solid world and in a structure alike â€
 af37ce22 In a **solid** file the directory, generation and previous-footer words carry no information and MUST be zero; readers MUST reject a non-zero value.
 af4b369f The ceiling is therefore 255, and decoders MUST reject a larger `layerN`.
 afea490c two entries that compare equal at every step encode identical bytes at the same version and are therefore the same state, which writers MUST merge into one entry whose reference count is the sum.
+b108c77f Bytes past that point are a second encoding of the same content, since the frame's length and hash are recorded in the directory and the content is unchanged by them, so decoders MUST reject a frame of any kind that carries them.
 b5904bd9 MUST be minimal:
 b970a5c4 MUST be minimal
 ba81d481 Decoders MUST enforce the palette limits **cumulatively** across segments and MUST reject duplicate segment references (both are allocation amplifiers).

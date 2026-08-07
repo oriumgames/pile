@@ -4761,24 +4761,27 @@ func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
 	}
 }
 
-// indexedWithSegments assembles an indexed file by hand: a header, the given
-// palette segment frames stored uncompressed, a directory naming them and no
-// chunks, and an authenticated footer. Building it rather than patching a
-// written one is what makes an empty segment reachable at all -- the writer
-// never emits one, so there is nothing to patch.
-func indexedWithSegments(t *testing.T, blockSegs, biomeSegs [][]byte) string {
-	t.Helper()
-	// A directory naming no chunks at all, which §5.3 says is legal.
-	return indexedWithDirectory(t, blockSegs, biomeSegs, func(w *writer, _ func([]byte) (int64, uint64)) { w.uvarint(0) })
+// handIndexed assembles an indexed file by hand: a header, the frames named
+// below stored uncompressed, a directory naming them, and an authenticated
+// footer. Building one rather than patching a written file is what makes some
+// of these shapes reachable at all -- the writer never emits an empty palette
+// segment or a padded frame, so there is nothing to patch.
+type handIndexed struct {
+	meta      []byte   // meta frame body, nil for a directory that names none
+	blockSegs [][]byte // one frame each
+	biomeSegs [][]byte
+	// entries writes the chunk entry table, count included, so a test can put
+	// an entry on the wire that no writer would produce. It is handed an
+	// appender for record frames, because adopting a checkpoint validates the
+	// hash of every frame the directory names: an entry pointing at nothing
+	// fails on that long before it reaches whatever the test is about. nil
+	// means no chunks, which §5.3 says is legal.
+	entries func(w *writer, frame func(body []byte) (off int64, hash uint64))
+	// dirPad appends bytes to the directory frame past its own content.
+	dirPad int
 }
 
-// indexedWithDirectory is indexedWithSegments with the chunk entry table
-// written by the caller, count included, so a test can put a directory entry on
-// the wire that no writer would produce. The callback is handed an appender for
-// record frames, because adopting a checkpoint validates the hash of every
-// frame the directory names: an entry pointing at nothing fails on that long
-// before it reaches whatever the test is about.
-func indexedWithDirectory(t *testing.T, blockSegs, biomeSegs [][]byte, entries func(w *writer, frame func(body []byte) (off int64, hash uint64))) string {
+func (h handIndexed) build(t *testing.T) string {
 	t.Helper()
 	hdr := &writer{}
 	hdr.raw(headerMagic[:])
@@ -4795,6 +4798,9 @@ func indexedWithDirectory(t *testing.T, blockSegs, biomeSegs [][]byte, entries f
 		return off, xxhash.Sum64(body)
 	}
 	ref := func(body []byte) func(*writer) {
+		if body == nil {
+			return func(w *writer) { w.uvarint(0); w.uvarint(0); w.u64(0) }
+		}
 		off, hash := frame(body)
 		return func(w *writer) {
 			w.uvarint(uint64(off))
@@ -4802,11 +4808,12 @@ func indexedWithDirectory(t *testing.T, blockSegs, biomeSegs [][]byte, entries f
 			w.u64(hash)
 		}
 	}
+	metaRef := ref(h.meta)
 	var blockRefs, biomeRefs []func(*writer)
-	for _, b := range blockSegs {
+	for _, b := range h.blockSegs {
 		blockRefs = append(blockRefs, ref(b))
 	}
-	for _, b := range biomeSegs {
+	for _, b := range h.biomeSegs {
 		biomeRefs = append(biomeRefs, ref(b))
 	}
 
@@ -4815,18 +4822,20 @@ func indexedWithDirectory(t *testing.T, blockSegs, biomeSegs [][]byte, entries f
 	dir.u8(ModeIndexed)
 	dir.u32(FlagUncompressed)
 	dir.i32(chunk.CurrentBlockVersion)
-	for range 2 { // meta and dictionary: both absent
-		dir.uvarint(0)
-		dir.uvarint(0)
-		dir.u64(0)
-	}
+	metaRef(dir)
+	ref(nil)(dir) // dictionary: absent
 	for _, refs := range [][]func(*writer){blockRefs, biomeRefs} {
 		dir.uvarint(uint64(len(refs)))
 		for _, f := range refs {
 			f(dir)
 		}
 	}
-	entries(dir, frame)
+	if h.entries != nil {
+		h.entries(dir, frame)
+	} else {
+		dir.uvarint(0)
+	}
+	dir.b = append(dir.b, make([]byte, h.dirPad)...)
 	dirOff := int64(headerSize) + int64(frames.len())
 	dirBytes := dir.bytes()
 	frames.raw(dirBytes)
@@ -4877,7 +4886,7 @@ func TestRejectsEmptyPaletteSegment(t *testing.T) {
 		return w.bytes()
 	}
 	open := func(blockSegs, biomeSegs [][]byte) error {
-		v, err := OpenIndexed(indexedWithSegments(t, blockSegs, biomeSegs), reg, true)
+		v, err := OpenIndexed(handIndexed{blockSegs: blockSegs, biomeSegs: biomeSegs}.build(t), reg, true)
 		if err == nil {
 			v.Close()
 		}
@@ -4918,7 +4927,7 @@ func TestRejectsWrappingDirectoryOffset(t *testing.T) {
 	// that has to be accepted.
 	const keepOffset = int64(-1)
 	open := func(off int64, length uint64) error {
-		path := indexedWithDirectory(t, nil, nil, func(w *writer, frame func([]byte) (int64, uint64)) {
+		path := handIndexed{entries: func(w *writer, frame func([]byte) (int64, uint64)) {
 			// A real two-byte record frame, so the entry that must be accepted
 			// has a hash that checks out and its offset is all that is in
 			// question.
@@ -4932,7 +4941,7 @@ func TestRejectsWrappingDirectoryOffset(t *testing.T) {
 			w.svarint(off)    // frame offset, delta from 0
 			w.uvarint(length) // stored frame length
 			w.u64(hash)
-		})
+		}}.build(t)
 		v, err := OpenIndexed(path, reg, true)
 		if err == nil {
 			v.Close()
@@ -4952,5 +4961,109 @@ func TestRejectsWrappingDirectoryOffset(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "outside the file") {
 		t.Fatalf("the offset was refused by something other than its bound: %v", err)
+	}
+}
+
+// TestRejectsTrailingBytesInFrames: §5.1 says a frame's content ends where its
+// structure ends. The record and directory frames checked; the meta frame and
+// both kinds of palette segment did not, so a frame padded with anything at
+// all decoded to exactly what the unpadded one did while carrying its own
+// length and hash in the directory -- a second encoding of the same content,
+// which is the one thing an indexed frame is not allowed to be. Every frame
+// kind that has a structure needs its own fixture: they are read by four
+// different functions and none of them shares this check with another.
+func TestRejectsTrailingBytesInFrames(t *testing.T) {
+	reg := testRegistry(t)
+	pad := func(b []byte, n int) []byte {
+		if n == 0 {
+			return b
+		}
+		return append(append([]byte(nil), b...), make([]byte, n)...)
+	}
+	meta := func() []byte {
+		w := &writer{}
+		for range 4 {
+			w.blob(nil)
+		}
+		return w.bytes()
+	}
+	blockSeg := func() []byte {
+		w := &writer{}
+		w.u32(uint32(chunk.CurrentBlockVersion))
+		w.uvarint(1)
+		w.str("minecraft:stone")
+		w.uvarint(0) // no state properties
+		w.uvarint(0) // no version overrides
+		return w.bytes()
+	}
+	biomeSeg := func() []byte {
+		w := &writer{}
+		w.uvarint(1)
+		w.str("minecraft:plains")
+		return w.bytes()
+	}
+	// An empty chunk record: a one-section span with nothing present. §5.2
+	// stores blobs inline, so it names no blob table and needs no palette.
+	record := func() []byte {
+		w := &writer{}
+		w.svarint(0) // minSection
+		w.uvarint(1) // sectionN
+		w.u8(0)      // no block sections
+		w.u8(0)      // no biome sections
+		w.uvarint(0) // block entities
+		w.uvarint(0) // entities
+		w.svarint(0) // column tick
+		w.uvarint(0) // scheduled updates
+		w.blob(nil)  // user data
+		return w.bytes()
+	}
+	withRecord := func(n int) handIndexed {
+		return handIndexed{entries: func(w *writer, frame func([]byte) (int64, uint64)) {
+			off, hash := frame(pad(record(), n))
+			w.uvarint(1)
+			w.svarint(0) // dx
+			w.svarint(0) // dz
+			w.svarint(off)
+			w.uvarint(uint64(len(record()) + n))
+			w.u64(hash)
+		}}
+	}
+	for _, c := range []struct {
+		frame string
+		build func(n int) handIndexed
+		// read is what has to be driven for the frame to be parsed at all: a
+		// record frame is not touched until its column is asked for.
+		read func(*IndexedWorld) error
+	}{
+		{frame: "meta", build: func(n int) handIndexed { return handIndexed{meta: pad(meta(), n)} }},
+		{frame: "block palette segment", build: func(n int) handIndexed {
+			return handIndexed{blockSegs: [][]byte{pad(blockSeg(), n)}}
+		}},
+		{frame: "biome palette segment", build: func(n int) handIndexed {
+			return handIndexed{biomeSegs: [][]byte{pad(biomeSeg(), n)}}
+		}},
+		{frame: "directory", build: func(n int) handIndexed { return handIndexed{dirPad: n} }},
+		{frame: "record", build: withRecord, read: func(v *IndexedWorld) error {
+			_, err := v.Column(0, 0)
+			return err
+		}},
+	} {
+		open := func(n int) error {
+			v, err := OpenIndexed(c.build(n).build(t), reg, true)
+			if err != nil {
+				return err
+			}
+			defer v.Close()
+			if c.read != nil {
+				return c.read(v)
+			}
+			return nil
+		}
+		if err := open(0); err != nil {
+			t.Fatalf("an exact %s frame was rejected: %v", c.frame, err)
+		}
+		if err := open(16); err == nil {
+			t.Errorf("a %s frame padded past its content was accepted", c.frame)
+		}
 	}
 }

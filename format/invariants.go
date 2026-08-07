@@ -329,6 +329,12 @@ var invariants = []Invariant{
 		Note:  "Defence in depth rather than an independently reachable rule: a real file cannot carry a compressed dictionary while claiming to be uncompressed without its directory frame tripping the storage-form rule first, which is what this test drives.",
 	},
 	{
+		Name: "frames end where their content ends", Category: Presence, Enforce: Decoded,
+		Rules: []string{"b108c77f"},
+		Tests: []string{"TestRejectsTrailingBytesInFrames"},
+		Note:  "A frame's length and hash are recorded in the directory, so padding it changes the file without changing anything it holds. The record and directory frames rejected padding; the meta frame and both kinds of palette segment did not, and each is read by a function that shares this check with none of the others, so the fixture drives all five. The dictionary frame is outside the rule: it holds opaque Zstandard bytes with no structure to end.",
+	},
+	{
 		Name: "directory offsets accumulate in range", Category: Bound, Enforce: Decoded,
 		Rules: []string{},
 		Tests: []string{"TestRejectsWrappingDirectoryOffset"},

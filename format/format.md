@@ -701,6 +701,13 @@ byte range `[offset, offset+length)` recorded wherever it is referenced (the
 directory, or the footer for the directory itself). Unless flag
 `Uncompressed` is set, each frame is an independent Zstandard frame.
 
+A frame's content ends where the structure it holds ends. Bytes past that
+point are a second encoding of the same content, since the frame's length and
+hash are recorded in the directory and the content is unchanged by them, so
+decoders MUST reject a frame of any kind that carries them. The dictionary
+frame is the exception the rule does not reach: it holds opaque Zstandard
+dictionary bytes with no structure to end.
+
 When a shared dictionary is present (§5.5): record frames, palette segment
 frames and meta frames are compressed with the dictionary; the **directory
 frame and the dictionary frame itself MUST be compressed without it** (they
