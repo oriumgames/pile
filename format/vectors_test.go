@@ -99,8 +99,6 @@ func vectorCases() []vectorCase {
 		{name: "world_light", build: buildWorldLight, check: checkWorldLight},
 		{name: "world_stats", build: buildWorldStats, check: checkWorldStats},
 		{name: "world_preserved", build: buildWorldPreserved, check: checkWorldPreserved},
-		{name: "world_dim_nether", build: buildWorldNether, check: checkDimNether},
-		{name: "world_dim_end", build: buildWorldEnd, check: checkDimEnd},
 		{name: "structure_edge_padding", build: buildStructureEdge, check: checkStructureEdge},
 		{name: "structure_full", build: buildStructureFull, check: checkStructureFull},
 		{name: "indexed_torn", build: buildIndexedTorn, indexed: true},
@@ -141,18 +139,6 @@ func minimalWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 
 func buildWorldMinimal(t *testing.T, reg world.BlockRegistry) []byte {
 	return vecWrite(t, minimalWorld(t, reg), reg, vecPlain)
-}
-
-func buildWorldNether(t *testing.T, reg world.BlockRegistry) []byte {
-	d := minimalWorld(t, reg)
-	d.Dimension = Nether
-	return vecWrite(t, d, reg, vecPlain)
-}
-
-func buildWorldEnd(t *testing.T, reg world.BlockRegistry) []byte {
-	d := minimalWorld(t, reg)
-	d.Dimension = End
-	return vecWrite(t, d, reg, vecPlain)
 }
 
 // buildWorldEmptyChunk stores a column with no blocks at all: every block
@@ -622,8 +608,8 @@ func checkWorldMinimal(t *testing.T, l *vecLayout, file []byte) {
 	if len(r.biomeSections) != 0 {
 		t.Errorf("uniform-default biome sections must be omitted, got %v", r.biomeSections)
 	}
-	if (l.flags & vecDimMask) != 0 {
-		t.Errorf("flags %#x: dimension bits must be zero for the overworld", l.flags)
+	if (l.flags & vecReservedDimBits) != 0 {
+		t.Errorf("flags %#x: bits 5-7 are reserved and must be zero", l.flags)
 	}
 }
 
@@ -874,17 +860,6 @@ func checkWorldPreserved(t *testing.T, l *vecLayout, file []byte) {
 		t.Errorf("the second override's delta is zero; indices strictly ascend")
 	}
 }
-
-func checkDimension(t *testing.T, l *vecLayout, want Dimension) {
-	t.Helper()
-	got := Dimension((l.flags & vecDimMask) >> vecDimShift)
-	if got != want {
-		t.Errorf("dimension bits hold %d, want %d", got, want)
-	}
-}
-
-func checkDimNether(t *testing.T, l *vecLayout, file []byte) { checkDimension(t, l, Nether) }
-func checkDimEnd(t *testing.T, l *vecLayout, file []byte)    { checkDimension(t, l, End) }
 
 func checkStructureEdge(t *testing.T, l *vecLayout, file []byte) {
 	if l.kind != 1 {
@@ -1161,7 +1136,6 @@ func vectorIndexedIdentity(t *testing.T, file []byte, reg world.BlockRegistry) u
 	settings, userData, markers, border := w.Meta()
 	d := &WorldData{
 		Settings: settings, UserData: userData, Markers: markers, Border: border,
-		Dimension: w.Dimension(),
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])
@@ -1179,43 +1153,6 @@ func vectorIndexedIdentity(t *testing.T, file []byte, reg world.BlockRegistry) u
 		t.Fatal(err)
 	}
 	return h
-}
-
-// TestVectorDimensionTrio checks the claim the appendix makes about the three
-// dimension vectors: they hold identical content and differ only in the header
-// flag bits §2.3 assigns to the dimension, plus the checkpoint hash that covers
-// them. An implementer can diff them to find the vecField.
-func TestVectorDimensionTrio(t *testing.T) {
-	files := map[string][]byte{}
-	for _, name := range []string{"world_minimal", "world_dim_nether", "world_dim_end"} {
-		b, err := os.ReadFile(filepath.Join(vectorDir, name+".pile"))
-		if err != nil {
-			t.Fatalf("%v", err)
-		}
-		files[name] = b
-	}
-	base := files["world_minimal"]
-	for name, dim := range map[string]Dimension{"world_dim_nether": Nether, "world_dim_end": End} {
-		b := files[name]
-		if len(b) != len(base) {
-			t.Fatalf("%s is %d bytes, the overworld vector is %d: identical content must be the same length", name, len(b), len(base))
-		}
-		for i := range b {
-			differs := b[i] != base[i]
-			// Header flags occupy bytes 8..11; the footer hash the eight bytes
-			// at len-44.
-			inFlags := i >= 8 && i < 12
-			inHash := i >= len(b)-44 && i < len(b)-36
-			if differs && !inFlags && !inHash {
-				t.Errorf("%s differs from the overworld vector at offset %d, outside the flags and the checkpoint hash", name, i)
-			}
-		}
-		want := uint32(dim) << dimensionShift
-		got := uint32(b[8]) | uint32(b[9])<<8 | uint32(b[10])<<16 | uint32(b[11])<<24
-		if got&dimensionMask != want {
-			t.Errorf("%s: dimension bits are %#x, want %#x", name, got&dimensionMask, want)
-		}
-	}
 }
 
 // TestVectorStructurePaddingIsNotStored is the one §6 rule a reader cannot

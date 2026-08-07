@@ -8,7 +8,6 @@ import (
 	"fmt"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/df-mc/dragonfly/server/world"
 )
 
 // File magics. Stored as raw byte sequences, not integers, so the bytes "PILE"
@@ -78,67 +77,24 @@ const (
 	// FlagUncompressed indicates the body is stored without zstd compression.
 	FlagUncompressed uint32 = 1 << 4
 
-	// dimensionMask covers bits 5-7, which name the dimension the file
-	// describes. A world file is one dimension, and nothing else in the file
-	// says which: without this the answer lives in the file name or in
-	// unconstrained settings NBT, where two implementations spell it
-	// differently and neither round trips. Three bits cost nothing now and
-	// cannot be added after the format is frozen.
-	dimensionMask  = uint32(0b111) << dimensionShift
-	dimensionShift = 5
+	// Bits 5-7 are reserved and MUST be zero. They carried a dimension field
+	// until it was removed before the freeze: nothing read it back, the
+	// provider takes a file's dimension from its name, and every save already
+	// rewrote the field to match that name. Three bits spent on an answer no
+	// caller could obtain -- format.Meta exposed no accessor for it, so
+	// `pile inspect` printed the raw flag word -- bought less than three
+	// reserved bits in a header that cannot grow.
+	//
+	// A file's dimension is its file name. That is the whole rule, and it is
+	// now the only one, which is why it cannot disagree with itself.
 
 	// knownFlags is the set of flags this version understands. Unknown flag
 	// bits cause decoding to fail: they may change the meaning of the payload.
 	knownFlags = FlagStoreLight | FlagStats | FlagDefaultBiome |
-		FlagUncompressed | dimensionMask | 0xFFFF0000 // high 16 bits: default biome reference
+		FlagUncompressed | 0xFFFF0000 // high 16 bits: default biome reference
 
 	defaultBiomeShift = 16
 )
-
-// Dimension names the dimension a world file describes. It is stored in flag
-// bits 5-7, so Overworld is zero and a file that never thought about
-// dimensions is an overworld, which is what such a file has always been.
-type Dimension uint8
-
-const (
-	Overworld Dimension = 0
-	Nether    Dimension = 1
-	End       Dimension = 2
-	// Values 3-7 are reserved and MUST NOT be written. Readers reject them
-	// rather than ignoring them, so the encoding stays available.
-	maxDimension = End
-)
-
-// DimensionOf maps a dragonfly dimension onto the header field. Custom
-// dimensions have no encoding of their own, so they record themselves as the
-// overworld and rely on their file name, which is what identified them before
-// the field existed.
-//
-// It lives here rather than in a caller so that every writer answers the
-// question the same way: a world file names its dimension, and a path that
-// forgets to set it silently claims to be the overworld.
-func DimensionOf(dim world.Dimension) Dimension {
-	id, _ := world.DimensionID(dim)
-	switch id {
-	case 1:
-		return Nether
-	case 2:
-		return End
-	}
-	return Overworld
-}
-
-func (d Dimension) String() string {
-	switch d {
-	case Overworld:
-		return "overworld"
-	case Nether:
-		return "nether"
-	case End:
-		return "end"
-	}
-	return fmt.Sprintf("dimension(%d)", uint8(d))
-}
 
 // CompressionLevel selects the zstd effort used when writing a file.
 type CompressionLevel int
@@ -172,11 +128,6 @@ type Options struct {
 	// FastCompression compresses with multiple threads. Faster saves, but the
 	// output is no longer byte-deterministic across runs.
 	FastCompression bool
-	// Dimension names the dimension an indexed world describes. Solid writes
-	// take it from WorldData.Dimension instead, where it round trips with the
-	// rest of the world; this field is read only by CreateIndexed, which has
-	// no WorldData to take it from.
-	Dimension Dimension
 	// Workers bounds the number of goroutines used for parallel column
 	// encode/decode. 0 uses GOMAXPROCS; 1 forces serial operation.
 	Workers int

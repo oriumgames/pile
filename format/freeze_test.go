@@ -335,25 +335,15 @@ func TestRejectsReservedFlags(t *testing.T) {
 	}
 	base := binary.LittleEndian.Uint32(file[8:12])
 
-	// Bit 2 is reserved, bits 8-15 are reserved, and the high half is the
-	// default-biome reference, meaningless without its flag.
-	for _, bit := range []uint32{1 << 2, 1 << 8, 1 << 15, 1 << 16} {
+	// Bit 2 is reserved, bits 5-7 are reserved (they carried the dimension
+	// field until it was removed), bits 8-15 are reserved, and the high half is
+	// the default-biome reference, meaningless without its flag.
+	for _, bit := range []uint32{1 << 2, 1 << 5, 1 << 6, 1 << 7, 1 << 8, 1 << 15, 1 << 16} {
 		bad := bytes.Clone(file)
 		setFlags(bad, base|bit)
 		if _, err := ReadWorld(bad, reg); err == nil {
 			t.Errorf("reserved flag bit 0x%X accepted", bit)
 		}
-	}
-	// Bits 5-7 are the dimension, not reserved: bit 5 is Nether and must be
-	// accepted as such.
-	nether := bytes.Clone(file)
-	setFlags(nether, base|uint32(Nether)<<dimensionShift)
-	d, err := ReadWorld(nether, reg)
-	if err != nil {
-		t.Fatalf("the nether dimension bit was rejected: %v", err)
-	}
-	if d.Dimension != Nether {
-		t.Fatalf("dimension = %v, want nether", d.Dimension)
 	}
 	// An unknown version is refused before anything else is read.
 	badVer := bytes.Clone(file)
@@ -1396,49 +1386,20 @@ func TestRejectsUnaddressableLayerCount(t *testing.T) {
 
 // Consolidation pass rules.
 
-// TestRejectsReservedDimension: the dimension field has three defined values
-// and five reserved ones. Reserved values are rejected rather than ignored, so
-// they stay available to a later version.
-func TestRejectsReservedDimension(t *testing.T) {
+// TestRejectsRetiredDimensionBits: bits 5-7 of the header flags held a
+// dimension field until it was removed before the freeze. They are reserved
+// now, and every one of the seven non-zero values must be refused by both
+// readers rather than ignored, or the bits are spent: an old reader that
+// ignores a bit cannot tell that a future file using it needs something the
+// reader lacks.
+//
+// Both readers, because a structure and a world reach the flag check by
+// different paths, and this rule was previously enforced for structures by a
+// test of its own that a world-only fixture would not have covered.
+func TestRejectsRetiredDimensionBits(t *testing.T) {
 	reg := testRegistry(t)
-	d := testWorld(t, reg)
-	d.Dimension = Dimension(5)
-	var buf bytes.Buffer
-	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
-		t.Fatal("a reserved dimension was written")
-	}
 
-	// And on the way in: set the bits directly in a valid file's header.
-	file := encode(t, testWorld(t, reg), reg, CompressionNone)
-	for _, v := range []uint32{3, 5, 7} {
-		bad := bytes.Clone(file)
-		flags := binary.LittleEndian.Uint32(bad[8:12])
-		binary.LittleEndian.PutUint32(bad[8:12], flags|v<<dimensionShift)
-		rehashSolid(bad)
-		if _, err := ReadWorld(bad, reg); err == nil {
-			t.Fatalf("reserved dimension %d was accepted", v)
-		}
-	}
-
-	// The defined ones round trip.
-	for _, dim := range []Dimension{Overworld, Nether, End} {
-		w := testWorld(t, reg)
-		w.Dimension = dim
-		got, err := ReadWorld(encode(t, w, reg, CompressionNone), reg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Dimension != dim {
-			t.Fatalf("dimension %v came back as %v", dim, got.Dimension)
-		}
-	}
-}
-
-// TestStructureLeavesDimensionBitsZero: a structure is not a dimension, so the
-// field is meaningless there and must be clear, or one structure would have
-// eight encodings.
-func TestStructureLeavesDimensionBitsZero(t *testing.T) {
-	reg := testRegistry(t)
+	worldFile := encode(t, testWorld(t, reg), reg, CompressionNone)
 	data, err := NewStructureData([3]int32{16, 16, 16})
 	if err != nil {
 		t.Fatal(err)
@@ -1447,15 +1408,37 @@ func TestStructureLeavesDimensionBitsZero(t *testing.T) {
 	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
 		t.Fatal(err)
 	}
-	file := buf.Bytes()
-	if flags := binary.LittleEndian.Uint32(file[8:12]); flags&dimensionMask != 0 {
-		t.Fatalf("structure header flags 0x%08X set dimension bits", flags)
+	structure := buf.Bytes()
+
+	// A writer must leave them clear to begin with; otherwise the rejections
+	// below would be testing a file this package cannot produce.
+	for _, c := range []struct {
+		name string
+		file []byte
+	}{{"world", worldFile}, {"structure", structure}} {
+		if bits := (binary.LittleEndian.Uint32(c.file[8:12]) >> 5) & 0b111; bits != 0 {
+			t.Errorf("%s: writer set reserved bits 5-7 to %03b", c.name, bits)
+		}
 	}
-	bad := bytes.Clone(file)
-	binary.LittleEndian.PutUint32(bad[8:12], binary.LittleEndian.Uint32(bad[8:12])|1<<dimensionShift)
-	rehashSolid(bad)
-	if _, err := ReadStructure(bad, reg); err == nil {
-		t.Fatal("a structure carrying a dimension was accepted")
+
+	for v := uint32(1); v <= 7; v++ {
+		for _, c := range []struct {
+			name string
+			file []byte
+			read func([]byte, world.BlockRegistry) error
+		}{
+			{"world", worldFile, func(b []byte, r world.BlockRegistry) error { _, err := ReadWorld(b, r); return err }},
+			{"structure", structure, func(b []byte, r world.BlockRegistry) error { _, err := ReadStructure(b, r); return err }},
+		} {
+			bad := bytes.Clone(c.file)
+			binary.LittleEndian.PutUint32(bad[8:12], binary.LittleEndian.Uint32(bad[8:12])|v<<5)
+			// Rehash, or the checkpoint hash refuses the file first and the
+			// flag rule is never reached.
+			rehashSolid(bad)
+			if err := c.read(bad, reg); err == nil {
+				t.Errorf("%s: retired dimension bits %03b were accepted", c.name, v)
+			}
+		}
 	}
 }
 
@@ -3605,7 +3588,7 @@ func TestIndexedRejectsReservedFlags(t *testing.T) {
 		{"reserved bit 2", 1 << 2},
 		{"reserved bit 15", 1 << 15},
 		{"default biome reference without its flag", 1 << 16},
-		{"reserved dimension", uint32(5) << dimensionShift},
+		{"retired dimension bits", uint32(5) << 5},
 	} {
 		opened, recovered := indexedWithPatchedPrologue(t, reg, func(dir []byte) {
 			binary.LittleEndian.PutUint32(dir[2:6], binary.LittleEndian.Uint32(dir[2:6])|c.bit)

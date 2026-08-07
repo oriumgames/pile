@@ -6,8 +6,10 @@ implementation. The Go implementation in this package is the reference; where
 this document and the implementation disagree, the implementation wins and the
 document has a bug.
 
-A pile file stores one Minecraft (Bedrock) dimension (named in the header, §2.3) or one structure in a
-single file. Design goals: minimal size for small worlds, deterministic output
+A pile file stores the chunks of one Minecraft (Bedrock) dimension, or one
+structure, in a single file. Nothing in the file says *which* dimension: that
+is the file's name, and it is deliberately the only place the answer lives, so
+there is no second answer to disagree with it. Design goals: minimal size for small worlds, deterministic output
 (identical content ⇒ identical bytes), integrity checking, crash safety, and
 an optional append-oriented mode for large worlds.
 
@@ -163,7 +165,7 @@ keeps one valid encoding per file.
 | 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
 | 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
 | 4 | Uncompressed | the body is stored without compression |
-| 5–7 | dimension | which dimension a world file holds: 0 overworld, 1 nether, 2 end. Values 3–7 are reserved and MUST be rejected. Structures MUST leave these bits zero |
+| 5–7 | reserved | bits 5–7 MUST be zero in every file, world or structure. They held a dimension field until it was removed before the freeze; a file's dimension is its file name, and nothing in the format needs to know it |
 | 8–15 | reserved | MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features |
 | 16–31 | defaultBiomeRef | only meaningful when bit 3 is set, and MUST be zero when it is clear |
 

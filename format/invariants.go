@@ -151,15 +151,12 @@ var invariants = []Invariant{
 		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist. The sentence also covers every value of either field the table does not list, which is a separate check from the pairing and needs its own fixture.",
 	},
 	{
-		Name: "the dimension field is enumerated", Category: Presence, Enforce: Decoded,
-		Rules: []string{"2fcb9dbf"},
-		Tests: []string{"TestRejectsReservedDimension"},
-		Note:  "A world file holds one dimension and nothing else in the file says which.",
-	},
-	{
-		Name: "structures have no dimension", Category: Presence, Enforce: Decoded,
-		Rules: []string{"2ffce926"},
-		Tests: []string{"TestStructureLeavesDimensionBitsZero"},
+		Name: "the retired dimension bits are reserved", Category: Presence, Enforce: Decoded,
+		Rules: []string{"8498fc02"},
+		Tests: []string{"TestRejectsRetiredDimensionBits"},
+		Note: "Bits 5-7 held a dimension field until it was removed before the freeze. The rule they are held to now is the general one every reserved bit has: knownFlags does not list them, and an unlisted bit fails ErrUnknownFlags in both readers. " +
+			"It keeps an entry rather than vanishing because the removal has a writer half as well as a reader half, and the writer half is the one that fails silently: a path that kept setting a bit would emit a file it cannot read back. The named test covers both halves for this package's writers. " +
+			"The provider's three writers are walked by TestNoWriterSetsTheReservedFlagBits in the root package, which this table cannot name because the harness only resolves tests declared in format.",
 	},
 	{
 		Name: "solid footers carry no indexed words", Category: Presence, Enforce: Decoded,

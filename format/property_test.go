@@ -336,16 +336,6 @@ func boundaryCases(t *testing.T, reg world.BlockRegistry) []boundaryCase {
 		},
 	}}))
 
-	// Every dimension, so the header field is exercised rather than assumed.
-	for _, dim := range []Dimension{Overworld, Nether, End} {
-		d := &WorldData{Dimension: dim, Columns: []Column{{
-			X: 0, Z: 0, Col: &chunk.Column{Chunk: col(func(ch *chunk.Chunk) {
-				ch.SetBlock(0, -64, 0, 0, stone)
-			})},
-		}}}
-		cases = append(cases, boundaryCase{name: "dimension_" + dim.String(), world: d})
-	}
-
 	// Section spans other than the vanilla 24. A 24-section chunk makes every
 	// presence bitset a whole number of bytes, so the padding rules are never
 	// exercised by the matrix; the smallest and largest legal spans are.
@@ -545,7 +535,6 @@ func indexedContentHash(t *testing.T, path string, reg world.BlockRegistry) uint
 	settings, userData, markers, border := w.Meta()
 	d := &WorldData{
 		Settings: settings, UserData: userData, Markers: markers, Border: border,
-		Dimension: w.Dimension(),
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])

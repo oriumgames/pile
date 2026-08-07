@@ -229,7 +229,6 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 	if df.Indexed {
 		iw, err := format.CreateIndexed(tmp, reg, format.Options{
 			Compression: format.CompressionDefault, StoreLight: df.StoreLight,
-			Dimension: format.DimensionOf(df.Dim),
 		})
 		if err != nil {
 			return err
@@ -254,7 +253,7 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 	} else {
 		d := &format.WorldData{
 			Settings: wf.Settings, UserData: wf.UserData, Markers: wf.Markers, Border: wf.Border,
-			Columns: df.Columns, Dimension: format.DimensionOf(df.Dim),
+			Columns: df.Columns,
 		}
 		f, err := createExclusive(tmp)
 		if err != nil {

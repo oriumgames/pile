@@ -236,28 +236,30 @@ func TestBuilderEntityIDsUnique(t *testing.T) {
 // TestExtractCarriesEntityID: an entity whose NBT has no UniqueID yet must
 // keep its stable ID through extraction and paste.
 
-// TestDimensionHeaderSurvivesEveryWriter: the dimension lives in the file
-// header, and every path that writes a world has to set it. A path that forgets
-// leaves the zero value, which is a valid claim to be the overworld, so the
-// mistake is invisible to anything that trusts the file name instead. This test
-// walks each writer and reads the header back.
-func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
+// TestNoWriterSetsTheReservedFlagBits: bits 5-7 of the header flags carried a
+// dimension field until it was removed before the freeze, and they are now
+// reserved and must be zero. A reader refuses any file that sets them, via the
+// knownFlags mask, so a writer that kept setting one would emit a file it
+// cannot read back -- the failure this project has now found four times.
+//
+// This walks every writer, because the removed field had to be set by each of
+// them separately and a leftover in any one of them is invisible until that
+// path is the one that wrote your world.
+func TestNoWriterSetsTheReservedFlagBits(t *testing.T) {
 	reg := testRegistry(t)
 	dims := []struct {
 		dim  world.Dimension
 		file string
-		want format.Dimension
 	}{
-		{world.Overworld, "overworld.pile", format.Overworld},
-		{world.Nether, "nether.pile", format.Nether},
-		{world.End, "end.pile", format.End},
+		{world.Overworld, "overworld.pile"},
+		{world.Nether, "nether.pile"},
+		{world.End, "end.pile"},
 	}
 
-	headerDimension := func(t *testing.T, path string) format.Dimension {
+	// Read the 16-byte header directly: solid and indexed files share it, and
+	// the point is what the bytes say rather than what a decoder makes of them.
+	reservedBits := func(t *testing.T, path string) uint32 {
 		t.Helper()
-		// Read the 16-byte header directly: solid and indexed files share it,
-		// and the point is what the bytes say rather than what a decoder makes
-		// of them.
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -265,8 +267,18 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 		if len(b) < 16 {
 			t.Fatalf("%s is %d bytes", path, len(b))
 		}
-		flags := binary.LittleEndian.Uint32(b[8:12])
-		return format.Dimension((flags >> 5) & 0b111)
+		return (binary.LittleEndian.Uint32(b[8:12]) >> 5) & 0b111
+	}
+
+	// Every writer must also produce a file that opens, which is what makes
+	// the assertion above more than a claim about three bits.
+	opens := func(t *testing.T, dir string, opts ...Option) {
+		t.Helper()
+		p, err := Open(dir, append(opts, ReadOnly())...)
+		if err != nil {
+			t.Fatalf("a file this test just wrote does not open: %v", err)
+		}
+		_ = p.Close()
 	}
 
 	t.Run("save", func(t *testing.T) {
@@ -284,10 +296,11 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
-				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			if got := reservedBits(t, filepath.Join(dir, d.file)); got != 0 {
+				t.Errorf("%s: header reserved bits 5-7 are %03b, want 0", d.file, got)
 			}
 		}
+		opens(t, dir)
 	})
 
 	t.Run("append", func(t *testing.T) {
@@ -305,10 +318,11 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
-				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			if got := reservedBits(t, filepath.Join(dir, d.file)); got != 0 {
+				t.Errorf("%s: header reserved bits 5-7 are %03b, want 0", d.file, got)
 			}
 		}
+		opens(t, dir, AppendMode())
 	})
 
 	t.Run("offline rewrite", func(t *testing.T) {
@@ -333,10 +347,11 @@ func TestDimensionHeaderSurvivesEveryWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range dims {
-			if got := headerDimension(t, filepath.Join(dir, d.file)); got != d.want {
-				t.Errorf("%s: header says %v, want %v", d.file, got, d.want)
+			if got := reservedBits(t, filepath.Join(dir, d.file)); got != 0 {
+				t.Errorf("%s: header reserved bits 5-7 are %03b, want 0", d.file, got)
 			}
 		}
+		opens(t, dir)
 	})
 }
 

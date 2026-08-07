@@ -49,13 +49,16 @@ const (
 	vecHeaderSize = 16
 	vecFooterSize = 44
 
-	vecFlagStoreLight    = uint32(1) << 0
-	vecFlagStats         = uint32(1) << 1
-	vecFlagReserved2     = uint32(1) << 2
-	vecFlagDefaultBiome  = uint32(1) << 3
-	vecFlagUncompressed  = uint32(1) << 4
-	vecDimShift          = 5
-	vecDimMask           = uint32(0b111) << vecDimShift
+	vecFlagStoreLight   = uint32(1) << 0
+	vecFlagStats        = uint32(1) << 1
+	vecFlagReserved2    = uint32(1) << 2
+	vecFlagDefaultBiome = uint32(1) << 3
+	vecFlagUncompressed = uint32(1) << 4
+	// Bits 5-7 held a dimension field and are reserved now. The walker keeps
+	// its own literal rather than importing the mask, for the same reason it
+	// keeps every other constant: a reader derived from the decoder cannot
+	// contradict the decoder.
+	vecReservedDimBits   = uint32(0b111) << 5
 	vecDefaultBiomeShift = 16
 	// Bits 8-15 are reserved (§2.3) and bit 2 with them.
 	vecReservedFlags = vecFlagReserved2 | uint32(0xFF00)
@@ -380,8 +383,8 @@ func vecWalk(file []byte) (*vecLayout, error) {
 	if l.flags&vecReservedFlags != 0 {
 		return nil, fmt.Errorf("reserved flag bits set: %#x", l.flags&vecReservedFlags)
 	}
-	if d := (l.flags & vecDimMask) >> vecDimShift; d > 2 {
-		return nil, fmt.Errorf("dimension %d is reserved", d)
+	if l.flags&vecReservedDimBits != 0 {
+		return nil, fmt.Errorf("header flags %#x set reserved bits 5-7", l.flags)
 	}
 	if l.flags&vecFlagDefaultBiome == 0 && l.flags>>vecDefaultBiomeShift != 0 {
 		return nil, errors.New("default biome reference is set without its flag")

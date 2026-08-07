@@ -337,9 +337,6 @@ func TestHostileWriteShapes(t *testing.T) {
 			c.UnknownStates = []BlockState{{Name: "pile:wide", Properties: props}}
 			return &WorldData{Columns: []Column{c}}
 		}},
-		{name: "reserved dimension", mustRefuse: true, build: func(t *testing.T, reg world.BlockRegistry) *WorldData {
-			return &WorldData{Dimension: maxDimension + 1}
-		}},
 		{name: "settings blob that is not NBT", mustRefuse: true, build: func(*testing.T, world.BlockRegistry) *WorldData {
 			return &WorldData{Settings: []byte{0xFF, 0xFF, 0xFF}}
 		}},

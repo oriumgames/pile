@@ -24,7 +24,6 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 				Compression: p.conf.compression,
 				SkipBiomes:  p.conf.skip&SkipBiomes != 0,
 				StoreLight:  p.conf.storeLight,
-				Dimension:   format.DimensionOf(dim),
 			})
 		if err != nil {
 			return err

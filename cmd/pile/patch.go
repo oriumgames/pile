@@ -114,7 +114,6 @@ func cmdPatch(args []string) error {
 		wd := &format.WorldData{
 			Settings: newW.Settings, UserData: newW.UserData,
 			Markers: newW.Markers, Border: newW.Border,
-			Dimension: format.DimensionOf(d.dim),
 		}
 		if ndf := newW.Dim(d.dim); ndf != nil {
 			for _, c := range ndf.Columns {

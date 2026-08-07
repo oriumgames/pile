@@ -386,10 +386,10 @@ func negCases() []negCase {
 			},
 		},
 		{
-			name: "flag_dimension_reserved", base: "world_minimal", rule: "§2.3: dimension values 3-7 are reserved and must be rejected",
-			wantErr: "dimension",
+			name: "flag_dimension_reserved", base: "world_minimal", rule: "§2.3: bits 5-7 are reserved and must be zero",
+			wantErr: "unknown required feature flags",
 			mutate: func(t *testing.T, l *vecLayout, b []byte) []byte {
-				return vecApply(b, vecFlags((l.flags&^vecDimMask)|3<<vecDimShift))
+				return vecApply(b, vecFlags(l.flags|vecReservedDimBits))
 			},
 		},
 		{

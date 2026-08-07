@@ -42,7 +42,7 @@ func writeWorldAt(t testing.TB, path string, cols []format.Column) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &format.WorldData{Columns: cols, Dimension: format.Overworld}
+	d := &format.WorldData{Columns: cols}
 	if err := format.WriteWorld(f, d, reg, format.Options{Compression: format.CompressionBest}); err != nil {
 		_ = f.Close()
 		t.Fatal(err)

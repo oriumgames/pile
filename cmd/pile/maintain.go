@@ -122,10 +122,11 @@ func solidToIndexed(src, dst string, reg world.BlockRegistry, limit decodeLimit)
 	if err != nil {
 		return err
 	}
-	// Mode conversion preserves everything the header says, the dimension
-	// included: a nether file converted to indexed is still the nether.
+	// Mode conversion preserves everything the header says. Which dimension
+	// the file is is not among that: it is the file's name, and mode
+	// conversion writes to the name it was given.
 	w, err := format.CreateIndexed(dst, reg, format.Options{
-		Compression: format.CompressionDefault, Dimension: d.Dimension,
+		Compression: format.CompressionDefault,
 	})
 	if err != nil {
 		return err
@@ -149,7 +150,7 @@ func indexedToSolid(src, dst string, reg world.BlockRegistry, limit decodeLimit)
 		return err
 	}
 	defer w.Close()
-	d := &format.WorldData{Dimension: w.Dimension()}
+	d := &format.WorldData{}
 	d.Settings, d.UserData, d.Markers, d.Border = w.Meta()
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])

@@ -64,7 +64,6 @@ var vecIndexedRange = cube.Range{0, 15}
 // indexed_full.pile. Everything here is either content or a shape a reader has
 // to handle; nothing here is a byte offset or an append order.
 var indexedFullFacts = struct {
-	dimension  Dimension
 	generation uint64
 	// content is format.ContentHash of the world the file recovers to,
 	// re-encoded as an uncompressed solid file. This is the load-bearing
@@ -80,7 +79,6 @@ var indexedFullFacts = struct {
 	probeX, probeY, probeZ int
 	probeBlock             string
 }{
-	dimension:  Nether,
 	generation: 3,
 	content:    0x732fef0b94bdf2fe,
 	positions: [][2]int32{
@@ -121,9 +119,6 @@ func TestConformanceVectorIndexed(t *testing.T) {
 	}
 	if got := w.Generation(); got != indexedFullFacts.generation {
 		t.Errorf("Generation = %d, want %d", got, indexedFullFacts.generation)
-	}
-	if got := w.Dimension(); got != indexedFullFacts.dimension {
-		t.Errorf("Dimension = %v, want %v", got, indexedFullFacts.dimension)
 	}
 
 	// The directory names exactly these columns. Compared as a set: which
@@ -225,7 +220,6 @@ func vecIndexedContentHash(t *testing.T, w *IndexedWorld, reg world.BlockRegistr
 	settings, userData, markers, border := w.Meta()
 	d := &WorldData{
 		Settings: settings, UserData: userData, Markers: markers, Border: border,
-		Dimension: w.Dimension(),
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])
@@ -306,7 +300,7 @@ func TestMakeIndexedVector(t *testing.T) {
 	path := indexedFullVector
 	_ = os.Remove(path)
 
-	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault, Dimension: Nether})
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
 	if err != nil {
 		t.Fatal(err)
 	}

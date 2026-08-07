@@ -282,9 +282,6 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 	// Validate before touching the filesystem: a rejected option must not
 	// leave a file behind, least of all an empty one that the next call
 	// cannot create over.
-	if opts.Dimension > maxDimension {
-		return nil, fmt.Errorf("pile: dimension %d is reserved", uint8(opts.Dimension))
-	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("pile: create indexed world: %w", err)
@@ -319,7 +316,6 @@ func createIndexedOn(f indexedFile, path string, reg world.BlockRegistry, opts O
 	if opts.StoreLight {
 		flags |= FlagStoreLight
 	}
-	flags |= uint32(opts.Dimension) << dimensionShift
 	hdr.u32(flags)
 	hdr.i32(chunk.CurrentBlockVersion)
 	if _, err := f.Write(hdr.bytes()); err != nil {
@@ -845,9 +841,6 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 	}
 	if dirFlags&(FlagDefaultBiome|FlagStats) != 0 || dirFlags>>defaultBiomeShift != 0 {
 		return corruptf("directory flags 0x%08X are not valid for an indexed file", dirFlags)
-	}
-	if d := Dimension((dirFlags & dimensionMask) >> dimensionShift); d > maxDimension {
-		return corruptf("dimension %d is reserved", uint8(d))
 	}
 	// The prologue repeats the header's semantic fields and is the authority
 	// over them, so every constraint the header is held to applies here and to
@@ -1869,13 +1862,6 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers, border []byte) error
 	return nil
 }
 
-// Dimension reports which dimension this file describes.
-func (w *IndexedWorld) Dimension() Dimension {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return Dimension((w.headerFlags & dimensionMask) >> dimensionShift)
-}
-
 // Recovered reports whether opening the file had to fall back to an older
 // checkpoint because the newest one did not validate. When true, everything
 // stored after that checkpoint is gone: worth surfacing to an operator.
@@ -2129,10 +2115,6 @@ func (w *IndexedWorld) Compact() error {
 		}
 	})
 	opts, path := w.opts, w.path
-	// Compaction rewrites the file, so it has to carry the header forward:
-	// w.opts came from the caller and never held the dimension the file
-	// records.
-	opts.Dimension = Dimension((w.headerFlags & dimensionMask) >> dimensionShift)
 
 	// Train a shared dictionary from the live record bodies when there is
 	// enough material for it to pay off.

@@ -170,7 +170,7 @@ func (p *Provider) saveHeld() error {
 			path: p.dimPath(ds.dim),
 			data: &format.WorldData{
 				Settings: settings, UserData: userData, Markers: markers, Border: border,
-				Columns: cols, Dimension: format.DimensionOf(ds.dim),
+				Columns: cols,
 			},
 		})
 		ds.dirty = false
@@ -261,7 +261,7 @@ func (p *Provider) SaveAs(dir string) error {
 		wrote = true
 		d := &format.WorldData{
 			Settings: settings, UserData: userData, Markers: markers, Border: border,
-			Columns: cols, Dimension: format.DimensionOf(dim),
+			Columns: cols,
 		}
 		id, _ := world.DimensionID(dim)
 		name := fmt.Sprintf("dim%d.pile", id)
@@ -282,7 +282,6 @@ func (p *Provider) SaveAs(dir string) error {
 		// or SaveAs would silently produce nothing to reopen.
 		return p.writeFile(filepath.Join(dir, "overworld.pile"), &format.WorldData{
 			Settings: settings, UserData: userData, Markers: markers, Border: border,
-			Dimension: format.Overworld,
 		})
 	}
 	return nil

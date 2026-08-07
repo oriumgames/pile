@@ -31,7 +31,7 @@ import (
 
 // writeHostileWorld writes a solid world file for a dimension. The columns are
 // whatever the caller built, so the file is legal by construction.
-func writeHostileWorld(t testing.TB, path string, dim format.Dimension, cols []format.Column) {
+func writeHostileWorld(t testing.TB, path string, cols []format.Column) {
 	t.Helper()
 	reg := testRegistry(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -41,7 +41,7 @@ func writeHostileWorld(t testing.TB, path string, dim format.Dimension, cols []f
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &format.WorldData{Columns: cols, Dimension: dim}
+	d := &format.WorldData{Columns: cols}
 	if err := format.WriteWorld(f, d, reg, format.Options{Compression: format.CompressionBest}); err != nil {
 		_ = f.Close()
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func entityColumns(t testing.TB, cols, per int) []format.Column {
 func TestOpenHoldsTheCeilingOnAHostileColumnFlood(t *testing.T) {
 	dir := t.TempDir()
 	const n = 4096
-	writeHostileWorld(t, filepath.Join(dir, "overworld.pile"), format.Overworld, emptyColumns(t, n))
+	writeHostileWorld(t, filepath.Join(dir, "overworld.pile"), emptyColumns(t, n))
 
 	// Without a ceiling it opens: the file is legal.
 	p, err := Open(dir, ReadOnly())
@@ -139,7 +139,7 @@ func TestEntityFloodEscapesTheDecodeCeiling(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "overworld.pile")
 	const cols, per = 2, 1 << 20
-	writeHostileWorld(t, path, format.Overworld, entityColumns(t, cols, per))
+	writeHostileWorld(t, path, entityColumns(t, cols, per))
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -188,8 +188,8 @@ func TestOpenRefusesAHostileDimensionAndNamesIt(t *testing.T) {
 		t.Run(which, func(t *testing.T) {
 			dir := t.TempDir()
 			good := emptyColumns(t, 1)
-			writeHostileWorld(t, filepath.Join(dir, "overworld.pile"), format.Overworld, good)
-			writeHostileWorld(t, filepath.Join(dir, "nether.pile"), format.Nether, good)
+			writeHostileWorld(t, filepath.Join(dir, "overworld.pile"), good)
+			writeHostileWorld(t, filepath.Join(dir, "nether.pile"), good)
 			// Truncate one of them: a torn transfer of a world somebody sent.
 			raw, err := os.ReadFile(filepath.Join(dir, which))
 			if err != nil {
@@ -223,7 +223,7 @@ func TestOpenRefusesAnUnreadableDimensionFile(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "overworld.pile")
-	writeHostileWorld(t, path, format.Overworld, emptyColumns(t, 1))
+	writeHostileWorld(t, path, emptyColumns(t, 1))
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestProviderAdaptsAColumnWithAForeignVerticalRange(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
 	ch := chunk.New(reg, cube.Range{0, 15})
-	writeHostileWorld(t, filepath.Join(dir, "overworld.pile"), format.Overworld,
+	writeHostileWorld(t, filepath.Join(dir, "overworld.pile"),
 		[]format.Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}})
 
 	p, err := Open(dir, ReadOnly())
@@ -320,7 +320,7 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 	}
 	d := &format.WorldData{
 		Settings: settings, Markers: markers,
-		Columns: emptyColumns(t, 1), Dimension: format.Overworld,
+		Columns: emptyColumns(t, 1),
 	}
 	if err := format.WriteWorld(f, d, reg, format.Options{}); err != nil {
 		t.Fatal(err)
