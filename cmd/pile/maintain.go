@@ -29,7 +29,7 @@ func cmdCompact(args []string) error {
 			continue
 		}
 		before, _ := os.Stat(f)
-		w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, false)
+		w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, false, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -95,7 +95,7 @@ func solidToIndexed(src, dst string, reg world.BlockRegistry) error {
 	if err != nil {
 		return err
 	}
-	d, err := format.ReadWorld(file, reg)
+	d, err := format.ReadWorld(file, reg, readOpts()...)
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func solidToIndexed(src, dst string, reg world.BlockRegistry) error {
 }
 
 func indexedToSolid(src, dst string, reg world.BlockRegistry) error {
-	w, err := format.OpenIndexed(src, reg, true)
+	w, err := format.OpenIndexed(src, reg, true, readOpts()...)
 	if err != nil {
 		return err
 	}

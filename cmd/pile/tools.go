@@ -211,7 +211,7 @@ func cmdUpgrade(args []string) error {
 			return err
 		}
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, reg, false)
+			w, err := format.OpenIndexed(f, reg, false, readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -231,11 +231,11 @@ func cmdUpgrade(args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := format.ReadMeta(data)
+		m, err := format.ReadMeta(data, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		d, err := format.ReadWorld(data, reg)
+		d, err := format.ReadWorld(data, reg, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -288,7 +288,7 @@ func cmdCheck(args []string) error {
 		}
 		var unresolved []string
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, reg, true)
+			w, err := format.OpenIndexed(f, reg, true, readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}

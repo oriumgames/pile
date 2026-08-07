@@ -121,3 +121,39 @@ than it sounds, for the reasons the triage gave and which still hold:
 What remains untouched by any of this is the writer side. Rules marked
 `WriterOnly` are checkable only by re-encoding, and `ContentHash` round-trip
 coverage over hostile-but-legal input has still not been verified.
+
+## Closing note, written at the freeze
+
+This file is the record of one pass and is left as it was written, because the
+reasoning in it is the useful part. Two of its three open points have moved
+since, and the difference matters to anyone using it to judge the current
+state.
+
+**Point 2 is closed.** "Roughly a dozen invariant entries have never been
+mutation-tested" was true when written and is not now. `HARNESS.md` is the
+record: the invariant table was controlled entry by entry (17 checks across 11
+entries reached by no named test — 12 fixed, 5 explained), then the rest of the
+suite was controlled the same way (82 controls, 44 green, 41 fixed), then every
+writer-side ordering decision was swept by reversal against the goldens. The
+estimate was low, as every estimate in this project has been.
+
+**Point 1 is still live and is the one to carry forward.** Only sentences
+containing `MUST` are pinned, so a rule stated in a layout-table annotation is
+claimed by nothing. That is not hypothetical: §3.1's "the override indices
+strictly ascend" lived inside a layout fence, `extractSpecRules` strips fences,
+and the rule went half-enforced until a hostile-input pass found that the index
+chain could wrap onto a legal index — a second encoding of one palette, in a
+format whose whole doctrine is that there is exactly one. It was promoted to a
+normative sentence before the freeze. Any other rule still living in an
+annotation has the same exposure and nothing will report it.
+
+**Point 3 generalised.** The gap found off-list was invisible because the
+specification did not state the rule, so no table-versus-spec comparison could
+have found it. That has now happened twice more — the solid body's
+trailing-bytes rule was enforced by the code and stated non-normatively, and
+three canonical orderings were enforced by tests but not locked by any golden
+fixture. The lesson is not "compare the table to the spec more carefully". It
+is that agreement between two artefacts says nothing about a third that neither
+mentions, and the way that class gets found is by reading two implementations
+of one thing side by side, or by reversing a decision and seeing whether
+anything notices.

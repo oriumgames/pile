@@ -165,9 +165,9 @@ truncation can forge a checkpoint that verifies. Files from untrusted sources
 are untrusted content. Decoding one will not panic and malformed input is
 rejected, but a *conforming* file of about a kilobyte can still legally decode
 into more than a gigabyte, because the format's own ceilings are set at what it
-can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the codec
-— is the knob for that case, and the full threat model is in
-[SECURITY.md](SECURITY.md).
+can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the
+codec, `--max-decoded` on the CLI — is the knob for that case, and the full
+threat model is in [SECURITY.md](SECURITY.md).
 
 **Writing a second implementation.** The binary specification is
 [format/format.md](format/format.md); where it and this implementation disagree,

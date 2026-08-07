@@ -136,6 +136,38 @@ func TestManifestsAgreeWithVersion(t *testing.T) {
 			t.Errorf("%s declares version %d, format.Version is %d", path, v, Version)
 		}
 	}
+	// The specification's title is the fourth place the version is written and
+	// the one with no code path to catch it: a v3 implementation documented as
+	// v2 misleads the only reader who cannot check it against anything.
+	spec, err := os.ReadFile("format.md")
+	if err != nil {
+		t.Fatalf("read format.md: %v", err)
+	}
+	title, _, _ := strings.Cut(string(spec), "\n")
+	if want := fmt.Sprintf("Version %d", Version); !strings.Contains(title, want) {
+		t.Errorf("format.md is titled %q, which does not say %q", title, want)
+	}
+}
+
+// TestWalkerVersionMatchesFormat couples the independent walker's version to
+// format.Version without letting it derive one from the other.
+//
+// vectorwalk_test.go restates the specification's constants instead of
+// importing them, which is the only reason a vector it accepts is evidence of
+// anything: a reader built from the decoder cannot disagree with the decoder.
+// The cost is a constant that a version bump has to reach by hand, and
+// "Moving to v3" in FREEZE.md listing it as a step is not enforcement — this
+// project has been bitten three times by a rule that was written down and
+// pinned by nothing. So the coupling is checked here and the walker stays
+// independent.
+func TestWalkerVersionMatchesFormat(t *testing.T) {
+	if vecSpecVersion != Version {
+		t.Fatalf("the independent vector walker parses version %d and format.Version is %d.\n"+
+			"Edit vecSpecVersion in format/vectorwalk_test.go by hand — it is deliberately not\n"+
+			"derived from format.Version, because a walker that follows the decoder cannot\n"+
+			"contradict it. See FREEZE.md, \"Moving to v3\", step 3.",
+			vecSpecVersion, Version)
+	}
 }
 
 const goldenDir = "testdata"

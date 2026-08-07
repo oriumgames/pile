@@ -490,11 +490,14 @@ several of them now would be a format change.
   has more to find than the other three targets do.
 - **The writer paths have not been audited against hostile-but-legal input**,
   and neither has the `pile` provider surface or the CLI: the matrix drives
-  `format` directly. `FREEZE-BLOCKERS.md` records the first; note that that
-  file's "roughly a dozen uncontrolled entries" is stale — the harness pass
-  closed it — while its point 1 (only `MUST` sentences are pinned, so layout
-  annotations are not) is still live and is how §3.1's ascent rule went
-  half-enforced for as long as it did.
+  `format` directly. This is the largest remaining gap and the one most likely
+  to hold something. It cannot invalidate a file already written — a writer
+  refusing an input is an API change, not a format change — so it does not
+  block the tag, but it is the first thing to do after it.
+  `FREEZE-BLOCKERS.md` records the first; its closing note reconciles what has
+  moved since it was written. Its point 1 — only `MUST` sentences are pinned,
+  so layout annotations are not — is still live and is how §3.1's ascent rule
+  went half-enforced for as long as it did.
 - **No performance baselines, and the Go API has never been reviewed as a
   surface.** Both are post-tag work; neither can invalidate a file.
 - **One golden is deliberately not byte-locked**: `golden_indexed_compact.pile`,

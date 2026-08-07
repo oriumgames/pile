@@ -53,7 +53,7 @@ func cmdInspect(args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := format.ReadMeta(data)
+		m, err := format.ReadMeta(data, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -72,7 +72,7 @@ func cmdInspect(args []string) error {
 
 func inspectIndexed(f string) error {
 	world.DefaultBlockRegistry.Finalize()
-	w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true)
+	w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", f, err)
 	}
@@ -140,7 +140,7 @@ func cmdVerify(args []string) error {
 			return err
 		}
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true)
+			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -160,7 +160,7 @@ func cmdVerify(args []string) error {
 		if err != nil {
 			return err
 		}
-		d, err := format.ReadWorld(data, world.DefaultBlockRegistry)
+		d, err := format.ReadWorld(data, world.DefaultBlockRegistry, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -187,7 +187,7 @@ func cmdStats(args []string) error {
 		if mode, err := pile.FileMode(f); err != nil {
 			return err
 		} else if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true)
+			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -201,7 +201,7 @@ func cmdStats(args []string) error {
 				d.Columns = append(d.Columns, c)
 			}
 			_ = w.Close()
-		} else if d, err = format.ReadWorld(data, world.DefaultBlockRegistry); err != nil {
+		} else if d, err = format.ReadWorld(data, world.DefaultBlockRegistry, readOpts()...); err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
 		var ents, bes, ticks, sections int

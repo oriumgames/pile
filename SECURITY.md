@@ -633,7 +633,10 @@ The same shape, without the attacker control, applies to `encoders` and
   corpora, which are by construction the inputs already known to be safe.
 - **The `pile` package's provider surface and the CLI.** The matrix drives
   `format` directly. The provider adds caching, sidecars and a mover on top,
-  and none of that was driven with hostile input here.
+  and none of that was driven with hostile input here. The CLI now has
+  `--max-decoded`, which is a resource ceiling rather than an audit: it bounds
+  what a hostile file costs, and says nothing about whether the commands
+  behave correctly when given one.
 - **Dragonfly and gophertunnel below the decoder.** `nbtvalidate.go` exists
   because gophertunnel's NBT decoder allocates from declared lengths before
   reading and recurses per nesting level; `maxLayers` is 255 because

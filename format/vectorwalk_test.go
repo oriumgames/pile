@@ -38,6 +38,14 @@ import (
 // Specification constants, restated from format.md rather than imported from
 // format.go. If the two ever disagree, a vector fails.
 const (
+	// vecSpecVersion is the version §2.1 says a header carries. It is written
+	// out rather than taken from format.Version on purpose: this walker is the
+	// arbiter a second implementation checks itself against, and an arbiter
+	// derived from the thing it arbitrates proves nothing. Bumping the format
+	// therefore means editing this line by hand — TestWalkerVersionMatchesFormat
+	// is what makes that a failing test rather than a step someone misses.
+	vecSpecVersion = 2
+
 	vecHeaderSize = 16
 	vecFooterSize = 44
 
@@ -333,8 +341,8 @@ func vecWalk(file []byte) (*vecLayout, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version != 2 {
-		return nil, fmt.Errorf("version %d, want 2", version)
+	if version != vecSpecVersion {
+		return nil, fmt.Errorf("version %d, want %d", version, vecSpecVersion)
 	}
 	kind, err := r.u8("header.kind")
 	if err != nil {

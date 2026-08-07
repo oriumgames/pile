@@ -47,7 +47,7 @@ func cmdMove(args []string) error {
 		if err != nil {
 			return err
 		}
-		p, err := pile.Open(dir, pile.ReadOnly())
+		p, err := pile.Open(dir, providerOpts(pile.ReadOnly())...)
 		if err != nil {
 			return err
 		}
@@ -55,7 +55,7 @@ func cmdMove(args []string) error {
 		_ = p.Close()
 		offset = target.Sub(spawn)
 	case *center:
-		p, err := pile.Open(dir, pile.ReadOnly())
+		p, err := pile.Open(dir, providerOpts(pile.ReadOnly())...)
 		if err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func cmdOrigin(args []string) error {
 	if err != nil {
 		return err
 	}
-	data, err := format.ReadStructure(file, world.DefaultBlockRegistry)
+	data, err := format.ReadStructure(file, world.DefaultBlockRegistry, readOpts()...)
 	if err != nil {
 		return err
 	}

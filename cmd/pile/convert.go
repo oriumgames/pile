@@ -52,7 +52,7 @@ func convertMcdbToPile(src, dst string) error {
 	}
 	defer db.Close()
 
-	p, err := pile.Open(dst)
+	p, err := pile.Open(dst, providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func convertPileToMcdb(src, dst string) error {
 	if isMcdb(dst) {
 		return fmt.Errorf("destination %s already contains an mcdb world; refusing to write into it", dst)
 	}
-	p, err := pile.Open(src, pile.ReadOnly())
+	p, err := pile.Open(src, providerOpts(pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}

@@ -1186,3 +1186,58 @@ editorial correction look like a format change and would push the next person
 towards editing `spec_rules.txt` by hand. What the freeze forbids is a change to
 which files a reader accepts, and that always shows up as a moved fixture, which
 *is* locked.
+
+## 8. Post-freeze: version coupling and the CLI ceiling
+
+Added after the freeze at `31fd3af`. Neither touches the wire format: the first
+is a test-only coupling, the second is new CLI surface, and the golden and both
+vector suites stayed green with no flags throughout.
+
+### The version-coupling guard
+
+`format/vectorwalk_test.go` restates the specification's constants instead of
+importing them, which is the only reason a vector it accepts is evidence: a
+reader derived from the decoder cannot contradict the decoder. The cost is
+constants a version bump must reach by hand. `FREEZE.md`'s "Moving to v3"
+listed the walker as step 3, and a step written down is not a step enforced —
+the same shape as a rule stated in prose that no test pins, which this project
+has been bitten by three times.
+
+The version is now `vecSpecVersion` and stays a literal; a test compares it to
+`format.Version` and its failure message says to edit it by hand and why it is
+not derived. A sweep for other duplicated-for-independence constants found one
+more site with no code path at all: the specification's own title.
+
+| # | control | command | result |
+|---|---|---|---|
+| V1 | the walker's version is coupled | set `vecSpecVersion = 3`, no flags | `TestWalkerVersionMatchesFormat` **RED**: "the independent vector walker parses version 3 and format.Version is 2", naming the file, the by-hand edit and `FREEZE.md` step 3 |
+| V2 | the specification's title is coupled | `format.md` line 1 retitled "Version 3", no flags | `TestManifestsAgreeWithVersion` **RED**: "format.md is titled \"# Pile File Format, Version 3\", which does not say \"Version 2\"" |
+
+V2 covers the one v3 edit site with no other check on it. A v3 implementation
+documented as v2 misleads exactly the reader who has nothing to check it
+against — someone writing a second implementation from the specification.
+
+### The CLI decode ceiling
+
+`--max-decoded` is a global flag consumed before the subcommand, reaching every
+decode through `readOpts()`/`providerOpts()` rather than a flag per command:
+twenty commands with a ceiling that only some honour is worse than none.
+
+| # | control | command | result |
+|---|---|---|---|
+| C1 | the flag reaches a real decode | `readOpts()` stubbed to `return nil`, no flags | `TestReadOptsBoundsARealDecode` **RED**: "with a 1-byte ceiling: err = &lt;nil&gt;, want ErrDecodeBudget" |
+
+C1 is the control that matters. `TestParseSize` and `TestStripGlobalFlags` both
+pass with the plumbing wired to nothing, because parsing a size and reaching a
+decoder are different claims — the flag existing is not the flag working.
+
+The test also asserts that a budget refusal does **not** satisfy
+`errors.Is(err, format.ErrCorrupt)`. An operator who set the ceiling too low
+must be able to tell that from a bad file, and so must any tooling that
+branches on it; §8 makes the same distinction normative.
+
+The default is deliberately no ceiling, i.e. unchanged behaviour. A CLI is
+pointed at a file its user named, it cannot guess which worlds are meant to be
+enormous, and refusing a legitimate large world by default would be a worse
+failure than the one it prevents. What the flag buys is that bounding
+`pile verify` on a file someone sent you is possible at all.

@@ -68,7 +68,7 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := pile.Open(fs.Arg(0), pile.ReadOnly())
+	p, err := pile.Open(fs.Arg(0), providerOpts(pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}
@@ -166,7 +166,7 @@ func cmdImport(args []string) error {
 		return err
 	}
 
-	p, err := pile.Open(dstDir)
+	p, err := pile.Open(dstDir, providerOpts()...)
 	if err != nil {
 		return err
 	}

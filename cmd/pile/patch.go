@@ -227,7 +227,7 @@ func cmdApply(args []string) error {
 		if _, err := readFull(r, worldBytes); err != nil {
 			return err
 		}
-		wd, err := format.ReadWorld(worldBytes, reg)
+		wd, err := format.ReadWorld(worldBytes, reg, readOpts()...)
 		if err != nil {
 			return fmt.Errorf("patch world data: %w", err)
 		}

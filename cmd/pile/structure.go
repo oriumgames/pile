@@ -66,7 +66,7 @@ func cmdExtract(args []string) error {
 		return err
 	}
 
-	p, err := pile.Open(fs.Arg(0), pile.ReadOnly())
+	p, err := pile.Open(fs.Arg(0), providerOpts(pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func cmdPaste(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := pile.Open(fs.Arg(1))
+	p, err := pile.Open(fs.Arg(1), providerOpts()...)
 	if err != nil {
 		return err
 	}

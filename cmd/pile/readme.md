@@ -13,6 +13,36 @@ A "world" argument is a directory holding `overworld.pile` (plus optional
 (temp file + rename); destructive commands make automatic backups unless told
 otherwise.
 
+## Files from other people
+
+A pile file is compressed and heavily deduplicated, so a small file can
+legitimately decode into a very large one — a valid 1.2 KB world decodes into
+about a gigabyte of live objects in roughly a second, and that is within the
+format's rules rather than a bug in it. The format's own ceilings bound the
+worst case at about four gigabytes, which is not a useful bound if you are
+inspecting a file a stranger sent you.
+
+`--max-decoded` sets a lower ceiling, and goes **before** the command:
+
+```
+pile --max-decoded=256MiB verify downloaded-world/
+pile --max-decoded=64MiB inspect suspicious.pile
+```
+
+Sizes take `KiB`/`MiB`/`GiB` or `KB`/`MB`/`GB`; a bare number is bytes. The
+ceiling applies to every decode the command performs, including the ones
+inside the provider.
+
+There is no default ceiling, deliberately. The tool cannot tell which worlds
+are meant to be enormous, and refusing to open a legitimate large world by
+default would be a worse failure than the one a default prevents. A file
+refused under `--max-decoded` reports a decode-budget error and **not** a
+corruption error, so a ceiling set too low is distinguishable from a bad file.
+
+This is a resource bound, not an authenticity check. A pile file's integrity
+hashes detect corruption, not tampering; see "Compatibility" in the root
+readme.
+
 ## Conversion
 
 | command | |
