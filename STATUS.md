@@ -91,3 +91,40 @@ something that cannot fail.
 Harness, then memory, then vectors, then freeze. Security's remainder and the
 API surface review can follow the tag, since neither can invalidate a file that
 has already been written.
+
+## Pending merge: the memory branch
+
+`worktree-agent-ac9cd1f8fc19d0535` (worktree under `.claude/worktrees/`) carries
+six commits fixing all eight memory findings. It is branched from `35ebf5f`,
+which is several commits behind main, so it must be rebased or merged
+deliberately — **not** while another agent is editing the same files.
+
+Measured results, all with the golden suite green and no update flags, so no
+writer produces different bytes:
+
+- `Store` into a 17,499-entry palette: 1,680,870 → 218,342 B/op, now identical
+  to storing into an empty one. The wholesale map copy became a per-`Store`
+  journal of newly inserted keys.
+- `Columns()` breaking after one of 64: 883,665 → 14,058 B/op, 16,888 → 266
+  allocs. Both modes are lazy; `snapshotDim` survives only for `SaveAs`, which
+  genuinely needs the whole dimension.
+- Shared zstd decoders under 8 concurrent decodes: 194.6 MiB retained → 0.
+  Concurrency 1 plus pools, and the body and directory decoders collapse since
+  their ceilings match. The frame decoder deliberately stays separate: merging
+  it into the 512 MiB pool would let a hostile record allocate that much before
+  a length check rejected it.
+- Dictionary codecs with 8 writing handles on one dictionary: 88 MiB → 0,
+  shared process-wide by (level, dictionary hash).
+- `udCache`/`unkCache` folded into one bounded LRU, capped both by entry count
+  and by a 64 MiB weight budget, because a single user-data blob may be 16 MiB.
+
+Two judgement calls in that branch worth preserving on merge. Encoders are not
+pooled: pooling cost +0.9–1.4 MB/op and roughly 3x wall time on `WriteWorld`,
+so they are built lazily instead and a read-only process constructs none. And
+dictionary sampling is strided rather than a prefix, because directory keys are
+in Morton order and a prefix would sample one corner of the world.
+
+**Merge conflict to expect:** the branch re-implements the `Compact` sampling
+bound, because `227917b` on main added a simpler version after the branch
+point. Keep the branch's version — it is strided and truncates each sample,
+where main's takes a prefix.
