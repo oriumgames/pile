@@ -48,7 +48,16 @@ than at what a server wants to spend, so a legal file of about a kilobyte
 decodes into a gigabyte; this caps it. A world refused under the cap fails with
 `format.ErrDecodeBudget`, which does **not** wrap `format.ErrCorrupt` — the file
 is too big for your limit, not broken, so do not quarantine it as though it
-were. See `SECURITY.md`.
+were.
+
+**If the worlds come from strangers, read the recipe** in
+[SECURITY.md](SECURITY.md), "Loading a file somebody sent you". It is three
+options long, it has been tested against hostile files rather than reasoned
+about, and it says plainly what is still not bounded — the short version being
+that `MaxDecodedBytes` charges columns and section storages and charges nothing
+for the entities, block entities and scheduled updates a column may hold a
+million of. `LoadSkip` is **not** a bound: it drops categories after the file is
+decoded, so it removes nothing from the peak.
 
 ## Two file modes
 
@@ -119,8 +128,9 @@ Snapshots for versions and grief rollback: `p.Snapshot("clean")`,
 
 `go install github.com/oriumgames/pile/cmd/pile@latest` installs: convert (mcdb ⇄
 pile), inspect, verify, stats, check, render, compact, mode, upgrade, prune,
-move, extract, paste, origin, diff, patch/apply, export/import. See
-[cmd/pile/readme.md](cmd/pile/readme.md).
+move, extract, paste, origin, diff, patch/apply, export/import. Every command
+that decodes chunk content takes `--max-decoded n`, the CLI's
+`pile.MaxDecodedBytes`. See [cmd/pile/readme.md](cmd/pile/readme.md).
 
 ## Compatibility
 
@@ -165,9 +175,11 @@ truncation can forge a checkpoint that verifies. Files from untrusted sources
 are untrusted content. Decoding one will not panic and malformed input is
 rejected, but a *conforming* file of about a kilobyte can still legally decode
 into more than a gigabyte, because the format's own ceilings are set at what it
-can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the codec
-— is the knob for that case, and the full threat model is in
-[SECURITY.md](SECURITY.md).
+can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the codec,
+`--max-decoded` on the command line — is the knob for that case. It bounds
+columns and section storages and does not bound the per-chunk collections, so it
+is a dial and not a fence; the full threat model, the recipe and the measured
+gap are in [SECURITY.md](SECURITY.md).
 
 **Writing a second implementation.** The binary specification is
 [format/format.md](format/format.md); where it and this implementation disagree,

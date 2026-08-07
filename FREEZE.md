@@ -488,13 +488,23 @@ several of them now would be a format change.
 - **`FuzzOpenIndexed` is not saturated.** It now runs at ~31,400 exec/s rather
   than 2/s, but its corpus was still taking new inputs at twenty minutes, so it
   has more to find than the other three targets do.
-- **The writer paths have not been audited against hostile-but-legal input**,
-  and neither has the `pile` provider surface or the CLI: the matrix drives
-  `format` directly. `FREEZE-BLOCKERS.md` records the first; note that that
-  file's "roughly a dozen uncontrolled entries" is stale — the harness pass
-  closed it — while its point 1 (only `MUST` sentences are pinned, so layout
-  annotations are not) is still live and is how §3.1's ascent rule went
-  half-enforced for as long as it did.
+- **The writer paths have not been audited against hostile-but-legal input.**
+  `FREEZE-BLOCKERS.md` records it; note that that file's "roughly a dozen
+  uncontrolled entries" is stale — the harness pass closed it — while its point 1
+  (only `MUST` sentences are pinned, so layout annotations are not) is still live
+  and is how §3.1's ascent rule went half-enforced for as long as it did.
+- **The `pile` provider surface and the CLI have now been audited**, in
+  `hostile_test.go` and `cmd/pile/hostile_test.go`, with twenty-nine negative
+  controls in `HARNESS.md` §8. None of it moved a byte or changed which files a
+  reader accepts. Two things it found are worth carrying into a release note:
+  **`MaxDecodedBytes` bounds nothing about the entities, block entities and
+  scheduled updates a column carries**, so a 4,764-byte file decodes into 774 MB
+  under any ceiling a real world can survive (`SECURITY.md`, "What a caller
+  still cannot bound"); and **`format.MarshalNBT` emits a blob its own
+  `UnmarshalNBT` refuses** for any string of 32,768 bytes or more, which through
+  a block entity's NBT is a save that reports success and a world that never
+  opens again. The second is a writer-side fix in `format/nbt.go`, needs no byte
+  to move, and is unfixed.
 - **No performance baselines, and the Go API has never been reviewed as a
   surface.** Both are post-tag work; neither can invalidate a file.
 - **One golden is deliberately not byte-locked**: `golden_indexed_compact.pile`,

@@ -631,9 +631,8 @@ The same shape, without the attacker control, applies to `encoders` and
 - **Crash durability.** Its own box.
 - **The extended fuzz session.** Its own box. `go test` runs only the seed
   corpora, which are by construction the inputs already known to be safe.
-- **The `pile` package's provider surface and the CLI.** The matrix drives
-  `format` directly. The provider adds caching, sidecars and a mover on top,
-  and none of that was driven with hostile input here.
+- ~~**The `pile` package's provider surface and the CLI.**~~ Done; see
+  "The provider surface and the CLI" below and `HARNESS.md` §8.
 - **Dragonfly and gophertunnel below the decoder.** `nbtvalidate.go` exists
   because gophertunnel's NBT decoder allocates from declared lengths before
   reading and recurses per nesting level; `maxLayers` is 255 because
@@ -694,3 +693,355 @@ of both did neither, and E was green.
 The recovery measurement in item D was taken in both directions on one machine
 — the bound disabled and then restored — rather than extrapolated, which is why
 its table has a before column and an after column rather than a projection.
+
+---
+
+# The provider surface and the CLI
+
+The pass above drives `format.ReadWorld`, `format.ReadStructure`,
+`format.ReadMeta` and `format.OpenIndexed`. This one drives `pile.Open`, every
+`world.Provider` method, and every `cmd/pile` subcommand, against hostile files
+on disk and hostile command-line arguments. It exists because the layer a caller
+actually calls is the layer a hostile file actually meets, and because the
+provider adds column caching, the preserved-state sidecar, snapshots, the mover
+and template handling on top of an audited decoder.
+
+`hostile_test.go` and `cmd/pile/hostile_test.go` are the subjects, and
+`HARNESS.md` §8 records twenty-nine negative controls, all red, including four
+that were green when first written.
+
+Every file used here is one a conforming reader **must accept**. That is the
+point: broken bytes are what the matrix above already covers, and a legal file
+whose content is absurd is what arrives.
+
+## What it found
+
+### 1. `pile render` reserved 2.0 TiB from a 4,269-byte file
+
+`cmd/pile/render.go` sized the image from `int32(maxCX-minCX) + 1`. The
+difference of two chunk coordinates does not fit an `int32`: a world holding one
+column at X = −2,147,483,648 and one at X = 0 has a true span of 2³¹+1, which as
+an `int32` difference is −2,147,483,648, so the width came out at
+**−34,359,738,352** — not greater than 8,192, so the "world too large to render"
+test passed it. `image.Rect` canonicalises a negative rectangle into a positive
+one, so `image.NewRGBA` then asked for four bytes per pixel of a
+34,359,738,352 × 16 image.
+
+- **Before:** a **4,269-byte** file holding two chunks grew the heap by
+  **2,199,023,190,016 bytes (2.0 TiB)** and then failed inside the PNG encoder
+  with "invalid image size". On a machine that cannot reserve two terabytes of
+  address space it is a fatal out-of-memory rather than an error.
+- **After:** refused before anything is allocated — "world too large to render
+  (34359738368x16 blocks)" — with the measured heap growth under 1 GiB, which is
+  what the test asserts.
+- The span is now computed in `int64` and narrowed only after the ceiling test.
+  Nothing about which worlds render changed: a 512-chunk-wide world still
+  renders and a 513-chunk-wide one still does not, which the test pins from both
+  sides.
+- Control `C1`; the "not tightened" half is `C2`.
+
+### 2. `pile extract --max 4294967296,0,0` never returned
+
+`ExtractStructure` computed its size as `int32(hi.X() - lo.X() + 1)`, in `int`
+and then truncated. A span of 2³²+1 became a size of **1**:
+`format.NewStructureData` accepted the 1×1×1 structure, and the chunk loop
+underneath it then walked the *real* span — 268,435,457 positions on one axis,
+each one a `LoadColumn`.
+
+- **Before:** did not return. Measured at 40 s and 50 s in two harness runs
+  before the timeout fired; the arithmetic says minutes to hours depending on the
+  axis chosen, and a caller passing both X and Z waits ~7×10¹⁶ iterations.
+- **After:** refused — "region axis 0 spans 4294967297 blocks (0..4294967296),
+  which no structure can hold".
+- The box is now validated in exact arithmetic (`regionSize`) before anything is
+  allocated, an inverted box is named as inverted rather than silently producing
+  a negative size, and a box outside the addressable chunk range is refused
+  because the loop's keys are `int32`. Every later bound falls out of that: once
+  the size is the box it came from, `NewStructureData`'s cell ceiling bounds the
+  loop at ~2²⁰ iterations.
+- Controls `P12` (library) and `C3` (CLI).
+
+### 3. `Provider.Rollback` destroyed the world when the snapshot was not one
+
+`snapshots/` travels inside a world directory somebody hands you, and `Rollback`
+is the operator-facing grief-recovery command. It deleted the world's dimension
+files, renamed the snapshot's copies over them, and **only then** tried to read
+the result.
+
+- **Before:** a snapshot directory holding `overworld.pile` with 22 bytes of
+  text replaced a working world with it. `Rollback` returned an error, the
+  provider was left holding no columns, and the *directory* would not open
+  again — the world was gone from disk, permanently, with the only copy
+  overwritten.
+- **After:** the current files are parked as `<dim>.pile.rollbackold` rather
+  than deleted, and if the restored world does not load, every rename is undone,
+  the provider is reloaded from the originals and the error names the snapshot:
+  "rollback shipped: snapshot does not load; the world is unchanged". The test
+  compares the world file byte for byte before and after, reopens the directory,
+  and requires no staging file to be left behind.
+- A second shape went with it: `copyFile` opens the source, and `os.Open` on a
+  **FIFO blocks until somebody writes to it**, so a named pipe called
+  `trap.pile` in a snapshot directory hung `Rollback` forever. Snapshot entries
+  that are not regular files are now skipped. Control `P9` reproduces the hang.
+- Controls `P8`, `P9`.
+
+### 4. The decoded-column cache was bounded by count and not by size
+
+`CacheColumns(n)` built an LRU bounded by entry count alone, documented as "its
+entries are whole columns and all of a size". That is true of columns a server
+wrote and false of a file somebody sent you: §8 permits **1,048,576 entities in
+one column**, plus a 16 MiB user data blob and a sidecar with one entry per
+block position. The metadata cache beside it had had a byte budget all along.
+
+- **Before:** 64 columns of 1,048,576 entities each were all held — **8,590,219,520
+  bytes** of charged weight, unbounded in the constant.
+- **After:** one entry, **134,222,180 bytes**, against a 256 MiB budget. (The LRU
+  never evicts the entry just stored, so the bound is "the budget, plus one
+  entry"; that is deliberate and documented at `lru.Cache.evict`.)
+- An ordinary working set is untouched: 64 real columns still all fit, which the
+  test asserts as its other half.
+- Control `P11`.
+
+### 5. `pile origin --set` reported an anchor it had not set
+
+The paste anchor is three `int32`s on the wire, and `--set` takes three
+integers. A value that did not fit was narrowed silently: `--set
+4294967296,0,0` rewrote the structure file, set the anchor to 0, and printed
+`origin: [0 0 0] -> [0 0 0]`. Now refused, with the file untouched. Control
+`C9`.
+
+### 6. `Structure.PasteInto` wrote columns at wrapped coordinates
+
+The same shape one layer down. `PasteInto` builds its chunk keys with
+`int32(wx >> 4)`, so a paste position outside the addressable range was narrowed
+without comment: the structure landed at coordinates nobody asked for, and two
+columns of one structure could collide onto a single key, which is content lost
+with no error anywhere. Both the position and the position-plus-origin are now
+checked against ±(2³⁵−1), the last block coordinate that maps onto a distinct
+`int32` chunk key. Control `C10`.
+
+### 7. `pile compact` called a file canonical without reading it
+
+`pile.FileMode` checks the `PILE` magic and returns the mode byte; it validates
+nothing else. `cmdCompact` used it alone, so twelve bytes of `PILE` followed by
+zeroes were reported as `solid file, already canonical` — a claim about a file
+nobody had read. It now reads the metadata block first. Control `C6`.
+
+### 8. There was no `--max-decoded`
+
+The root `readme.md` tells a reader to reach for `pile.MaxDecodedBytes` if they
+open worlds they did not write, and the CLI is the first thing such a world is
+pointed at. It had no such dial: `verify`, `stats`, `check`, `inspect`, `render`,
+`diff`, `patch`, `apply`, `export`, `import`, `extract`, `paste`, `origin`,
+`prune`, `move`, `upgrade`, `mode`, `compact` and `convert` all decoded with the
+format's own ceilings and nothing else.
+
+`--max-decoded n` is now on every one of them, and it reaches the reader:
+`TestCommandsHonourTheDecodeCeiling` requires eleven commands to refuse a
+4,096-column world at a 64 KiB ceiling with `format.ErrDecodeBudget` and *not*
+`ErrCorrupt`, and requires the same world to pass with no ceiling. Controls `C7`
+and `C7b` — one for the codec options, one for the provider options, because a
+single control would have left half the commands unproved.
+
+The library gained the same reach: `LoadWorldFiles` takes `...Option`,
+`MoveOptions` has a `MaxDecoded` field, and `LoadStructure` has
+`StructureMaxDecodedBytes`. Before this, `MaxDecodedBytes` existed on `Open` and
+nowhere else, so every offline tool path bypassed it.
+
+## Found here, fixable only in `format`
+
+**`format.MarshalNBT` produces a blob its own `format.UnmarshalNBT` refuses, for
+any string of 32,768 bytes or more.** §8 puts `maxStringLen` at 65,535 and the
+marshaller accepts up to that, but the Bedrock NBT encoding underneath writes a
+string's length as a *signed* 16-bit value, so at 2¹⁵ the length wraps negative
+and the decoder reports "unexpected buffer end during op: 'String'". The
+boundary is exact: 32,767 round-trips, 32,768 does not.
+
+Through this package that is **data loss with no error anywhere**, reproduced:
+
+```go
+p, _ := pile.Open(dir)
+col := /* any column */
+col.BlockEntities[0].Data["long"] = strings.Repeat("b", 32768)
+p.StoreColumn(pos, world.Overworld, col)   // no error
+p.Close()                                   // returns nil: the file is written
+_, err := pile.Open(dir)
+// "corrupt file: decode nbt: nbt: unexpected buffer end during op: 'String'"
+```
+
+The world's settings `Name` and the markers blob reach the same marshaller and
+are **not** lost, but only by accident: §7.1 and §7.2 make the writer re-decode
+those two blobs to check their schema, so the round trip fails at `Close` with a
+confusing message instead of at the next `Open` with a dead world. A block
+entity's or an entity's NBT has no such schema and goes to the wire straight
+from the marshaller — the same asymmetry item A above found for the container
+budget, in a rule item A did not cover.
+
+**It is not fixed here, deliberately**, because the fix is a writer-side change
+in `format/nbt.go` — the marshaller must refuse what its own reader will — and
+this pass does not edit `format`. It needs no byte to move and no file's
+validity to change: every blob it would newly refuse is one no reader ever
+accepted. `TestLongNBTStringsRoundTrip` holds the boundary that works, so the
+day the limit moves in either direction a test says so; control `P14`.
+
+## What a caller still cannot bound
+
+**This is the most important line in this document for somebody loading files
+other people send them.**
+
+`MaxDecodedBytes` charges decoded columns at 1,024 bytes and decoded section
+storages at 128. It charges **nothing** for entities, block entities or
+scheduled updates. §8 bounds those per chunk — 1,048,576 each — and the column
+ceiling multiplies them rather than bounding them, so the product is not bounded
+by anything a caller can set.
+
+Measured, through `pile.Open`, on the machine this pass ran on:
+
+| file | ceiling set | charged | result |
+|---|---|---|---|
+| 2 columns × 1,048,576 entities, **4,764 bytes** | `MaxDecodedBytes(64 KiB)` | 2,048 of 65,536 | accepted; **773,708,104 bytes retained**, 11,806× the ceiling |
+| 4 columns × 1,048,576 entities, **9,409 bytes** | `MaxDecodedBytes(64 MiB)` | 4,096 of 67,108,864 | accepted; **1,547,408,096 bytes retained**, ~7 s |
+
+The only ceiling that refuses the second file is one below 4,096 bytes — a world
+of three columns — so **there is no setting that both admits a real world and
+refuses this one**. Within the rules the shape scales to the 512 MiB body
+ceiling: an entity is five bytes on the wire at minimum, so about 10⁸ entities
+and tens of gigabytes are reachable from a file that fits in a network packet
+once zstd has done its work.
+
+`TestEntityFloodEscapesTheDecodeCeiling` asserts this, as a characterisation
+rather than as a guard: it requires the file to be *accepted* and requires the
+decode to cost far more than the ceiling permitted. When somebody charges the
+per-chunk collections it will go red, and its failure message says so.
+
+**What closing it would take.** `storageBudget` in `format/decode.go` already
+has the shape: it charges columns and storages at two constants, and adding
+`chargeEntities`, `chargeBlockEntities` and `chargeTicks` at the three
+`r.count(maxPerChunk, …)` sites is the same edit three more times. Two things
+make it more than a patch, which is why it is reported rather than done:
+
+1. It is in `format`, which this pass does not edit.
+2. The **default** ceiling must stay unreachable by a conforming file, or the
+   change stops being a policy dial and becomes a validity rule — the thing
+   `SECURITY.md` item E was careful not to do. §8 does not bound the product of
+   columns and per-chunk collections, so the default would have to be raised to
+   cover the worst case the format permits (roughly 4,194,304 × 1,048,576 ×
+   whatever an entity is charged), and the useful part of the change is entirely
+   in what a *caller* then sets. That is a decision for whoever owns §8, not a
+   refactor.
+
+Until then, the honest advice is the one in the recipe below: a caller that
+opens foreign worlds must treat a decode as something that can cost tens of
+gigabytes, and must bound it from outside the process.
+
+## Loading a file somebody sent you
+
+A recipe, and what it does and does not buy. It has been run: the shapes below
+are `hostile_test.go`, and the numbers are measurements rather than estimates.
+
+### The recipe
+
+```go
+p, err := pile.Open(dir,
+    pile.ReadOnly(),                 // 1
+    pile.MaxDecodedBytes(64<<20),    // 2
+    pile.CacheColumns(0),            // 3
+)
+```
+
+**1. `pile.ReadOnly()`.** Not only "do not save": every mutator on the provider
+becomes a no-op, `Snapshot`, `Rollback` and `DeleteSnapshot` return
+`ErrReadOnly`, and no path writes into the directory. It is what stops a world
+you are inspecting from being rewritten in the format this build happens to
+produce, and it is what stops `Rollback` from being reachable at all.
+
+**2. `pile.MaxDecodedBytes(n)`, sized to what your own worlds cost.** 1,024
+bytes per column is the model, so 64 MiB admits about 65,536 columns — far more
+than a lobby and far less than the format's own 4,194,304. A file refused under
+it fails with `format.ErrDecodeBudget`, which does **not** wrap
+`format.ErrCorrupt`: it is not a claim the file is invalid, and a pipeline that
+quarantines corrupt files must not quarantine this one.
+
+**3. `pile.CacheColumns(0)`** — the default — unless you need it. The cache is
+bounded by count *and* by 256 MiB of weight now, but zero is zero.
+
+**Do not pass `pile.AppendMode()`** for a file you are only reading. It opens
+the dimension file `O_RDWR` and holds it for the provider's lifetime, and a
+solid file is refused by it anyway.
+
+**On the command line**, the same dial: `--max-decoded`, on every subcommand
+that decodes chunk content.
+
+```sh
+pile inspect  suspect/overworld.pile                      # header only, no chunks
+pile verify   suspect --max-decoded 67108864              # full decode, bounded
+pile stats    suspect --max-decoded 67108864
+```
+
+`pile inspect` is the cheapest first look: it reads the header and the metadata
+block and decodes no chunks. `pile check` reads the block palette only.
+
+### What `LoadSkip` does and does not do
+
+`pile.LoadSkip(pile.SkipEntities|…)` is **not** a bound and must not be used as
+one. It drops categories from the column `LoadColumn` hands back — after the
+file has been decoded, with every entity already built and, in solid mode, still
+held by the provider for its lifetime. It is a convenience for template worlds
+whose entities are spawned by code. It removes nothing from the peak, and it
+removes nothing from what is retained.
+
+The same is true of `pile.Skip(…)`, which applies on *store* and so only affects
+what a later save writes.
+
+### What the recipe holds
+
+Proved, not assumed:
+
+- A 4,096-column file is refused at a 256 KiB ceiling, with
+  `errors.Is(err, format.ErrDecodeBudget)` true and
+  `errors.Is(err, format.ErrCorrupt)` false
+  (`TestOpenHoldsTheCeilingOnAHostileColumnFlood`, control `P1`).
+- A world whose overworld is truncated and whose nether is fine fails as a
+  whole, names the file, and returns no provider — no partial world is served
+  and no save writes the missing dimension back
+  (`TestOpenRefusesAHostileDimensionAndNamesIt`, control `P3`).
+- An unreadable dimension file is an error naming it, not an empty world
+  (control `P4`).
+- A column declaring a vertical range that is not the dimension's is re-based
+  before it reaches a caller, so dragonfly's unchecked sub-chunk indexing cannot
+  be reached through it (control `P5`).
+- Settings and markers that are legal but absurd — a 32,767-byte world name,
+  spawn at both `int32` extremes, 20,000 markers, NaN and ±Inf positions — load,
+  survive a save, and reload identically (controls `P6`, `P6b`).
+- An indexed file rewritten underneath an open provider produces errors from
+  every method that touches it, and `Columns` reports through `IterError` rather
+  than iterating short — a short iteration is how a backup silently loses chunks
+  (control `P7`).
+- Concurrent `LoadColumn`, `StoreColumn`, `Columns`, `ChunkUserData` and `Save`
+  over a world of large columns, in both modes, under `-race`, and the world
+  reopens with every column intact (control `P13c`).
+- Every column crossing the provider boundary is a copy, on all three load paths
+  (controls `P13`, `P13b`).
+- Every subcommand refuses five shapes of garbage rather than reporting success
+  (control `C6` found one that did not).
+
+### What it does not hold
+
+- **The per-chunk collections.** See "What a caller still cannot bound" above.
+  This is the gap, and no setting closes it.
+- **Wall-clock time.** Nothing bounds how long a decode takes. The 9,409-byte
+  file above takes about seven seconds. Do not decode foreign files on a
+  request path, and do not decode them unbounded in parallel.
+- **Transient allocation inside an NBT blob.** `MaxDecodedBytes` does not charge
+  it; §8's container budget bounds it at its own ceiling, which `ReadMeta` can
+  spend ~82 MiB against from a 132-byte input.
+- **Authenticity.** xxHash64 is not a MAC. A checkpoint hash says the file has
+  not been damaged, not that it is the file you were sent. If that matters, sign
+  it.
+- **A second process.** A world directory is assumed to have one owner;
+  `FSBEHAVIOUR.md` §5.
+- **The operating system.** The only complete bound on a decode of a foreign
+  world is an external one — a memory cgroup, `RLIMIT_AS`, a separate process
+  you are willing to have killed. For the stated use case, loading maps
+  strangers send you, that is the honest recommendation and this document would
+  be wrong to imply the library can replace it.

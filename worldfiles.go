@@ -104,11 +104,21 @@ type WorldFiles struct {
 
 // LoadWorldFiles loads all dimension files of a world directory, regardless
 // of their mode. Intended for offline tools; servers use Open.
-func LoadWorldFiles(dir string, reg world.BlockRegistry) (*WorldFiles, error) {
+//
+// Options are accepted so a tool reading a world it did not write can set
+// MaxDecodedBytes; only the decode policy is read, since everything else an
+// Option carries is about a running provider. It has no ceiling by default,
+// which is the same position Open is in and for the same reason.
+func LoadWorldFiles(dir string, reg world.BlockRegistry, opts ...Option) (*WorldFiles, error) {
+	conf := defaultConfig()
+	for _, o := range opts {
+		o(&conf)
+	}
 	if reg == nil {
 		reg = world.DefaultBlockRegistry
 	}
 	reg.Finalize()
+	ropts := conf.readOpts()
 	wf := &WorldFiles{}
 	haveMeta := false
 	dims, err := worldDimensions(dir)
@@ -129,7 +139,7 @@ func LoadWorldFiles(dir string, reg world.BlockRegistry) (*WorldFiles, error) {
 			StoreLight: flags&format.FlagStoreLight != 0,
 		}
 		if df.Indexed {
-			iw, err := format.OpenIndexed(path, reg, true)
+			iw, err := format.OpenIndexed(path, reg, true, ropts...)
 			if err != nil {
 				return nil, fmt.Errorf("pile: open %s: %w", path, err)
 			}
@@ -151,7 +161,7 @@ func LoadWorldFiles(dir string, reg world.BlockRegistry) (*WorldFiles, error) {
 			if err != nil {
 				return nil, err
 			}
-			d, err := format.ReadWorld(file, reg)
+			d, err := format.ReadWorld(file, reg, ropts...)
 			if err != nil {
 				return nil, fmt.Errorf("pile: read %s: %w", path, err)
 			}

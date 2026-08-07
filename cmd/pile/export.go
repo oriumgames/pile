@@ -58,6 +58,7 @@ type exportMarker struct {
 func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dimFlag := fs.String("dim", "overworld", "dimension to export")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -68,7 +69,7 @@ func cmdExport(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := pile.Open(fs.Arg(0), pile.ReadOnly())
+	p, err := pile.Open(fs.Arg(0), append(limit.providerOpts(), pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}
@@ -138,6 +139,7 @@ func cmdExport(args []string) error {
 
 func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -161,12 +163,12 @@ func cmdImport(args []string) error {
 	if err != nil {
 		return err
 	}
-	s, err := pile.LoadStructure(filepath.Join(srcDir, "structure.pile"))
+	s, err := pile.LoadStructure(filepath.Join(srcDir, "structure.pile"), limit.structureOpts()...)
 	if err != nil {
 		return err
 	}
 
-	p, err := pile.Open(dstDir)
+	p, err := pile.Open(dstDir, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}

@@ -47,6 +47,7 @@ func cmdExtract(args []string) error {
 	maxFlag := fs.String("max", "", "maximum corner x,y,z (required)")
 	dimFlag := fs.String("dim", "overworld", "dimension to extract from")
 	skipAir := fs.Bool("skip-air", false, "mark the structure to leave air positions untouched when built")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,7 +67,7 @@ func cmdExtract(args []string) error {
 		return err
 	}
 
-	p, err := pile.Open(fs.Arg(0), pile.ReadOnly())
+	p, err := pile.Open(fs.Arg(0), append(limit.providerOpts(), pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}
@@ -92,6 +93,7 @@ func cmdPaste(args []string) error {
 	atFlag := fs.String("at", "", "paste position x,y,z (required)")
 	dimFlag := fs.String("dim", "overworld", "dimension to paste into")
 	skipAir := fs.Bool("skip-air", false, "leave existing blocks in the structure's air positions")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -107,7 +109,7 @@ func cmdPaste(args []string) error {
 		return err
 	}
 
-	var opts []pile.StructureOption
+	opts := limit.structureOpts()
 	if *skipAir {
 		opts = append(opts, pile.SkipAir())
 	}
@@ -115,7 +117,7 @@ func cmdPaste(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := pile.Open(fs.Arg(1))
+	p, err := pile.Open(fs.Arg(1), limit.providerOpts()...)
 	if err != nil {
 		return err
 	}

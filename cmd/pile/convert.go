@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,15 +15,20 @@ import (
 var dimensions = []world.Dimension{world.Overworld, world.Nether, world.End}
 
 func cmdConvert(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: pile convert <src> <dst>")
+	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	src, dst := args[0], args[1]
+	if fs.NArg() != 2 {
+		return errors.New("usage: pile convert <src> <dst> [--max-decoded n]")
+	}
+	src, dst := fs.Arg(0), fs.Arg(1)
 	switch {
 	case isMcdb(src):
 		return convertMcdbToPile(src, dst)
 	case isPile(src):
-		return convertPileToMcdb(src, dst)
+		return convertPileToMcdb(src, dst, limit)
 	default:
 		return fmt.Errorf("%s is neither an mcdb world (level.dat) nor a pile world (*.pile)", src)
 	}
@@ -79,11 +85,11 @@ func convertMcdbToPile(src, dst string) error {
 // convertPileToMcdb writes a pile world into a freshly created leveldb world.
 // The destination must not already contain an mcdb world, so the result holds
 // only live keys.
-func convertPileToMcdb(src, dst string) error {
+func convertPileToMcdb(src, dst string, limit decodeLimit) error {
 	if isMcdb(dst) {
 		return fmt.Errorf("destination %s already contains an mcdb world; refusing to write into it", dst)
 	}
-	p, err := pile.Open(src, pile.ReadOnly())
+	p, err := pile.Open(src, append(limit.providerOpts(), pile.ReadOnly())...)
 	if err != nil {
 		return err
 	}

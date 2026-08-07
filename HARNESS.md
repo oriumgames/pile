@@ -1186,3 +1186,119 @@ editorial correction look like a format change and would push the next person
 towards editing `spec_rules.txt` by hand. What the freeze forbids is a change to
 which files a reader accepts, and that always shows up as a moved fixture, which
 *is* locked.
+
+---
+
+# 8. The provider surface and the CLI: hostile input
+
+`SECURITY.md` said it plainly under "Not audited": *the `pile` package's
+provider surface and the CLI. The matrix drives `format` directly. The provider
+adds caching, sidecars and a mover on top, and none of that was driven with
+hostile input here.* This is that pass. It matters because the person this
+library is for has said they will be **loading pile files other people send
+them**, which makes `pile.Open` and `cmd/pile` — not `format.ReadWorld` — the
+first thing a hostile file meets.
+
+The subjects are `hostile_test.go` in the root package and
+`cmd/pile/hostile_test.go`. Everything they build is a file a conforming reader
+must accept unless the test says otherwise: "hostile" means the content is
+absurd, not that the bytes are broken, because broken bytes are what
+`format/hostile_test.go` already covers and absurd content is what actually
+arrives.
+
+**Twenty-nine controls, all red.** Each disables one production line, runs the
+named test with `-count=1`, and requires it to fail; the file is restored
+afterwards and `git status` confirmed clean. Four were **green on the first
+attempt** and are called out below, because a control that passes is a test that
+was not testing anything.
+
+## 8.1 The provider
+
+| # | production line disabled | test | result with it disabled |
+|---|--------------------------|------|-------------------------|
+| P1 | `options.go`, `readOpts` returns `nil` | `TestOpenHoldsTheCeilingOnAHostileColumnFlood` | **RED** — a 4,096-column file opened under a 256 KiB ceiling |
+| P2 | the fixture: `const cols, per = 2, 1<<20` → `2, 1` | `TestEntityFloodEscapesTheDecodeCeiling` | **RED** — "the fixture retained only 11,288 bytes; it no longer demonstrates the amplification". This is the control on a *characterisation* test: what it must not do is stop reaching the case |
+| P3 | `pile.go`, `loadFromDisk`'s `return fmt.Errorf("pile: read %s…")` → `continue` | `TestOpenRefusesAHostileDimensionAndNamesIt` | **RED** — a world with a truncated overworld opened, serving a dimension that is not there |
+| P4 | the same for the indexed branch's `open %s` | `TestOpenRefusesAnUnreadableDimensionFile` | **RED** — an unreadable dimension file opened as an empty world |
+| P5 | `pile.go`, `adaptColumnRange(col, …)` in `LoadColumn` | `TestProviderAdaptsAColumnWithAForeignVerticalRange` | **RED** — `LoadColumn` served a column with range `[0 15]` into a dimension of `[-64 319]` |
+| P6 | `settings.go`, `"spawnX"` dropped from `settingsToNBT` | `TestProviderSurvivesAbsurdMetadataBlobs` | **RED** — spawn changed across the round trip |
+| P6b | `pile.go`, `loadFromDisk` assigns `nil` markers | the same | **RED** — 0 markers, want 20,000 |
+| P7 | `pile.go`, `columnsAppend`'s `noteIterErr(…); return` → `continue` | `TestIndexedProviderSurvivesTheFileChangingUnderneath` | **RED** — `Columns` iterated a rewritten file without reporting an error |
+| P8 | `snapshot.go`, `Rollback`'s failure path no longer undoes | `TestRollbackFromAJunkSnapshotLeavesTheWorldIntact` | **RED** — "the world no longer opens" after a rollback onto 22 bytes of text |
+| P9 | `snapshot.go`, `!e.Type().IsRegular()` → `e.IsDir()` | `TestRollbackSkipsANonRegularSnapshotEntry` | **RED** — "Rollback blocked on a FIFO in the snapshot directory" (20 s timeout) |
+| P10 | `snapshot.go`, `Snapshots`' `if e.IsDir()` filter | `TestSnapshotsIgnoresJunkEntries` | **RED** — a file and a dangling symlink were listed as snapshots |
+| P11 | `cache.go`, `newColumnCache` back to count-only | `TestColumnCacheIsBoundedByWeight` | **RED** — "all 64 oversized entries were kept; the weight budget is not binding" |
+| P12 | `structure.go`, `regionSize` back to `int32(hi - lo + 1)` | `TestExtractStructureRefusesAnUnrepresentableRegion` | **RED** — did not return (40 s timeout) |
+| P13 | `pile.go`, `Columns`' `cloneColumn(c.Col)` → `c.Col` | `TestIteratorsHandOutCopies` | **RED** — column 0 was edited through a handed-out copy |
+| P13b | `pile.go`, `LoadColumn`'s cached-path `cloneColumn(fc.Col)` → `fc.Col` | the same | **RED** — same, on the `append cached` subtest |
+| P13c | `pile.go`, `Columns`' `p.mu` around the per-key clone | `TestConcurrentAccessToAHostileWorld` under `-race` | **RED** — data race, `Columns` reading `ds.cols` against `storeColumn` writing it |
+| P14 | the fixture: the string length `1<<15-1` → `1<<15` | `TestLongNBTStringsRoundTrip` | **RED** — "a world holding 32768-byte strings did not save". This is the boundary the finding in `SECURITY.md` sits on |
+
+## 8.2 The CLI
+
+| # | production line disabled | test | result with it disabled |
+|---|--------------------------|------|-------------------------|
+| C1 | `cmd/pile/render.go`, the span computed as `int32` again | `TestRenderRefusesAWorldWhoseSpanWrapsInt32` | **RED** on both wrapping cases — "refused for the wrong reason: png: invalid image size: 34359738352x16", after reserving 2,199,023,190,016 bytes, and "…: 0x16" for the full-range case. The third subtest, `genuinely too large`, passes under the control on purpose: its span really is too large and both versions refuse it |
+| C2 | `cmd/pile/render.go`, the 8192 ceiling lowered to 64 | `TestRenderStillRendersAnOrdinaryWorld` | **RED** — an ordinary four-chunk world was refused. The other half of C1: the bound must not have been tightened onto real worlds |
+| C3 | `structure.go`, `regionSize` back to the narrowing | `TestExtractRefusesAnUnrepresentableBox` | **RED** — `cmdExtract` did not return (50 s timeout) |
+| C4 | `cmd/pile/tools.go`, `cmdPrune`'s two inverted-box swaps | `TestPruneHandlesExtremeBounds` | **RED** — `bounds "9223372036854775807,9223372036854775807,0,0" kept 0 chunks, want 2` |
+| C5 | `settings.go`, the spawn-coordinate range widened from `int32` to `int64`, so the check cannot fire | `TestMoveHandlesExtremeOffsets` | **RED** — "moving by dx=2147483648 was accepted" |
+| C6 | `cmd/pile/maintain.go`, `cmdCompact`'s `ReadMeta` | `TestEveryCommandRefusesGarbage` | **RED** — "compact reported success on a file that is header only": twelve bytes of `PILE` and zeroes were reported as "solid file, already canonical" |
+| C7 | `cmd/pile/limits.go`, `readOpts` returns `nil` | `TestCommandsHonourTheDecodeCeiling` | **RED** — `--max-decoded` did not reach `verify`, `stats`, `upgrade`, `mode` or `extract` |
+| C7b | the same for `providerOpts` | the same | **RED** — nor `render`, `diff`, `prune`, `move`, `export` or `convert` |
+| C8 | `cmd/pile/patch.go`, `worldLen > uint64(r.Len())` | `TestApplyRefusesAHostilePatch` | **RED** — "panicked: runtime error: makeslice: len out of range", from a 24-byte patch |
+| C9 | `cmd/pile/move.go`, `cmdOrigin`'s `int32` range check | `TestOriginRefusesAnUnrepresentableAnchor` | **RED** — `--set 4294967296,0,0` rewrote the file and reported an anchor it had not set |
+| C10 | `structure.go`, `checkPasteCoords`' range test | `TestPasteRefusesAnUnaddressablePosition` | **RED** — a paste at 2⁶³−1 was accepted and wrote columns at wrapped keys |
+| C11 | `cmd/pile/info.go`, `pileFiles`' empty-match error | `TestPileFilesRefusesADirectoryOfNonPileFiles` | **RED** — `verify` reported success over a directory with no pile files |
+
+## 8.3 The four that were green first time
+
+Recorded because the point of this document is that a control which passes
+means the test was not reaching its subject, and three of these were written
+with as much care as the ones that worked.
+
+1. **P6 was green as `world.GameModeByID` guard.** The first version disabled
+   the `if gm, ok := …; ok` in `settingsFromNBT` and required the test to
+   notice. It does not: dragonfly's `Lookup` returns `GameModeSurvival`
+   *together with* `false`, so dropping the `ok` test changes no value and the
+   guard has **no distinguishing input**. It is defence against a future
+   registry that returns a zero value, not enforcement, and the entry above
+   targets a line that does have one.
+2. **P6 was green a second time, for a different reason, and that one was a
+   defect in the test.** `TestProviderSurvivesAbsurdMetadataBlobs` called
+   `p.Save()` and reopened — but nothing had marked the provider dirty, so the
+   save skipped every clean dimension and the reopen was reading the *fixture*
+   back rather than anything a writer produced. The whole round-trip half of
+   the test was vacuous. It now calls `SaveSettings` first. This is the same
+   shape as the ten preservation tests in §2 that ended in `UnresolvedStates`:
+   an assertion that looks like it exercises a path and does not.
+3. **P13b was green against `TestIteratorsHandOutCopies`.** The append-mode
+   subtest opened with no `CacheColumns`, and the clone under test is on the
+   *cached* path — with no cache, `LoadColumn` hands over the decode's own
+   result and there is nothing to alias. A third subtest, `append cached`, now
+   covers it.
+4. **P13c was green against `TestConcurrentAccessToAHostileWorld`.** With four
+   goroutines, a 300 ms run and an iteration that stopped after four columns,
+   the race detector never saw `Columns` read `ds.cols` while `storeColumn`
+   wrote it. Eight goroutines, one second and a full iteration find it every
+   time. `-race` is not proof of absence and a race test that is not driven hard
+   enough is not evidence either — this is the second time in this repository
+   that a concurrency test needed its pressure raised before its own control
+   would fail.
+
+## 8.4 What these tests do not reach
+
+- **`TestEntityFloodEscapesTheDecodeCeiling` asserts a gap rather than a
+  guard.** It requires a file that the caller's ceiling *cannot* refuse to be
+  accepted, and requires the decode to cost far more than the ceiling allowed.
+  When somebody charges the per-chunk collections it will go red, which is the
+  intended way to find it; the message says so.
+- **`TestLongNBTStringsRoundTrip` holds a boundary whose other side is a
+  defect.** The fix is in `format/nbt.go` and is out of this pass's scope;
+  `SECURITY.md`, "Found here, fixable only in format". Note which half of it
+  loses data: the settings and markers blobs are re-decoded by the writer's own
+  §7.1/§7.2 schema checks and so fail at `Close`, while a block entity's NBT
+  goes to the wire straight from the marshaller and fails at the next `Open`,
+  with the world already overwritten.
+- **Windows.** `TestRollbackSkipsANonRegularSnapshotEntry` skips there, as the
+  permission tests already do.

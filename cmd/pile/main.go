@@ -108,5 +108,11 @@ commands:
                         current registry (exit 1 if any)
   prune   <world> --bounds x1,z1,x2,z2
                         drop chunks outside a block box
+
+every command that decodes chunk content also takes:
+  --max-decoded n       refuse a file whose decode would exceed n bytes of live
+                        state (0, the default: the format's own ceiling). Set it
+                        for files you did not write; see SECURITY.md, "Loading a
+                        file somebody sent you"
 `)
 }

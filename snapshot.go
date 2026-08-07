@@ -147,7 +147,11 @@ func (p *Provider) Rollback(name string) error {
 		}
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pile") {
+		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".pile") {
+			// Not a regular file: a directory, a device node, or a FIFO, which
+			// copyFile's os.Open would block on until somebody wrote to it. A
+			// snapshots directory arrives with the world it belongs to and is
+			// not necessarily something this process produced.
 			continue
 		}
 		dst := filepath.Join(p.dir, e.Name())
@@ -158,34 +162,77 @@ func (p *Provider) Rollback(name string) error {
 		}
 		files = append(files, staged{tmp: tmp, dst: dst})
 	}
-	// Remove dimension files the snapshot does not contain.
-	keep := map[string]bool{}
-	for _, f := range files {
-		keep[f.dst] = true
+	// Move the current dimension files aside rather than deleting them, and
+	// keep them until the restored world has been read back.
+	//
+	// This used to remove the files the snapshot does not contain, rename the
+	// snapshot's copies over the rest, and then reload — so a snapshot
+	// directory holding a file that is not a world (or a dimension file this
+	// build cannot open, or one whose chunk data is broken) replaced a working
+	// world with it, the reload failed, and the world was gone: not only from
+	// the provider but from the directory, permanently. `snapshots/` travels
+	// inside a world somebody hands you, and Rollback is the operator-facing
+	// grief-recovery command, so the two meet.
+	type parked struct{ path, aside string }
+	var park []parked
+	var placed []string
+	// undo puts the directory back the way it was: remove what was renamed in,
+	// then move the parked originals home in reverse order.
+	undo := func() {
+		for i := len(placed) - 1; i >= 0; i-- {
+			_ = os.Remove(placed[i])
+		}
+		for i := len(park) - 1; i >= 0; i-- {
+			_ = os.Remove(park[i].path)
+			_ = os.Rename(park[i].aside, park[i].path)
+		}
 	}
 	for _, ds := range p.dims {
 		path := p.dimPath(ds.dim)
-		if !keep[path] {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				cleanup()
-				return err
+		aside := path + ".rollbackold"
+		_ = os.Remove(aside)
+		if err := os.Rename(path, aside); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
+			undo()
+			cleanup()
+			return fmt.Errorf("pile: rollback %s: %w", name, err)
 		}
+		park = append(park, parked{path: path, aside: aside})
 	}
 	for _, f := range files {
 		if err := preserveMode(f.tmp, f.dst); err != nil {
+			undo()
 			cleanup()
 			return fmt.Errorf("pile: rollback %s: %w", name, err)
 		}
 		if err := os.Rename(f.tmp, f.dst); err != nil {
+			undo()
 			cleanup()
 			return fmt.Errorf("pile: rollback %s: %w", name, err)
 		}
+		placed = append(placed, f.dst)
 	}
 	if err := syncDir(p.dir); err != nil {
+		undo()
 		return err
 	}
-	return p.loadFromDisk()
+	if err := p.loadFromDisk(); err != nil {
+		// The snapshot does not load. Put the world back exactly as it was and
+		// report the snapshot, not the world, as the problem.
+		undo()
+		_ = syncDir(p.dir)
+		if rerr := p.loadFromDisk(); rerr != nil {
+			return errors.Join(fmt.Errorf("pile: rollback %s: %w", name, err),
+				fmt.Errorf("pile: restoring the world after the failed rollback also failed: %w", rerr))
+		}
+		return fmt.Errorf("pile: rollback %s: snapshot does not load; the world is unchanged: %w", name, err)
+	}
+	for _, pk := range park {
+		_ = os.Remove(pk.aside)
+	}
+	return syncDir(p.dir)
 }
 
 // copyFile copies src to dst, fsyncing the destination.

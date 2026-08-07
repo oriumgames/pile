@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
@@ -20,6 +21,7 @@ func cmdMove(args []string) error {
 	clip := fs.Bool("clip", false, "allow cutting content that leaves the vertical range")
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	noBackup := fs.Bool("no-backup", false, "skip the automatic snapshots/pre-move backup")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,7 +49,7 @@ func cmdMove(args []string) error {
 		if err != nil {
 			return err
 		}
-		p, err := pile.Open(dir, pile.ReadOnly())
+		p, err := pile.Open(dir, append(limit.providerOpts(), pile.ReadOnly())...)
 		if err != nil {
 			return err
 		}
@@ -55,7 +57,7 @@ func cmdMove(args []string) error {
 		_ = p.Close()
 		offset = target.Sub(spawn)
 	case *center:
-		p, err := pile.Open(dir, pile.ReadOnly())
+		p, err := pile.Open(dir, append(limit.providerOpts(), pile.ReadOnly())...)
 		if err != nil {
 			return err
 		}
@@ -73,6 +75,7 @@ func cmdMove(args []string) error {
 
 	report, err := pile.MoveWorld(dir, pile.MoveOptions{
 		Offset: offset, Clip: *clip, DryRun: *dryRun, Backup: !*noBackup,
+		MaxDecoded: limit.value(),
 	})
 	if errors.Is(err, pile.ErrWouldClip) {
 		fmt.Printf("refused: moving by (%d,%d,%d) would clip %d blocks, %d block entities, %d entities, %d scheduled ticks outside the vertical range\n",
@@ -108,6 +111,7 @@ func cmdOrigin(args []string) error {
 	set := fs.String("set", "", "set the paste anchor to x,y,z")
 	zero := fs.Bool("zero", false, "reset the paste anchor to 0,0,0")
 	center := fs.Bool("center", false, "anchor at the structure's XZ center, bottom Y")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -127,7 +131,7 @@ func cmdOrigin(args []string) error {
 	if err != nil {
 		return err
 	}
-	data, err := format.ReadStructure(file, world.DefaultBlockRegistry)
+	data, err := format.ReadStructure(file, world.DefaultBlockRegistry, limit.readOpts()...)
 	if err != nil {
 		return err
 	}
@@ -137,6 +141,15 @@ func cmdOrigin(args []string) error {
 		p, err := parsePos(*set)
 		if err != nil {
 			return err
+		}
+		// The anchor is three int32s on the wire. A value that does not fit was
+		// narrowed silently, so `--set 4294967296,0,0` rewrote the file, set the
+		// anchor to 0 and printed that it had set it to 0 — a wrong answer
+		// reported as success, over the file it had just replaced.
+		for i, v := range [3]int{p.X(), p.Y(), p.Z()} {
+			if v < math.MinInt32 || v > math.MaxInt32 {
+				return fmt.Errorf("origin axis %d is %d, which does not fit the format's 32-bit field", i, v)
+			}
 		}
 		data.Origin = [3]int32{int32(p.X()), int32(p.Y()), int32(p.Z())}
 	case *zero:

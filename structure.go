@@ -24,6 +24,10 @@ type Structure struct {
 	air     uint32
 	skipAir bool
 	bes     map[[3]int32]map[string]any
+
+	// maxDecoded is the caller's decode ceiling for LoadStructure, in bytes.
+	// Zero is the format's own.
+	maxDecoded int64
 }
 
 var _ world.Structure = (*Structure)(nil)
@@ -44,6 +48,28 @@ func StructureRegistry(reg world.BlockRegistry) StructureOption {
 			s.reg = reg
 		}
 	}
+}
+
+// StructureMaxDecodedBytes bounds the live decoded state LoadStructure may
+// produce, in bytes. It is MaxDecodedBytes for structure files: 0 (the default)
+// is the format's own ceiling, a value above it is clamped down, and a refusal
+// reports format.ErrDecodeBudget rather than claiming the file is corrupt.
+//
+// It has the same blind spot the provider's does, and it matters more here
+// because a structure is a single object: the ceiling charges decoded cells and
+// section storages, and charges nothing for the block entities and entities a
+// structure carries. See SECURITY.md, "Loading a file somebody sent you".
+func StructureMaxDecodedBytes(n int64) StructureOption {
+	return func(s *Structure) { s.maxDecoded = n }
+}
+
+// structureReadOpts translates a structure's decode policy into format
+// ReadOptions, returning nil when there is nothing to state.
+func (s *Structure) structureReadOpts() []format.ReadOption {
+	if s.maxDecoded <= 0 {
+		return nil
+	}
+	return []format.ReadOption{format.MaxDecodedBytes(s.maxDecoded)}
 }
 
 // newStructure wraps decoded structure data.
@@ -72,7 +98,7 @@ func LoadStructure(path string, opts ...StructureOption) (*Structure, error) {
 		o(s)
 	}
 	s.reg.Finalize()
-	data, err := format.ReadStructure(file, s.reg)
+	data, err := format.ReadStructure(file, s.reg, s.structureReadOpts()...)
 	if err != nil {
 		return nil, fmt.Errorf("pile: read structure %s: %w", path, err)
 	}
@@ -185,11 +211,67 @@ func (s *Structure) ridAt(x, y, z int) (uint32, uint32) {
 		cell.Block(uint8(x&15), uint8(y&15), uint8(z&15), 1)
 }
 
+// maxPasteCoord is the last block coordinate that maps onto a distinct int32
+// chunk key: chunk keys are int32 and a chunk spans 16 blocks.
+const maxPasteCoord = 1<<35 - 1
+
+// checkPasteCoords refuses a position no chunk key can name.
+func checkPasteCoords(what string, p cube.Pos) error {
+	for i, v := range p {
+		if v < -maxPasteCoord || v > maxPasteCoord {
+			return fmt.Errorf("pile: %s axis %d is %d, outside the addressable range ±%d", what, i, v, int64(maxPasteCoord))
+		}
+	}
+	return nil
+}
+
+// regionSize turns an inclusive block box into a structure size, in exact
+// arithmetic.
+//
+// The narrowing this replaces was int32(hi.X() - lo.X() + 1), computed in int
+// and then truncated, so a span of 2^32+1 became a size of 1: NewStructureData
+// accepted the 1x1x1 structure and the chunk loop below then walked the real
+// span, 268,435,457 chunk positions on one axis alone. Nothing about that is
+// slow-but-finite in practice — a caller passing --max 4294967296,0,0 on the
+// command line waits forever — so the box is validated before anything is
+// allocated, and every later bound (the cell ceiling, the chunk loop) is
+// derived from a size that is now the box it came from.
+//
+// The chunk loop is bounded once this holds: NewStructureData refuses a size
+// whose cell count passes §8's ceiling, and the loop runs one iteration per
+// cell column.
+func regionSize(lo, hi cube.Pos) ([3]int32, error) {
+	var size [3]int32
+	for i := range 3 {
+		if hi[i] < lo[i] {
+			return size, fmt.Errorf("pile: region axis %d is inverted: %d..%d", i, lo[i], hi[i])
+		}
+		// Exact: hi >= lo, so the unsigned difference is the true span even
+		// when the signed one would overflow.
+		span := uint64(hi[i]) - uint64(lo[i]) + 1
+		if span > math.MaxInt32 {
+			return size, fmt.Errorf("pile: region axis %d spans %d blocks (%d..%d), which no structure can hold", i, span, lo[i], hi[i])
+		}
+		size[i] = int32(span)
+	}
+	// The chunk keys the loop builds are int32 on the wire, so a box outside
+	// the addressable chunk range cannot name the columns it would need.
+	for _, i := range [2]int{0, 2} {
+		if lo[i]>>4 < math.MinInt32 || hi[i]>>4 > math.MaxInt32 {
+			return size, fmt.Errorf("pile: region axis %d (%d..%d) lies outside the addressable chunk range", i, lo[i], hi[i])
+		}
+	}
+	return size, nil
+}
+
 // ExtractStructure copies the block region [lo, hi] (inclusive) of a
 // dimension from a provider into a new Structure, including block entities
 // and entities inside the region. Options apply to the resulting structure.
 func ExtractStructure(p *Provider, dim world.Dimension, lo, hi cube.Pos, opts ...StructureOption) (*Structure, error) {
-	size := [3]int32{int32(hi.X() - lo.X() + 1), int32(hi.Y() - lo.Y() + 1), int32(hi.Z() - lo.Z() + 1)}
+	size, err := regionSize(lo, hi)
+	if err != nil {
+		return nil, err
+	}
 	data, err := format.NewStructureData(size)
 	if err != nil {
 		return nil, err
@@ -360,10 +442,25 @@ func (s *Structure) setLocal(x, y, z int, layer uint8, rid uint32) {
 // entities are carried; with SkipAir, air positions leave existing blocks
 // untouched. Positions outside the dimension's range are dropped.
 func (s *Structure) PasteInto(p *Provider, dim world.Dimension, at cube.Pos) error {
+	// Every world position this paste touches has to be addressable. A chunk
+	// key is int32 on the wire and the code below builds one with
+	// int32(wx >> 4), so a position far outside that range was narrowed
+	// silently: the paste landed at coordinates nobody asked for, and two
+	// columns of one structure could collide onto a single key, which is
+	// content lost with no error anywhere. maxPasteCoord is the last block
+	// coordinate that maps onto a distinct int32 chunk key; checking `at`
+	// before adding the origin is also what keeps that addition from
+	// overflowing.
+	if err := checkPasteCoords("paste position", at); err != nil {
+		return err
+	}
 	base := cube.Pos{
 		at.X() + int(s.data.Origin[0]),
 		at.Y() + int(s.data.Origin[1]),
 		at.Z() + int(s.data.Origin[2]),
+	}
+	if err := checkPasteCoords("paste position plus the structure origin", base); err != nil {
+		return err
 	}
 	sz := s.data.Size
 	r := dim.Range()

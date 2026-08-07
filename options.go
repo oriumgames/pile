@@ -138,6 +138,14 @@ func Registry(reg world.BlockRegistry) Option {
 //
 // In append mode the limit is per open world file rather than per column read:
 // it covers the directory the file keeps resident plus one decoded column.
+//
+// What it charges is decoded columns and decoded section storages. It charges
+// nothing for entities, block entities or scheduled updates, and one legal
+// column may hold 1,048,576 of each: a 4,764-byte file of two such columns
+// decodes into 774 MB under a 64 KiB ceiling, and no setting refuses it that
+// does not also refuse a three-column world. That gap is measured and recorded
+// in SECURITY.md, "What a caller still cannot bound"; a caller opening worlds
+// it did not write needs a bound outside the process as well as this one.
 func MaxDecodedBytes(n int64) Option { return func(c *config) { c.maxDecoded = n } }
 
 // WithSpawnStore plugs an external player spawn store into the provider.
@@ -150,6 +158,13 @@ func Skip(m SkipMask) Option { return func(c *config) { c.skip |= m } }
 
 // LoadSkip drops data categories when columns are loaded, even if present in
 // the file. Useful for template worlds whose entities are spawned by code.
+//
+// It is not a bound and must not be used as one. The file is decoded in full
+// first: the categories are dropped from the column LoadColumn hands back, with
+// every entity already built, and in solid mode the provider goes on holding
+// them for its lifetime. It removes nothing from the peak cost of opening a
+// hostile world. MaxDecodedBytes is the dial for that, and SECURITY.md,
+// "Loading a file somebody sent you", says what it does and does not cover.
 func LoadSkip(m SkipMask) Option { return func(c *config) { c.loadSkip |= m } }
 
 // FilterEntity keeps only entities for which f returns true when storing.

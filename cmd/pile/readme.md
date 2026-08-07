@@ -13,6 +13,29 @@ A "world" argument is a directory holding `overworld.pile` (plus optional
 (temp file + rename); destructive commands make automatic backups unless told
 otherwise.
 
+## `--max-decoded`
+
+Every command that decodes chunk content takes `--max-decoded n`: the ceiling,
+in bytes, on the live decoded state one file may produce. It is
+`pile.MaxDecodedBytes` on the command line. The default, 0, is the format's own
+ceiling, which is set at what the format can *represent* — a legal file of about
+a kilobyte decodes into more than a gigabyte — rather than at what a workstation
+wants to spend.
+
+**Set it whenever the file came from somebody else.** A file refused under it
+fails with `format.ErrDecodeBudget`, which is not a claim that the file is
+corrupt; the file is bigger than you asked for.
+
+```sh
+pile inspect suspect/overworld.pile             # header + metadata only, no chunks
+pile verify  suspect --max-decoded 67108864     # full decode, bounded at 64 MiB
+```
+
+The ceiling charges decoded columns and section storages. It charges nothing for
+entities, block entities or scheduled updates, and a single legal column may
+hold a million of each — see `SECURITY.md`, "Loading a file somebody sent you",
+for what that means and what to do about it.
+
 ## Conversion
 
 | command | |

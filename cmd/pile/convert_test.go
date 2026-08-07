@@ -88,7 +88,7 @@ func TestConvertBothWays(t *testing.T) {
 
 	// pile -> mcdb.
 	dstDir := filepath.Join(t.TempDir(), "world")
-	if err := convertPileToMcdb(pileDir, dstDir); err != nil {
+	if err := convertPileToMcdb(pileDir, dstDir, decodeLimit{}); err != nil {
 		t.Fatal(err)
 	}
 	back, err := mcdb.Open(dstDir)
