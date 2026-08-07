@@ -74,7 +74,6 @@ e0479882 In **mode 0** it MUST be clear when no section carries any, since a sol
 e23c42de a writer emits all five, but a compound missing one is **valid** and a reader MUST NOT reject it, while a key that is present MUST carry the tag named here.
 e6b20330 Writers MUST reject an unsorted list rather than copy it through, because the same marker collection would otherwise have as many encodings as it has permutations.
 e72263a7 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
-edd065ba - The frame **MUST** declare its content size.
 f1047fc4 The tag of each listed field is fixed and writers MUST reject a blob carrying the wrong one:
 f61eb7d5 a layer that never reaches the file contributes nothing, and writers MUST NOT count it.
 f930c4ef Decoders MUST reject lengths > 16 777 216 (16 MiB)

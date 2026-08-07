@@ -197,19 +197,27 @@ authenticated too.
 
 ### 2.5 Zstandard frames
 
-Compressed payloads are ordinary Zstandard frames, with two constraints that
+Compressed payloads are ordinary Zstandard frames, with one constraint that
 the decompressed-size ceilings of §8 do not cover on their own:
 
 - The **window size** MUST NOT exceed 8 MiB. A ceiling on the decompressed
   size bounds the output but not the memory a decoder must hold to produce it,
   so without this a small frame can still demand an arbitrary window. Readers
   MUST refuse a frame that asks for more.
-- The frame **MUST** declare its content size. Readers are entitled to
-  allocate the output in one piece, and a frame that hides its size forces
-  either a growing buffer or a second pass; the ceilings of §8 are then checked
-  against the declared size before anything is allocated.
 
-Neither constrains which encoder produced the frame: as §4.8 says, the
+A frame is **not** required to declare its content size, and this is a
+decision rather than an omission. Earlier drafts required it, on the reasoning
+that a reader is then free to size the output in one piece and check it
+against §8 before allocating anything. Neither half of that survived contact
+with a compressor. Zstandard leaves the field optional and the reference
+encoder omits it for payloads of a few hundred bytes, which in indexed mode is
+most frames a file contains: requiring it would have made a large share of
+already-written files invalid to satisfy a rule the writer could not keep.
+And nothing rests on it, because the ceilings of §8 bound a decode that
+streams exactly as they bound one that preallocates, so a frame that hides its
+size costs a reader a growing buffer and buys an attacker nothing.
+
+Neither point constrains which encoder produced the frame: as §4.8 says, the
 compressed bytes are not part of the format's identity.
 
 ---

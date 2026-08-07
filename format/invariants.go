@@ -405,9 +405,9 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "zstd frames are bounded", Category: Bound, Enforce: Decoded,
-		Rules: []string{"8745186e", "7b6bfb2d", "edd065ba"},
+		Rules: []string{"8745186e", "7b6bfb2d"},
 		Tests: []string{"TestRejectsOversizedZstdWindow"},
-		Note:  "The decoded-size ceilings bound the output, not the memory needed to produce it.",
+		Note:  "The decoded-size ceilings bound the output, not the memory needed to produce it. §2.5 used to carry a second rule here, that a frame declare its content size, which nothing enforced; it was struck rather than enforced because the reference encoder omits the field below a few hundred bytes and most frames an indexed file holds are smaller than that.",
 	},
 	{
 		Name: "stats fields are optional but typed", Category: Presence, Enforce: Decoded,
