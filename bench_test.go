@@ -407,3 +407,87 @@ func BenchmarkMoveWorldSlow(b *testing.B) {
 		}
 	}
 }
+
+// benchAppendWorld builds an append-mode world holding n columns and returns a
+// freshly opened provider over it.
+func benchAppendWorld(b *testing.B, n int, opts ...Option) *Provider {
+	b.Helper()
+	reg := testRegistry(b)
+	dir := b.TempDir()
+	p, err := Open(dir, append([]Option{AppendMode()}, opts...)...)
+	if err != nil {
+		b.Fatal(err)
+	}
+	col := testColumn(b, reg)
+	for i := range int32(n) {
+		if err := p.StoreColumn(world.ChunkPos{i, 0}, world.Overworld, col); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := p.Save(); err != nil {
+		b.Fatal(err)
+	}
+	return p
+}
+
+// BenchmarkColumnsFirst measures what an append-mode Columns iteration costs to
+// produce its first result. Callers that stop early (a bounding box that has
+// seen enough, a search) must not pay for the whole dimension.
+func BenchmarkColumnsFirst(b *testing.B) {
+	b.ReportAllocs()
+	p := benchAppendWorld(b, 64)
+	defer p.Close()
+	b.ResetTimer()
+	for b.Loop() {
+		for range p.Columns(world.Overworld) {
+			break
+		}
+		if err := p.IterError(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkColumnsAll measures a full append-mode iteration, which must not
+// regress when the first result gets cheaper.
+func BenchmarkColumnsAll(b *testing.B) {
+	b.ReportAllocs()
+	p := benchAppendWorld(b, 64)
+	defer p.Close()
+	b.ResetTimer()
+	for b.Loop() {
+		n := 0
+		for range p.Columns(world.Overworld) {
+			n++
+		}
+		if err := p.IterError(); err != nil {
+			b.Fatal(err)
+		}
+		if n != 64 {
+			b.Fatalf("iterated %d columns", n)
+		}
+	}
+}
+
+// BenchmarkStoreAppendSpread stores across a wide spread of positions. The
+// per-chunk metadata the provider keeps between stores is bounded, so the
+// resident cost must not grow with the number of positions ever touched.
+func BenchmarkStoreAppendSpread(b *testing.B) {
+	b.ReportAllocs()
+	reg := testRegistry(b)
+	dir := b.TempDir()
+	p, err := Open(dir, AppendMode())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer p.Close()
+	col := testColumn(b, reg)
+	x := int32(0)
+	b.ResetTimer()
+	for b.Loop() {
+		if err := p.StoreColumn(world.ChunkPos{x, x}, world.Overworld, col); err != nil {
+			b.Fatal(err)
+		}
+		x++
+	}
+}

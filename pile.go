@@ -69,11 +69,10 @@ type dimState struct {
 
 	// Append mode state.
 	iw *format.IndexedWorld
-	// udCache caches per-chunk user data so overwrites preserve it without
+	// meta is the bounded LRU of per-chunk user data and preserved
+	// unknown-state sidecars, so overwrites carry them across without
 	// re-reading the previous record every time.
-	udCache map[[2]int32][]byte
-	// unkCache does the same for preserved unknown-state sidecars.
-	unkCache map[[2]int32]sidecar
+	meta *metaCache
 	// cache is the optional decoded-column LRU (append mode).
 	cache *columnCache
 }
@@ -124,7 +123,7 @@ func (p *Provider) loadFromDisk() error {
 	var meta *format.Meta
 	for _, dim := range dims {
 		id, _ := world.DimensionID(dim)
-		ds := &dimState{dim: dim, cols: make(map[[2]int32]format.Column), udCache: make(map[[2]int32][]byte), unkCache: make(map[[2]int32]sidecar), cache: newColumnCache(p.conf.cacheColumns)}
+		ds := &dimState{dim: dim, cols: make(map[[2]int32]format.Column), meta: newMetaCache(p.conf.cacheColumns), cache: newColumnCache(p.conf.cacheColumns)}
 		p.dims[id] = ds
 
 		path := p.dimPath(dim)
@@ -225,10 +224,9 @@ func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.C
 		p.mu.Lock()
 		ds := p.dim(dim)
 		iw := ds.iw
-		if cachedCol, cachedUD, cachedSide, ok := ds.cache.get(key); ok {
-			ds.udCache[key] = cachedUD
-			ds.unkCache[key] = cachedSide
-			cloned := cloneColumn(cachedCol)
+		if e, ok := ds.cache.get(key); ok {
+			ds.meta.put(key, chunkMeta{ud: e.ud, side: e.side})
+			cloned := cloneColumn(e.col)
 			p.mu.Unlock()
 			col = cloned
 		} else {
@@ -251,13 +249,12 @@ func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.C
 			now, still := iw.RecordID(pos[0], pos[1])
 			fresh := still && now == id
 			if fresh {
-				ds.udCache[key] = fc.UserData
-				ds.unkCache[key] = side
+				ds.meta.put(key, chunkMeta{ud: fc.UserData, side: side})
 			}
 			if ds.cache != nil {
 				if fresh {
 					// The cache owns fc.Col; hand the caller a copy.
-					ds.cache.put(key, fc.Col, fc.UserData, side)
+					ds.cache.put(key, cacheEntry{col: fc.Col, ud: fc.UserData, side: side})
 				}
 				col = cloneColumn(fc.Col)
 			} else {
@@ -407,9 +404,9 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 	if p.conf.appendMode {
 		p.mu.Lock()
 		ds := p.dim(dim)
-		if side, ok := ds.unkCache[key]; ok {
+		if m, ok := ds.meta.get(key); ok {
 			p.mu.Unlock()
-			return side
+			return m.side
 		}
 		iw := ds.iw
 		p.mu.Unlock()
@@ -425,7 +422,7 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 			return sidecar{}
 		}
 		side := sidecarOf(fc)
-		p.publishSidecar(ds, iw, key, id, side)
+		p.publishMeta(ds, iw, key, id, chunkMeta{ud: fc.UserData, side: side})
 		return side
 	}
 	p.mu.Lock()
@@ -440,20 +437,20 @@ func (p *Provider) columnSidecar(pos world.ChunkPos, dim world.Dimension) sideca
 	return sidecar{}
 }
 
-// publishSidecar records a decoded sidecar, but only if the record it came
-// from is still the current one.
+// publishMeta records a decoded record's per-chunk metadata, but only if the
+// record it came from is still the current one.
 //
 // Decoding happens outside p.mu, so a store may have replaced the record in
 // the meantime. Publishing anyway would put a stale sidecar where the newer
 // one belongs, and the next store with no explicit sidecar would inherit it:
 // the same recheck LoadColumn and readahead already do.
-func (p *Provider) publishSidecar(ds *dimState, iw *format.IndexedWorld, key [2]int32, id uint64, side sidecar) {
+func (p *Provider) publishMeta(ds *dimState, iw *format.IndexedWorld, key [2]int32, id uint64, m chunkMeta) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if now, still := iw.RecordID(key[0], key[1]); !still || now != id {
 		return
 	}
-	ds.unkCache[key] = side
+	ds.meta.put(key, m)
 }
 
 // sidecarOf collects a column's preserved-state fields.
@@ -508,7 +505,7 @@ func (p *Provider) dim(dim world.Dimension) *dimState {
 	id, _ := world.DimensionID(dim)
 	ds, ok := p.dims[id]
 	if !ok {
-		ds = &dimState{dim: dim, cols: make(map[[2]int32]format.Column), udCache: make(map[[2]int32][]byte), unkCache: make(map[[2]int32]sidecar), cache: newColumnCache(p.conf.cacheColumns)}
+		ds = &dimState{dim: dim, cols: make(map[[2]int32]format.Column), meta: newMetaCache(p.conf.cacheColumns), cache: newColumnCache(p.conf.cacheColumns)}
 		p.dims[id] = ds
 	}
 	return ds

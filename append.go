@@ -33,8 +33,8 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 		ds.onDisk = true
 	}
 	key := [2]int32{pos[0], pos[1]}
-	userData, cached := ds.udCache[key]
-	cur := ds.unkCache[key]
+	m, cached := ds.meta.get(key)
+	userData, cur := m.ud, m.side
 	if side != nil {
 		cur = *side
 	} else if !cached {
@@ -50,7 +50,7 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 	}
 	// Publish only once the store has succeeded. The indexed writer winds its
 	// palettes back when a store fails, and the provider has to match that: a
-	// rejected call that left an explicit sidecar in unkCache would hand it to
+	// rejected call that left an explicit sidecar in the cache would hand it to
 	// the next ordinary store, whose nil sidecar should have inherited what is
 	// actually on disk. Two providers with identical files and identical
 	// successful calls would then write different bytes because one saw a
@@ -62,8 +62,7 @@ func (p *Provider) storeAppend(pos world.ChunkPos, dim world.Dimension, c *chunk
 	}); err != nil {
 		return err
 	}
-	ds.udCache[key] = userData
-	ds.unkCache[key] = cur
+	ds.meta.put(key, chunkMeta{ud: userData, side: cur})
 	ds.cache.drop(key)
 	ds.dirty = true
 	return nil

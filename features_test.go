@@ -433,15 +433,15 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 		t.Fatal("no record to identify")
 	}
 
-	stale := sidecar{states: []format.BlockState{{Name: "audit:stale", Version: 1}}}
+	stale := chunkMeta{side: sidecar{states: []format.BlockState{{Name: "audit:stale", Version: 1}}}}
 	p.mu.Lock()
-	delete(ds.unkCache, key)
+	ds.meta.drop(key)
 	p.mu.Unlock()
 
 	// An identity no record has: the decode this stands for was superseded.
-	p.publishSidecar(ds, ds.iw, key, id+1, stale)
+	p.publishMeta(ds, ds.iw, key, id+1, stale)
 	p.mu.Lock()
-	_, published := ds.unkCache[key]
+	_, published := ds.meta.get(key)
 	p.mu.Unlock()
 	if published {
 		t.Fatal("a sidecar from a superseded record was published")
@@ -449,12 +449,79 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 
 	// The current identity does publish, so the recheck is not simply
 	// refusing everything.
-	p.publishSidecar(ds, ds.iw, key, id, stale)
+	p.publishMeta(ds, ds.iw, key, id, stale)
 	p.mu.Lock()
-	got, published := ds.unkCache[key]
+	got, published := ds.meta.get(key)
 	p.mu.Unlock()
-	if !published || len(got.states) != 1 || got.states[0].Name != "audit:stale" {
-		t.Fatalf("a current sidecar was not published: %v %v", published, got.states)
+	if !published || len(got.side.states) != 1 || got.side.states[0].Name != "audit:stale" {
+		t.Fatalf("a current sidecar was not published: %v %v", published, got.side.states)
+	}
+}
+
+// TestChunkMetaCacheBounded: the per-chunk user data and preserved-state
+// sidecars a provider remembers between stores used to live in two maps with
+// no delete anywhere in the package, so a position touched once was held for
+// the life of the provider. Append mode exists to keep memory at
+// directory-plus-palette level, which that quietly broke.
+func TestChunkMetaCacheBounded(t *testing.T) {
+	reg := testRegistry(t)
+	p, err := Open(t.TempDir(), AppendMode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	col := testColumn(t, reg)
+	const n = 400
+	for i := range int32(n) {
+		if err := p.StoreColumn(world.ChunkPos{i, i}, world.Overworld, col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.mu.Lock()
+	held := p.dim(world.Overworld).meta.ll.Len()
+	p.mu.Unlock()
+	if held > metaCacheColumns {
+		t.Fatalf("%d positions of metadata retained after %d stores, bound is %d", held, n, metaCacheColumns)
+	}
+
+	// Eviction must cost correctness nothing: a column whose metadata was
+	// dropped still keeps its user data across an overwrite, because the
+	// previous record is re-read.
+	pos := world.ChunkPos{0, 0}
+	if err := p.SetChunkUserData(pos, world.Overworld, []byte("keep-me")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range int32(n) {
+		if err := p.StoreColumn(world.ChunkPos{i + n, i}, world.Overworld, col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.StoreColumn(pos, world.Overworld, col); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.ChunkUserData(pos, world.Overworld); !bytes.Equal(got, []byte("keep-me")) {
+		t.Fatalf("user data lost across an eviction: %q", got)
+	}
+}
+
+// TestChunkMetaCacheWeighed: one enormous entry must not keep the count bound
+// meaningful while the memory bound is not. A chunk's user data blob can be
+// megabytes, so the cache is weighed as well as counted.
+func TestChunkMetaCacheWeighed(t *testing.T) {
+	c := newMetaCache(0)
+	big := make([]byte, metaCacheBytes/4)
+	for i := range 8 {
+		c.put([2]int32{int32(i), 0}, chunkMeta{ud: big})
+	}
+	if c.weight > metaCacheBytes {
+		t.Fatalf("cache holds %d bytes, budget is %d", c.weight, metaCacheBytes)
+	}
+	if c.ll.Len() >= 8 {
+		t.Fatalf("byte budget evicted nothing: %d entries", c.ll.Len())
+	}
+	// The most recent entry survives: a caller gets back what it just put in.
+	if _, ok := c.get([2]int32{7, 0}); !ok {
+		t.Fatal("the entry just stored was evicted")
 	}
 }
 
