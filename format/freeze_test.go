@@ -1465,12 +1465,28 @@ func TestAbsentBiomeFallbackIsVersionStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fallbackBiomeID()
-	if id := got.Columns[0].Col.Chunk.Biome(0, 0, 0); id != want {
-		t.Fatalf("absent biome decoded as id %d (%s), want the fallback %d (%s)",
-			id, biomeName(id), want, biomeName(want))
+	// The expectation is resolved from the name, independently of the function
+	// under test. Taking it from fallbackBiomeID made the assertion move with
+	// whatever that function returned, and biomeName was no help either: it
+	// answers "minecraft:plains" for any id no biome has, so a fallback that
+	// resolved to nothing at all still looked like plains.
+	plains, ok := world.BiomeByName(strings.TrimPrefix(plainsBiomeName(), "minecraft:"))
+	if !ok {
+		t.Fatalf("this runtime does not know %s", plainsBiomeName())
 	}
-	if name := biomeName(want); name != plainsBiomeName() {
+	want := uint32(plains.EncodeBiome())
+	id := got.Columns[0].Col.Chunk.Biome(0, 0, 0)
+	if id != want {
+		t.Fatalf("absent biome decoded as id %d, want %d, the id this runtime gives %s",
+			id, want, plainsBiomeName())
+	}
+	// And that id names a biome this runtime actually has, resolved through
+	// the registry rather than through the helper that falls back to plains.
+	back, ok := world.BiomeByID(int(id))
+	if !ok {
+		t.Fatalf("the absent-biome fallback decoded to id %d, which names no biome", id)
+	}
+	if name := qualifyBiome(back.String()); name != plainsBiomeName() {
 		t.Fatalf("the fallback resolves to %q, want %q", name, plainsBiomeName())
 	}
 }
@@ -2616,35 +2632,46 @@ func TestRejectsLightEntryFlags(t *testing.T) {
 // record half cannot detect a cell parser that stops consulting the bound.
 func TestRejectsLayerCountInCells(t *testing.T) {
 	reg := testRegistry(t)
-	data, err := NewStructureData([3]int32{1, 1, 1})
-	if err != nil {
-		t.Fatal(err)
+	// The body is assembled by hand and every declared layer has a reference
+	// behind it. The earlier version of this test patched a written file's
+	// layerN to 256 without adding the 255 references that count now promises,
+	// so the read ran out of bytes and the ceiling was never consulted: it
+	// stayed green with the bound deleted.
+	file := func(layerN uint64) []byte {
+		var noMeta [4][]byte
+		body := &writer{}
+		for _, b := range noMeta {
+			body.blob(b)
+		}
+		body.uvarint(1) // block palette: stone, so no layer is air
+		body.str("minecraft:stone")
+		body.uvarint(0)
+		body.uvarint(0) // version overrides
+		body.uvarint(0) // biome palette
+		body.uvarint(1) // blob table: one uniform stone blob
+		body.uvarint(1)
+		body.uvarint(0)
+		body.u8(widthUniform)
+		body.uvarint(1) // size: a single cell
+		body.uvarint(1)
+		body.uvarint(1)
+		body.svarint(0) // origin
+		body.svarint(0)
+		body.svarint(0)
+		body.u8(1) // cell presence: the one cell is present
+		body.uvarint(layerN)
+		for range layerN {
+			body.uvarint(0)
+		}
+		body.uvarint(0) // block entities
+		body.uvarint(0) // entities
+		return structureFile(FlagUncompressed, body.bytes())
 	}
-	sub := chunk.NewSubChunk(reg.AirRuntimeID())
-	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
-	sub.SetBlock(0, 0, 0, 0, stone)
-	data.Cells[0] = sub
-	var buf bytes.Buffer
-	if err := WriteStructure(&buf, data, reg, Options{Compression: CompressionNone}); err != nil {
-		t.Fatal(err)
+	// A cell may hold 255 layers, addressed 0 to 254.
+	if _, err := ReadStructure(file(maxLayers), reg); err != nil {
+		t.Fatalf("a cell of %d layers was rejected: %v", maxLayers, err)
 	}
-	file := buf.Bytes()
-	body := file[headerSize : len(file)-footerSize]
-	// The one present cell's layerN follows the presence byte, and a
-	// one-layer cell writes it as a single 0x01.
-	at := bytes.LastIndex(body, []byte{0x01, 0x00})
-	if at < 0 {
-		t.Skip("could not locate the cell layer count")
-	}
-	bad := bytes.Clone(file)
-	patched := &writer{}
-	patched.uvarint(256)
-	if len(patched.bytes()) != 2 {
-		t.Fatalf("256 does not encode in two bytes")
-	}
-	copy(bad[headerSize+at:], patched.bytes())
-	rehashSolid(bad)
-	if _, err := ReadStructure(bad, reg); err == nil {
+	if _, err := ReadStructure(file(maxLayers+1), reg); err == nil {
 		t.Fatal("a cell claiming 256 layers was accepted")
 	}
 }
@@ -2729,38 +2756,138 @@ func TestRejectsRedundantVersionOverride(t *testing.T) {
 func TestRejectsOverLimitCounts(t *testing.T) {
 	reg := testRegistry(t)
 	// A structure whose first dimension is one past the ceiling.
-	w := &writer{}
-	w.blob(nil)
-	w.blob(nil)
-	w.blob(nil)
-	w.blob(nil)
-	w.uvarint(0) // block palette
-	w.uvarint(0) // overrides
-	w.uvarint(0) // biome palette
-	w.uvarint(0) // blob table
-	w.uvarint(maxStructureSize + 1)
-	w.uvarint(1)
-	w.uvarint(1)
-	body := w.bytes()
-	hdr := &writer{}
-	hdr.raw(headerMagic[:])
-	hdr.u16(Version)
-	hdr.u8(KindStructure)
-	hdr.u8(ModeSolid)
-	hdr.u32(FlagUncompressed)
-	hdr.i32(chunk.CurrentBlockVersion)
-	tail := &writer{}
-	tail.u64(0)
-	tail.u64(0)
-	tail.u64(0)
-	tail.u64(0)
-	tail.raw(footerMagic[:])
-	ftr := &writer{}
-	ftr.u64(checkpointHash(hdr.bytes(), body, tail.bytes()))
-	ftr.raw(tail.bytes())
-	file := append(append(hdr.bytes(), body...), ftr.bytes()...)
-	if _, err := ReadStructure(file, reg); err == nil {
+	var noMeta [4][]byte
+	body := structBody(noMeta, func(w *writer) {
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(maxStructureSize + 1)
+		w.uvarint(1)
+		w.uvarint(1)
+	})
+	if _, err := ReadStructure(structureFile(FlagUncompressed, body), reg); err == nil {
 		t.Fatal("a structure dimension past the ceiling was accepted")
+	}
+
+	// The reference values themselves. A ceiling that drifts from the
+	// published table makes a file one implementation accepts invalid to
+	// another, and the constant's own comment cannot notice that it moved.
+	for _, c := range []struct {
+		item      string
+		got, want uint64
+	}{
+		{"NBT nesting depth", maxNBTDepth, 64},
+		{"NBT containers per blob", maxNBTElements, 1048576},
+		{"section storages decoded per file", maxDecodedStorages, 4194304},
+		{"checkpoint chain links", maxCheckpointChain, 256},
+		{"string length", maxStringLen, 65535},
+		{"blob length", maxBlobLen, 16 << 20},
+		{"chunk records in a solid body", maxChunks, 4294967295},
+		{"entries in an indexed directory", maxDirEntries, 4194304},
+		{"decompressed solid body", maxDecodedBody, 512 << 20},
+		{"decompressed indexed data frame", maxDecodedFrame, 64 << 20},
+		{"decompressed indexed directory frame", maxDecodedDirectory, 512 << 20},
+		{"structure cells", maxStructureCells, 1048576},
+		{"structure size per axis", maxStructureSize, 1048576},
+		{"global palette entries", maxPalette, 1048576},
+		{"blob table entries", maxBlobs, 16777216},
+		// The section-palette, segment and state-property ceilings are spelled
+		// at their call sites rather than named, so the literals below are the
+		// values those call sites pass.
+		{"state properties per palette entry", 64, 64},
+		{"section blob local palette entries", 1 << 16, 65536},
+		{"palette segments in a directory", 1 << 20, 1048576},
+		{"sections per chunk", maxSectionCnt, 4096},
+		{"layers per section", maxLayers, 255},
+		{"entities per chunk", maxPerChunk, 1048576},
+		{"stored frame length", maxFrameLen, 4294967295},
+	} {
+		if c.got != c.want {
+			t.Errorf("the %s ceiling is %d, §8 publishes %d", c.item, c.got, c.want)
+		}
+	}
+
+	// Every count on the wire runs through one bound. A count one past its
+	// ceiling has to be refused for being over the ceiling and not for running
+	// out of bytes, so each case declares its value over a body long enough
+	// that truncation cannot be the answer, and the ceiling itself is offered
+	// too so the bound is not off by one in the other direction.
+	pad := make([]byte, 64)
+	for _, c := range []struct {
+		what string
+		max  uint64
+	}{
+		{"string length", maxStringLen},
+		{"blob length", maxBlobLen},
+		{"section palette", 1 << 16},
+		{"blob table", maxBlobs},
+		{"chunk", maxChunks},
+		{"section", maxSectionCnt},
+		{"layer", maxLayers},
+		{"block entity", maxPerChunk},
+		{"segment", 1 << 20},
+		{"directory chunk", maxDirEntries},
+		{"block palette", maxPalette},
+		{"state property", 64},
+	} {
+		at := func(v uint64) *reader {
+			w := &writer{}
+			w.uvarint(v)
+			w.raw(pad)
+			return &reader{b: w.bytes()}
+		}
+		if n, err := at(c.max).count(c.max, c.what); err != nil || uint64(n) != c.max {
+			t.Errorf("a %s count at its ceiling %d: n = %d, err = %v", c.what, c.max, n, err)
+		}
+		if _, err := at(c.max+1).count(c.max, c.what); err == nil {
+			t.Errorf("a %s count of %d, one past its ceiling, was accepted", c.what, c.max+1)
+		}
+	}
+}
+
+// TestRejectsStructureCellOverflow: the cell grid is ceil(size/16) per axis and
+// their product, and both have to be computed in 64 bits and checked before
+// anything is allocated. Each axis alone may reach 1048576, so a legal-looking
+// size can carry a product that a 32-bit multiply truncates to a small number
+// or to zero, which turns an impossible structure into a tiny allocation that
+// then disagrees with the presence bitset.
+func TestRejectsStructureCellOverflow(t *testing.T) {
+	reg := testRegistry(t)
+	file := func(size [3]uint64, presence int) []byte {
+		var noMeta [4][]byte
+		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
+			w.uvarint(0) // biome palette
+			w.uvarint(0) // blob table
+			for _, v := range size {
+				w.uvarint(v)
+			}
+			w.svarint(0) // origin
+			w.svarint(0)
+			w.svarint(0)
+			w.raw(make([]byte, presence)) // cell presence, every cell absent
+			w.uvarint(0)                  // block entities
+			w.uvarint(0)                  // entities
+		}))
+	}
+	// 128 x 128 x 64 cells is exactly the ceiling, so the bound is on the
+	// product and not on whatever a reader happens to survive.
+	if _, err := ReadStructure(file([3]uint64{2048, 2048, 1024}, maxStructureCells/8), reg); err != nil {
+		t.Fatalf("a structure with exactly %d cells was rejected: %v", maxStructureCells, err)
+	}
+	for _, c := range []struct {
+		name string
+		size [3]uint64
+	}{
+		{"one cell past the ceiling", [3]uint64{2064, 2048, 1024}},
+		// 65536 x 65536 x 1 cells is 2^32: a 32-bit product is exactly zero,
+		// so a reader that truncates allocates nothing and reads on.
+		{"a product that truncates to zero", [3]uint64{maxStructureSize, maxStructureSize, 16}},
+		// And a cube at the per-axis ceiling, where every axis is legal and
+		// the product is 2^48.
+		{"a cube at the per-axis ceiling", [3]uint64{maxStructureSize, maxStructureSize, maxStructureSize}},
+	} {
+		if _, err := ReadStructure(file(c.size, 0), reg); err == nil {
+			t.Errorf("%s (size %v) was accepted", c.name, c.size)
+		}
 	}
 }
 

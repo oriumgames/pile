@@ -238,7 +238,7 @@ var invariants = []Invariant{
 		Name: "layer counts are addressable", Category: Bound, Enforce: Decoded,
 		Rules: []string{"af4b369f"},
 		Tests: []string{"TestRejectsLayerCountInRecords", "TestRejectsLayerCountInCells"},
-		Note:  "A 256th layer wedges any implementation that indexes layers with a byte. Placed where a record actually carries the count, so the rule survives a parser that stops consulting the shared bound.",
+		Note:  "A 256th layer wedges any implementation that indexes layers with a byte. Placed where a record actually carries the count, so the rule survives a parser that stops consulting the shared bound. Both fixtures supply a reference behind every layer they declare, or the read runs out of bytes and the ceiling is never reached.",
 	},
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission, Enforce: Decoded,
@@ -267,7 +267,7 @@ var invariants = []Invariant{
 		Name: "the biome fallback is version stable", Category: Normalisation, Enforce: Decoded,
 		Rules: []string{"d3997566"},
 		Tests: []string{"TestAbsentBiomeFallbackIsVersionStable"},
-		Note:  "A numeric id is a property of the running game version, so naming one would let a single file decode to different biomes on two runtimes.",
+		Note:  "A numeric id is a property of the running game version, so naming one would let a single file decode to different biomes on two runtimes. The expectation is resolved from the name through the registry: taking it from the function under test moved with it, and biomeName is unusable as an oracle because it answers plains for any id no biome has. What no test can separate is the last-resort literal inside the fallback, which is the id plains already holds on every runtime that has it.",
 	},
 	{
 		Name: "elided biome sections keep their names", Category: Omission, Enforce: Decoded,
@@ -341,6 +341,7 @@ var invariants = []Invariant{
 		Name: "decoders enforce the limits", Category: Bound, Enforce: Decoded,
 		Rules: []string{"398afbcf", "bcbf4d91"},
 		Tests: []string{"TestNBTValidatorRejectsHostileLengths", "TestRejectsOverLimitCounts"},
+		Note:  "The reference values are pinned as numbers, not only as constants with comments, and every count that goes through the shared bound is offered its ceiling and one past it over a body long enough that truncation cannot be the reason it is refused. The NBT fixtures reach none of this: their blobs are all short, so they fail for running out of bytes.",
 	},
 	{
 		Name: "writers refuse what their readers reject", Category: Bound, Enforce: WriterOnly,
@@ -380,8 +381,8 @@ var invariants = []Invariant{
 	{
 		Name: "structure cells are computed in 64 bits", Category: Bound, Enforce: Decoded,
 		Rules: []string{"0b740420"},
-		Tests: []string{"TestRejectsOverLimitCounts"},
-		Note:  "Each axis alone may reach 1048576, so the rounding overflows a 32-bit value near the top of its range and the product far below it.",
+		Tests: []string{"TestRejectsStructureCellOverflow"},
+		Note:  "Each axis alone may reach 1048576, so the rounding overflows a 32-bit value near the top of its range and the product far below it. A per-axis fixture cannot reach either: the sizes that overflow the product are all individually legal, and one of them makes a 32-bit multiply land on exactly zero, which a truncating reader would accept as an empty structure.",
 	},
 	{
 		Name: "zstd frames are bounded", Category: Bound, Enforce: Decoded,
