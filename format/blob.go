@@ -316,14 +316,21 @@ func decodeBlobTable(r *reader) ([]decBlob, error) {
 	if n > r.remaining()/3+1 {
 		return nil, corruptf("blob table count %d exceeds input", n)
 	}
-	blobs := make([]decBlob, 0, n)
+	// The count is bounded by the input, and that is not the same as bounding
+	// the allocation: a decBlob is 56 bytes, and a map entry and a span are
+	// another forty between them, so three bytes of input reserved about a
+	// hundred here and a 1,634-byte file asked for 2.42 GiB before a single
+	// blob was parsed. Cap every hint and let append and the map grow, which
+	// costs one reallocation on a file that really does hold that many blobs.
+	hint := min(n, maxPrealloc)
+	blobs := make([]decBlob, 0, hint)
 	// Duplicate detection by hash over spans of the body, not by copying every
 	// blob into a map key: a section blob is 4 KiB or 8 KiB of indices, so
 	// keying on the bytes made reading a file cost more than the file. The
 	// xxhash-then-compare prefilter is the one blobTable.add already uses to
 	// deduplicate on the way in.
-	seen := make(map[uint64][]int, n)
-	spans := make([][2]int, 0, n)
+	seen := make(map[uint64][]int, hint)
+	spans := make([][2]int, 0, hint)
 	for i := range n {
 		start := r.off
 		b, err := decodeOneBlob(r)

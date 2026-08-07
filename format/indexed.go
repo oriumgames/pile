@@ -447,8 +447,18 @@ func (w *IndexedWorld) HeaderDamaged() bool {
 
 // verifyRecords checks the stored hash of every live record frame.
 func (w *IndexedWorld) verifyRecords() error {
+	// One buffer for the whole pass rather than one per record. Every open
+	// runs this over the whole directory, which §8 lets reach four million
+	// entries, so a buffer per record made opening a world cost its own live
+	// size in garbage. The pass stops at the first record that fails, so a
+	// damaged file is cheap; an intact one is the expensive case, and it is
+	// the ordinary one.
+	var buf []byte
 	for k, e := range w.dir {
-		stored := make([]byte, e.length)
+		if int(e.length) > cap(buf) {
+			buf = make([]byte, e.length)
+		}
+		stored := buf[:e.length]
 		if _, err := w.f.ReadAt(stored, e.off); err != nil {
 			return fmt.Errorf("pile: read record (%d,%d): %w", k[0], k[1], err)
 		}
@@ -809,7 +819,11 @@ func (w *IndexedWorld) parseSegRefs(r *reader, what string, validRef func(frameR
 		if n > r.remaining()/2+1 {
 			return nil, corruptf("segment count %d exceeds input", n)
 		}
-		segs := make([]frameRef, 0, n)
+		// Two bytes of input buy a 24-byte frameRef, so sizing the slice from
+		// the count let a 165-byte file ask for 27 MiB before the first
+		// reference had been read, let alone found in the file. The count
+		// still bounds what the directory may declare.
+		segs := make([]frameRef, 0, min(n, maxPrealloc))
 		var total uint64
 		for range n {
 			off, err := r.uvarint()

@@ -419,8 +419,13 @@ func parseStatePalette(r *reader, blockVersion int32) ([]parsedState, error) {
 	if n > r.remaining()/2+1 {
 		return nil, corruptf("block palette count %d exceeds input", n)
 	}
-	entries := make([]parsedState, n)
-	for i := range n {
+	// Two bytes of input buy a parsedState (32 bytes) and the property map it
+	// carries (another 48), so sizing the slice from the count alone let a
+	// 157-byte file ask for eighty megabytes. Bound the hint and let append
+	// grow: the count is still checked, it just no longer reserves the memory
+	// before the entries that justify it have been read.
+	entries := make([]parsedState, 0, min(n, maxPrealloc))
+	for range n {
 		name, err := r.str()
 		if err != nil {
 			return nil, err
@@ -476,7 +481,7 @@ func parseStatePalette(r *reader, blockVersion int32) ([]parsedState, error) {
 				return nil, corruptf("unknown property type %d", t)
 			}
 		}
-		entries[i] = parsedState{name: name, props: props}
+		entries = append(entries, parsedState{name: name, props: props})
 	}
 	overrideN, err := r.count(uint64(len(entries)), "palette version override")
 	if err != nil {
@@ -663,10 +668,15 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 	if n > r.remaining()/2+1 {
 		return nil, nil, nil, corruptf("biome palette count %d exceeds input", n)
 	}
-	ids = make([]uint32, n)
-	unknown = make([]int32, n)
-	seen := make(map[string]struct{}, n)
-	for i := range n {
+	// Sized from the count these reserve about sixty bytes per two bytes of
+	// input, which is a 159-byte file asking for sixty-five megabytes. The
+	// count still bounds what the file may declare; the hint no longer
+	// reserves it up front.
+	hint := min(n, maxPrealloc)
+	ids = make([]uint32, 0, hint)
+	unknown = make([]int32, 0, hint)
+	seen := make(map[string]struct{}, hint)
+	for range n {
 		name, err := r.str()
 		if err != nil {
 			return nil, nil, nil, err
@@ -682,17 +692,18 @@ func decodeBiomePalette(r *reader) (ids []uint32, unknown []int32, names []strin
 			return nil, nil, nil, corruptf("duplicate biome palette entry %q", name)
 		}
 		seen[name] = struct{}{}
-		unknown[i] = -1
+		unk := int32(-1)
 		bio, ok := lookupBiome(name)
 		if !ok {
-			unknown[i] = int32(len(names))
+			unk = int32(len(names))
 			names = append(names, name)
 			bio, ok = lookupBiome(plainsBiomeName())
 		}
+		unknown = append(unknown, unk)
 		if ok {
-			ids[i] = uint32(bio.EncodeBiome())
+			ids = append(ids, uint32(bio.EncodeBiome()))
 		} else {
-			ids[i] = 1 // plains, last resort
+			ids = append(ids, 1) // plains, last resort
 		}
 	}
 	return ids, unknown, names, nil

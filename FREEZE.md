@@ -99,24 +99,57 @@ Nothing below is optional. Each line names its exit criterion.
 
 ### Security
 
-- [ ] No allocation is sized from unvalidated input. *Exit: a hostile-input
+- [x] No allocation is sized from unvalidated input. *Exit: a hostile-input
       matrix — truncation at every field boundary, every count at 0, 1, max,
       max+1 — driven through `ReadWorld`, `ReadStructure`, `ReadMeta` and
       `OpenIndexed`.*
-- [ ] No integer computation on input-derived values can wrap before its
+      `format/hostile_test.go`, checked in and run with no flags. It found six
+      places where a count validated against the bytes that remain still sized
+      an allocation far larger than those bytes — the worst being a 1,634-byte
+      file that asked for 2.42 GiB — and each fix is proved by disabling it and
+      watching a named ceiling test go red. `SECURITY.md` records every finding
+      with its measured before and after, and the residual: the ceilings §8
+      sets are large, so a legal 1,161-byte file still decodes into 1.04 GiB,
+      and lowering that is a format change rather than a bug.
+- [x] No integer computation on input-derived values can wrap before its
       bounds check.
-- [ ] No input can cause an unbounded loop. *Two such hangs have already been
+      One does. §3.1's version-override index chain accumulates uvarint deltas
+      in a `uint64`, and a delta can express the modular representative of a
+      negative step, so the indices descend where §3.1 says they ascend. It is
+      not memory-unsafe — the bounds test that follows catches an index past
+      the palette — but it is a second encoding of one palette. Refusing it
+      rejects a file this reader accepts today, so it is reported in
+      `SECURITY.md` under "Format changes: found, not fixed" rather than
+      closed here, and pinned by `TestHostileOverrideDeltaWraps` so the change
+      cannot be made by accident. Every other accumulation in the decode paths
+      was checked and does not have the shape: the two signed delta chains land
+      a wrap next to the bottom of `int64`, nowhere near a legal value.
+- [x] No input can cause an unbounded loop. *Two such hangs have already been
       found in a dependency; the shape is a length narrowed to a smaller type
       before comparison against an index.*
+      No loop in the decode paths is unbounded, and the one narrowing of that
+      shape that remained — a section blob's palette length compared through a
+      `uint16` in `blobIndices` — is now compared as an `int`. It was
+      unreachable, and `SECURITY.md` says so rather than claiming a test it
+      cannot have. What the matrix did find is a loop bounded at a number large
+      enough to be a denial of service: recovery tries up to 256 checkpoint
+      candidates and loads each one's directory in full, so a 20 KB file makes
+      `OpenIndexed` run for about fourteen minutes. Bounding it further refuses
+      files that open today; the measurements and the reasoning are in
+      `SECURITY.md`.
 - [ ] Decoders never panic on any input. *Exit: the four fuzz targets run
       clean for an extended session, not the 10s smoke run.*
 - [ ] Crash durability is tested, not merely implemented. *Exit: an injectable
       filesystem that fails or truncates at each write during a checkpoint,
       asserting the result is always either the old checkpoint or the new one.*
-- [ ] The threat model is written down. **xxHash64 is not a cryptographic
+- [x] The threat model is written down. **xxHash64 is not a cryptographic
       hash.** The format offers integrity against corruption, not against
       tampering: an attacker who can author content and induce truncation can
       forge a checkpoint. Files from untrusted sources are untrusted content.
+      `SECURITY.md`, which states all of that, says what a caller may and may
+      not conclude from a checkpoint hash or a `ContentHash`, and records what
+      resource use a decode of a hostile file can reach within the rules, so a
+      caller can size its own limits.
 - [ ] Filesystem behaviour is deliberate: path traversal, symlinks on atomic
       rename, permission bits, temp-file naming.
 

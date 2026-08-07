@@ -110,8 +110,27 @@ section-blob tests built palettes with an entry no index named, so §3.3 refused
 them before the ascent and width rules ran, and the assertions only asked
 whether an error came back. Assert on which error.
 
-**Security** — about eleven lower-severity items remain, none of them a
-process-killer.
+**Security** — the hostile-input pass is done and `SECURITY.md` is the record:
+the threat model, what the matrix in `format/hostile_test.go` covers, what it
+found, and what remains. Three of the seven `FREEZE.md` boxes are ticked by it,
+plus the threat model.
+
+The "about eleven lower-severity items" this section used to estimate were
+re-derived rather than read off a list, and the count was about right: fourteen
+items, of which seven are fixed, one is hardening with no test it could have,
+one was reviewed and deliberately left, and five are residuals or format
+changes. The estimate was wrong about the severity, though. Two of the seven
+are not lower-severity at all by the standard the first pass used — a
+1,634-byte file allocating 2.42 GiB, and a 20 KB file making `OpenIndexed`
+run for a quarter of an hour — and both were missed the first time for the same
+reason the memory pass gives: the count was checked against the bytes that
+remain, so it looked bounded.
+
+Two findings cannot be closed without rejecting a file this reader accepts
+today, so they are reported and pinned rather than fixed: the §8 NBT container
+budget does not charge compounds nested inside compounds, and §3.1's
+version-override index chain wraps in `uint64` before its bounds check.
+`SECURITY.md` says precisely which files each would invalidate.
 
 **Conformance vectors** — done. `format/vectors.md` is the appendix, 17 positive
 and 58 negative vectors in `format/testdata/vectors/`, verified on every run

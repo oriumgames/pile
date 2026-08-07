@@ -55,19 +55,33 @@ func CellIndex(size [3]int32, cx, cy, cz int32) int {
 	return int((cx*nz+cz)*ny + cy)
 }
 
-// NewStructureData allocates an empty structure of the given size.
-func NewStructureData(size [3]int32) (*StructureData, error) {
+// structureCellCount returns the number of 16-cube cells a structure of the
+// given size needs, or an error if the size is unrepresentable or past the
+// cell ceiling. It is separate from NewStructureData so a decoder can learn
+// the count before committing to the allocation.
+func structureCellCount(size [3]int32) (int64, error) {
 	if size[0] <= 0 || size[1] <= 0 || size[2] <= 0 {
-		return nil, fmt.Errorf("pile: invalid structure size %v", size)
+		return 0, fmt.Errorf("pile: invalid structure size %v", size)
 	}
 	// Round in 64-bit: (size+15) overflows int32 near its maximum, which
 	// would otherwise yield a negative cell count and panic in make.
 	nx := (int64(size[0]) + 15) >> 4
 	ny := (int64(size[1]) + 15) >> 4
 	nz := (int64(size[2]) + 15) >> 4
+	// Each axis is at most (2^31-1+15)>>4 < 2^27, so the product of three fits
+	// in an int64 without wrapping and can be compared against the ceiling.
 	cells := nx * ny * nz
 	if cells > maxStructureCells {
-		return nil, fmt.Errorf("pile: structure size %v too large (%d cells, limit %d)", size, cells, maxStructureCells)
+		return 0, fmt.Errorf("pile: structure size %v too large (%d cells, limit %d)", size, cells, maxStructureCells)
+	}
+	return cells, nil
+}
+
+// NewStructureData allocates an empty structure of the given size.
+func NewStructureData(size [3]int32) (*StructureData, error) {
+	cells, err := structureCellCount(size)
+	if err != nil {
+		return nil, err
 	}
 	return &StructureData{Size: size, Cells: make([]*chunk.SubChunk, cells)}, nil
 }
@@ -574,6 +588,21 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 			return nil, corruptf("invalid structure size component %d", v)
 		}
 		size[i] = int32(v)
+	}
+	// The cell grid is eight bytes per cell and the three sizes that decide it
+	// are nine bytes of input, so a ninety-byte file reserved eight megabytes
+	// before anything else was read. The presence bitset that follows is one
+	// bit per cell and is not optional, so a file too short to hold it can
+	// never describe that many cells: checking that first bounds the grid by
+	// the input without changing which files are accepted, since the take
+	// below would refuse the same ones a few instructions later.
+	cellsWanted, err := structureCellCount(size)
+	if err != nil {
+		return nil, corruptf("%v", err)
+	}
+	if (cellsWanted+7)/8 > int64(r.remaining()) {
+		return nil, corruptf("structure of %d cells cannot fit its presence bitset in %d remaining bytes",
+			cellsWanted, r.remaining())
 	}
 	s, err := NewStructureData(size)
 	if err != nil {

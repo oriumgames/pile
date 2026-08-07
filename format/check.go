@@ -2,6 +2,7 @@ package format
 
 import (
 	"bytes"
+	"errors"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/world"
@@ -40,13 +41,21 @@ func UnresolvedStates(file []byte, reg world.BlockRegistry) ([]string, error) {
 // UnresolvedStates re-reads the world's palette segments and reports states
 // that do not resolve against the registry the world was opened with.
 func (w *IndexedWorld) UnresolvedStates() ([]string, error) {
+	// Held for the whole call, not just for the copy of the segment list.
+	// readFrame reads w.f, w.compressed and w.dictCodec, and Compact replaces
+	// all three while it rewrites the file. Taking a snapshot of the offsets
+	// and then reading them without the lock is a race the detector sees, and
+	// worse than a race: readFrame does not re-check the frame hash, so
+	// offsets from the old directory read against the new file decode whatever
+	// happens to be at them. Close has the same shape with the file handle.
 	w.mu.Lock()
-	segs := make([]frameRef, len(w.blockSegs))
-	copy(segs, w.blockSegs)
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, errors.New("pile: indexed world is closed")
+	}
 
 	var out []string
-	for _, seg := range segs {
+	for _, seg := range w.blockSegs {
 		body, err := w.readFrame(seg)
 		if err != nil {
 			return nil, err

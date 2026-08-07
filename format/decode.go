@@ -832,23 +832,29 @@ func decodeRecordBody(r *reader, reg world.BlockRegistry, rids, biomeIDs []uint3
 // blobIndices decodes a blob's 4096 local indices into out, validating them
 // against the local palette size.
 func blobIndices(blob decBlob, paletteLen int, out *[4096]uint16) error {
-	n := uint16(paletteLen)
+	// Compared as an int, not through a uint16: the palette count a blob may
+	// declare reaches 65,536, which narrows to zero and would then reject
+	// every index in the blob that declared it. Nothing reaches that today,
+	// because §3.3 requires every declared entry to be named by one of 4096
+	// indices and so refuses any palette larger than 4096 first. The bound is
+	// written not to depend on that argument holding somewhere else.
+	n := paletteLen
 	switch blob.width {
 	case widthU8:
 		for i := range 4096 {
-			li := uint16(blob.idx[i])
+			li := int(blob.idx[i])
 			if li >= n {
 				return corruptf("section index %d out of palette range %d", li, n)
 			}
-			out[i] = li
+			out[i] = uint16(li)
 		}
 	case widthU16:
 		for i := range 4096 {
-			li := uint16(blob.idx[i*2]) | uint16(blob.idx[i*2+1])<<8
+			li := int(blob.idx[i*2]) | int(blob.idx[i*2+1])<<8
 			if li >= n {
 				return corruptf("section index %d out of palette range %d", li, n)
 			}
-			out[i] = li
+			out[i] = uint16(li)
 		}
 	}
 	return nil
