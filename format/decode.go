@@ -254,7 +254,8 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	// be walked in order; parsing is cheap slicing. Capacity is bounded by
 	// what the input could actually contain (a record is >= 8 bytes).
 	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1))
-	src := tableBlobSource(blobs)
+	used := make([]bool, len(blobs))
+	src := tableBlobSource(blobs, used)
 	var prevX, prevZ int64
 	var prevKey uint64
 	for range chunkN {
@@ -293,6 +294,31 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	if r.remaining() != 0 {
 		return nil, corruptf("%d trailing bytes after last chunk", r.remaining())
 	}
+	if haveLight {
+		any := false
+		for i := range raws {
+			for _, b := range raws[i].lightPresence {
+				if b != 0 {
+					any = true
+					break
+				}
+			}
+		}
+		if !any {
+			// The flag says the records carry light. If none does, the file is
+			// a second encoding of the same world with the flag clear, and
+			// ContentHash covers the whole body, so the difference is real.
+			return nil, corruptf("StoreLight is set but no section carries light")
+		}
+	}
+	// A blob no record references is content the file carries and nothing
+	// reads: dead weight that two writers could differ on while encoding the
+	// same world.
+	for i, u := range used {
+		if !u {
+			return nil, corruptf("blob %d is never referenced", i)
+		}
+	}
 
 	// Apply phase (parallel): chunk construction and NBT decoding.
 	air := reg.AirRuntimeID()
@@ -315,7 +341,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 type blobSource func(r *reader) (decBlob, error)
 
 // tableBlobSource returns a blobSource reading references into a blob table.
-func tableBlobSource(blobs []decBlob) blobSource {
+func tableBlobSource(blobs []decBlob, used []bool) blobSource {
 	return func(r *reader) (decBlob, error) {
 		ref, err := r.uvarint()
 		if err != nil {
@@ -323,6 +349,9 @@ func tableBlobSource(blobs []decBlob) blobSource {
 		}
 		if int(ref) >= len(blobs) {
 			return decBlob{}, corruptf("section blob reference %d out of range", ref)
+		}
+		if used != nil {
+			used[ref] = true
 		}
 		return blobs[ref], nil
 	}
@@ -623,7 +652,16 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 	}
 
 	col.Col = &chunk.Column{Chunk: ch}
+	seenBE := make(map[[2]int32]struct{}, len(rr.bes))
 	for _, be := range rr.bes {
+		// At most one block entity per position: two a reader cannot tell
+		// apart leave their order decided by nothing, which is what §4.8's
+		// totality argument rests on.
+		k := [2]int32{int32(be.packedXZ), int32(be.y)}
+		if _, dup := seenBE[k]; dup {
+			return Column{}, corruptf("two block entities at one position in chunk (%d,%d)", x, z)
+		}
+		seenBE[k] = struct{}{}
 		data, err := unmarshalNBT(be.nbt)
 		if err != nil {
 			return Column{}, err
@@ -652,10 +690,24 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		col.Col.Entities = append(col.Col.Entities, chunk.Entity{ID: id, Data: data})
 	}
 	col.Col.Tick = rr.tick
+	type tickKey struct {
+		packedXZ uint8
+		y        int64
+		at       int64
+		ref      uint64
+	}
+	seenTick := make(map[tickKey]struct{}, len(rr.ticks))
 	for _, t := range rr.ticks {
 		if int(t.ref) >= len(rids) {
 			return Column{}, corruptf("scheduled tick block reference %d out of range", t.ref)
 		}
+		// Two updates identical in position, firing tick and block reference
+		// are indistinguishable, so their order is decided by nothing.
+		k := tickKey{packedXZ: t.packedXZ, y: t.y, at: t.at, ref: t.ref}
+		if _, dup := seenTick[k]; dup {
+			return Column{}, corruptf("duplicate scheduled update in chunk (%d,%d)", x, z)
+		}
+		seenTick[k] = struct{}{}
 		pos := cube.Pos{int(x)*16 + int(t.packedXZ&0xF), int(t.y), int(z)*16 + int(t.packedXZ>>4)}
 		if unknown != nil && unknown[t.ref] >= 0 {
 			col.UnknownTicks = append(col.UnknownTicks, UnknownTick{

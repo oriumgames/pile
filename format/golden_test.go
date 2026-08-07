@@ -99,10 +99,10 @@ var goldenVariants = []struct {
 	{name: "world_plain", opts: Options{Compression: CompressionNone}},
 	{name: "world_zstd", opts: Options{Compression: CompressionBest}},
 	{name: "world_zstd_fast", opts: Options{Compression: CompressionFast}},
-	{name: "world_light", opts: Options{Compression: CompressionNone, StoreLight: true}},
+	{name: "world_light", opts: Options{Compression: CompressionNone, StoreLight: true}, world: goldenLitWorld},
 	{name: "world_stats", opts: Options{Compression: CompressionNone, Stats: true}},
 	{name: "world_nobiomes", opts: Options{Compression: CompressionNone, SkipBiomes: true}},
-	{name: "world_all", opts: Options{Compression: CompressionBest, StoreLight: true, Stats: true}},
+	{name: "world_all", opts: Options{Compression: CompressionBest, StoreLight: true, Stats: true}, world: goldenLitWorld},
 	// Preserved unresolved block and biome states travel as ordinary palette
 	// entries, so their encoding needs its own lock.
 	{name: "world_unknown", opts: Options{Compression: CompressionNone}, world: goldenUnknownWorld},
@@ -192,6 +192,19 @@ func goldenWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 			},
 			UserData: []byte("chunk-user-data"),
 		})
+	}
+	return d
+}
+
+// goldenLitWorld is the reference world with light baked in. StoreLight
+// claims the records carry light, so a fixture that set the flag over a world
+// with none was pinning a file the reader now refuses: the flag and the
+// content have to agree.
+func goldenLitWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
+	t.Helper()
+	d := goldenWorld(t, reg)
+	for _, c := range d.Columns {
+		chunk.LightArea([]*chunk.Chunk{c.Col.Chunk}, int(c.X), int(c.Z)).Fill()
 	}
 	return d
 }

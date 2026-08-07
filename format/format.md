@@ -158,7 +158,7 @@ keeps one valid encoding per file.
 
 | bit | name | meaning |
 |-----|------|---------|
-| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness |
+| 0 | StoreLight | chunk records contain baked light arrays (§4.6). Advisory: light is never required for correctness. MUST be clear when no section carries any, since setting it over a light-free world is a second encoding of that world and §4.8's content identity covers the whole body |
 | 1 | Stats | the meta block contains a stats compound (§4.2) |
 | 2 | reserved | MUST be zero (indexed dictionary presence is signalled by the directory, §5.5) |
 | 3 | DefaultBiome | bits 16–31 of flags hold a global biome palette reference used as the world default biome (§4.7) |
@@ -218,6 +218,16 @@ compressed bytes are not part of the format's identity.
 
 These structures appear in both modes and in structure files.
 
+**Who enforces a rule.** Every `MUST` below is one of two kinds, and which one
+is stated wherever it is not obvious. Most are **decoder-enforced**: a reader
+rejects a file that breaks them, so a strict reader and a lenient one agree on
+which files are valid. A few are **writer-only**, because the evidence a reader
+would need is not in the file. Palette ordering is the archetype: reference
+counts are never stored, so nothing in a file proves its palette was sorted.
+Such a rule is verified by re-encoding and comparing (§4.8's content identity),
+never by reading, and it is called out where it appears. A rule nobody can
+check on read must not look like one that is checked.
+
 ### 3.1 Global block state palette
 
 Every unique block state referenced anywhere in the file, encoded once.
@@ -242,8 +252,13 @@ overrideN        uvarint          (<= count; usually 0)
 override[overrideN]:             indices strictly ascending
   indexDelta     uvarint          delta from the previous overridden index;
                                   the first entry deltas from 0, so a first
-                                  delta of 0 means index 0
-  version        i32              must be non-zero
+                                  delta of 0 means index 0. Every later delta
+                                  MUST be non-zero, since indices strictly
+                                  ascend, and decoders MUST reject a zero one
+  version        i32              MUST be non-zero and MUST differ from the
+                                  palette's own version: an override that
+                                  repeats it says nothing, so it would be a
+                                  second encoding of an entry with none
 ```
 
 Only preserved unresolved states (§9) can carry one: everything else is
@@ -261,7 +276,8 @@ different files decode to the same state.
 Bedrock block state properties are exactly these three NBT types, making the
 encoding lossless.
 
-In solid mode writers MUST sort the palette by:
+In solid mode writers MUST sort the palette by (writer-only: reference counts
+are not stored, so a reader cannot verify the order and MUST NOT try):
 
 1. **descending reference count**, where the reference count is the number of
    section-local palettes the state appears in, plus one per scheduled block
@@ -322,7 +338,8 @@ depend on what elision removed. Counting first breaks the loop, and writers
 MUST count that way or two of them will disagree on the palette order, on
 `defaultBiomeRef` and therefore on every byte downstream.
 
-Writers MUST sort the biome palette by:
+Writers MUST sort the biome palette by (writer-only, for the same reason §3.1
+gives):
 
 1. **descending reference count**, as defined above;
 2. then **ascending bytewise comparison of the name**, the same comparison
@@ -374,7 +391,9 @@ Rules:
 ### 3.4 Section blob table (solid and structure only)
 
 Deduplication container: every unique section blob stored once, referenced by
-index. Identical bytes MUST share one entry.
+index. Identical bytes MUST share one entry, and decoders MUST reject a table
+that repeats a blob or that carries one no record references: the first is a
+second encoding of the same file and the second is content nothing reads.
 
 ```
 count            uvarint          (≤ 16 777 216)
@@ -514,7 +533,9 @@ An air-only section is absent (one presence bit); a fully empty chunk record
 distinct from a chunk that was never stored.
 
 A section MUST be absent when **every** one of its layers is uniform air, and
-MUST be present otherwise. A section
+MUST be present otherwise. A layer holding a preserved unresolved state (§9)
+does not count as air for this test any more than it does for the layer rule
+below, so a section whose only content is such a state is present. A section
 that has any non-air content is present, and the uniform-air layers below that
 content are stored, for the reason the layer numbering rule below gives. A
 decoder MUST NOT treat a uniform-air layer 0 as an absent section: in a
@@ -624,6 +645,14 @@ The collection orders are:
 | structure block entities | (y, z, x), then the encoded NBT as written |
 | structure entities | the encoded NBT alone: a structure entity is a bare compound with no separate ID field, so `UniqueID` is simply one of its keys |
 
+These orders are total only because the keys they sort on are unique, which is
+therefore a rule and not an assumption. At most one block entity may occupy a
+position and at most one scheduled update may name a given position, firing
+tick and block reference; a structure's block entities are subject to the same
+rule and MUST additionally lie inside the declared box. Decoders MUST reject a
+file that breaks any of these, because two entries a reader cannot tell apart
+leave their order decided by nothing.
+
 The tie-break is the bytes that get written, not the caller's value. A block
 entity's x/y/z are stripped on encode and an entity's `UniqueID` is replaced
 with its authoritative ID, so ordering on the unprojected input would let
@@ -686,7 +715,10 @@ compaction.
 The global palettes grow append-only as **delta segments**. A block segment
 frame is an `i32` Minecraft block version followed by a §3.1-encoded palette;
 a biome segment frame is a §3.2-encoded palette. Segments hold only the
-entries new since the previous checkpoint. The directory MUST list them in the
+entries new since the previous checkpoint, and a segment with no entries is
+never written: it is pure garbage that two writers could differ on. Decoders
+MUST reject one. A directory naming no chunks is legal, since that is what a
+freshly created file has. The directory MUST list them in the
 order they were written, since entry indices are cumulative across segments and
 reordering the list renumbers every palette reference in the file. Palette
 order is first-seen; no frequency sorting.
@@ -945,6 +977,7 @@ remain, not from these ceilings.
 
 | item | limit |
 |------|-------|
+| NBT nesting depth | 64 |
 | string length | 64 KiB |
 | blob length | 16 MiB |
 | chunk records in a solid body | 4 294 967 295 (the largest value a u32 holds) |
@@ -975,9 +1008,10 @@ frame length as a `uvarint` and the footer carries the directory's own as a
 `u64`, so nothing on the wire truncates, but 2³²−1 is the largest value a
 reader may be asked to hold in the 32-bit counter such a length naturally
 fits, and a file naming more is invalid. A record whose
-decompressed size exceeds the reader's frame ceiling, or NBT nested deeper
-than the reader accepts, is data loss even though every individual field is
-within limits. In indexed mode it is worse than data loss: a checkpoint that
+decompressed size exceeds the frame ceiling, or NBT nested deeper than 64, is
+data loss even though every individual field is within limits. The nesting
+ceiling is a fixed number rather than a reader's choice, so one file is not
+readable by one implementation and refused by another. In indexed mode it is worse than data loss: a checkpoint that
 cannot be reopened rolls the world back to an older one, discarding every
 chunk stored since, so metadata is validated when it is handed to the writer
 rather than when it is finally written.

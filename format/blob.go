@@ -254,11 +254,21 @@ func decodeBlobTable(r *reader) ([]decBlob, error) {
 		return nil, corruptf("blob table count %d exceeds input", n)
 	}
 	blobs := make([]decBlob, 0, n)
+	seen := make(map[string]int, n)
 	for i := range n {
+		start := r.off
 		b, err := decodeOneBlob(r)
 		if err != nil {
 			return nil, fmt.Errorf("blob %d: %w", i, err)
 		}
+		// The table exists to store identical bytes once, so a repeat is a
+		// second encoding of the same file. A reader can check this even
+		// though it cannot check the palette's order, and where it can check
+		// it should.
+		if prev, dup := seen[string(r.b[start:r.off])]; dup {
+			return nil, corruptf("blob %d repeats blob %d", i, prev)
+		}
+		seen[string(r.b[start:r.off])] = i
 		blobs = append(blobs, b)
 	}
 	return blobs, nil

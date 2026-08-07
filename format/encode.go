@@ -211,6 +211,21 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	parallelFor(len(cols), opts.Workers, func(i int) {
 		raws[i] = extractColumnRaw(cols[i], opts.SkipBiomes, opts.StoreLight, placeholder)
 	})
+	// StoreLight claims the records carry light. If none does, setting it
+	// anyway is a second encoding of the same world with the flag clear, and
+	// the content hash covers the whole body, so the difference is real.
+	storeLight := opts.StoreLight
+	if storeLight {
+		storeLight = false
+		for i := range raws {
+			for _, lp := range raws[i].light {
+				if len(lp.block) > 0 || len(lp.sky) > 0 {
+					storeLight = true
+					break
+				}
+			}
+		}
+	}
 	for i := range raws {
 		if raws[i].err != nil {
 			return fmt.Errorf("pile: encode chunk (%d,%d): %w", raws[i].x, raws[i].z, raws[i].err)
@@ -272,7 +287,7 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	for i := range inter {
 		records.svarint(int64(inter[i].x) - int64(prevX))
 		records.svarint(int64(inter[i].z) - int64(prevZ))
-		encodeRecordBody(records, &inter[i], &blobs[i], blockRemap, opts.StoreLight, func(w *writer, blob []byte) {
+		encodeRecordBody(records, &inter[i], &blobs[i], blockRemap, storeLight, func(w *writer, blob []byte) {
 			w.uvarint(uint64(table.add(blob)))
 		})
 		prevX, prevZ = inter[i].x, inter[i].z
@@ -316,7 +331,7 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	if haveDefault {
 		flags |= FlagDefaultBiome | defaultRef<<defaultBiomeShift
 	}
-	if opts.StoreLight {
+	if storeLight {
 		flags |= FlagStoreLight
 	}
 	if opts.Stats {
@@ -632,6 +647,29 @@ func validateColumn(c Column) error {
 	}
 	if n := len(c.Col.ScheduledBlocks); n > maxPerChunk {
 		return fmt.Errorf("pile: chunk (%d,%d) has %d scheduled ticks, limit %d", c.X, c.Z, n, maxPerChunk)
+	}
+	// The collection orders are total only because their keys are unique, so
+	// uniqueness is a rule and not an assumption. The reader rejects these, and
+	// a writer that emits them produces a file it cannot read back.
+	bePos := make(map[cube.Pos]struct{}, len(c.Col.BlockEntities))
+	for _, be := range c.Col.BlockEntities {
+		if _, dup := bePos[be.Pos]; dup {
+			return fmt.Errorf("pile: chunk (%d,%d) has two block entities at %v", c.X, c.Z, be.Pos)
+		}
+		bePos[be.Pos] = struct{}{}
+	}
+	type tickID struct {
+		pos   cube.Pos
+		tick  int64
+		block uint32
+	}
+	ticks := make(map[tickID]struct{}, len(c.Col.ScheduledBlocks))
+	for _, t := range c.Col.ScheduledBlocks {
+		k := tickID{pos: t.Pos, tick: t.Tick, block: t.Block}
+		if _, dup := ticks[k]; dup {
+			return fmt.Errorf("pile: chunk (%d,%d) has a duplicate scheduled update at %v", c.X, c.Z, t.Pos)
+		}
+		ticks[k] = struct{}{}
 	}
 	return nil
 }

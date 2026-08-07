@@ -228,6 +228,9 @@ func TestEveryInvariantNamesALiveTest(t *testing.T) {
 			t.Errorf("invariant %q names no test", inv.Name)
 			continue
 		}
+		if inv.Enforce != Decoded && inv.Enforce != WriterOnly {
+			t.Errorf("invariant %q does not say whether readers enforce it", inv.Name)
+		}
 		for _, name := range inv.Tests {
 			if !names[name] {
 				t.Errorf("invariant %q names test %s, which does not exist", inv.Name, name)

@@ -333,8 +333,11 @@ func TestCollectionTiesUseWrittenBytes(t *testing.T) {
 			Chunk: ch,
 			// Same position, same effective content: only the stripped
 			// coordinates differ.
+			// Distinct positions, since two at one position are now invalid;
+			// the stripped coordinates are still what must not decide the
+			// order.
 			BlockEntities: []chunk.BlockEntity{
-				{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "x": x1}},
+				{Pos: cube.Pos{2, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "x": x1}},
 				{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "x": x2}},
 			},
 			// Same ID, same effective content: only the overwritten UniqueID
@@ -1326,7 +1329,7 @@ func TestRejectsUnaddressableSectionSpan(t *testing.T) {
 		w.svarint(min)
 		w.uvarint(uint64(sections))
 		w.b = append(w.b, make([]byte, 1024)...) // presence bits and beyond
-		_, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource(nil), false, 0, 0)
+		_, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource(nil, nil), false, 0, 0)
 		return err
 	}
 	for _, c := range []struct {
@@ -2251,13 +2254,13 @@ func TestRejectsBitsetPadding(t *testing.T) {
 		w.blob(nil)  // user data
 		return w.bytes()
 	}
-	if _, err := parseRecordBody(&reader{b: record(0, 0)}, tableBlobSource(nil), false, 0, 0); err != nil {
+	if _, err := parseRecordBody(&reader{b: record(0, 0)}, tableBlobSource(nil, nil), false, 0, 0); err != nil {
 		t.Fatalf("a clean record was rejected: %v", err)
 	}
-	if _, err := parseRecordBody(&reader{b: record(1<<7, 0)}, tableBlobSource(nil), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: record(1<<7, 0)}, tableBlobSource(nil, nil), false, 0, 0); err == nil {
 		t.Error("block presence padding was accepted")
 	}
-	if _, err := parseRecordBody(&reader{b: record(0, 1<<7)}, tableBlobSource(nil), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: record(0, 1<<7)}, tableBlobSource(nil, nil), false, 0, 0); err == nil {
 		t.Error("biome presence padding was accepted")
 	}
 
@@ -2340,7 +2343,7 @@ func TestRejectsLayerCountInRecords(t *testing.T) {
 	w.svarint(0) // column tick
 	w.uvarint(0) // scheduled ticks
 	w.blob(nil)  // user data
-	if _, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource([]decBlob{{}}), false, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: w.bytes()}, tableBlobSource([]decBlob{{}}, nil), false, 0, 0); err == nil {
 		t.Error("a record claiming 256 layers was accepted")
 	}
 }
@@ -2479,12 +2482,12 @@ func recordBody(f recordFields) []byte {
 // read path, so the padding rule has to be driven there too.
 func TestRejectsLightBitsetPadding(t *testing.T) {
 	clean := recordFields{haveLight: true, lightPresence: 0}
-	if _, err := parseRecordBody(&reader{b: recordBody(clean)}, tableBlobSource(nil), true, 0, 0); err != nil {
+	if _, err := parseRecordBody(&reader{b: recordBody(clean)}, tableBlobSource(nil, nil), true, 0, 0); err != nil {
 		t.Fatalf("a clean light bitset was rejected: %v", err)
 	}
 	padded := clean
 	padded.lightPresence = 1 << 7 // section 0 absent, padding bit set
-	if _, err := parseRecordBody(&reader{b: recordBody(padded)}, tableBlobSource(nil), true, 0, 0); err == nil {
+	if _, err := parseRecordBody(&reader{b: recordBody(padded)}, tableBlobSource(nil, nil), true, 0, 0); err == nil {
 		t.Fatal("light presence padding was accepted")
 	}
 }
@@ -2508,7 +2511,7 @@ func TestRejectsLightEntryFlags(t *testing.T) {
 		{"reserved high bit", 0x80, false},
 	} {
 		f := recordFields{haveLight: true, lightPresence: 1, lightFlags: c.flags, lightBody: body}
-		_, err := parseRecordBody(&reader{b: recordBody(f)}, tableBlobSource(nil), true, 0, 0)
+		_, err := parseRecordBody(&reader{b: recordBody(f)}, tableBlobSource(nil, nil), true, 0, 0)
 		if (err == nil) != c.ok {
 			t.Errorf("light flags %s (0x%02X): err = %v, want ok = %v", c.name, c.flags, err, c.ok)
 		}
@@ -3268,5 +3271,138 @@ func TestRejectsOversizedZstdWindow(t *testing.T) {
 	small.Close()
 	if _, err := sharedDecoder().DecodeAll(ok, nil); err != nil {
 		t.Fatalf("a frame within the window ceiling was refused: %v", err)
+	}
+}
+
+// Round 24: rules that were writer-side only, where a reader can check and so
+// should. Silence here means a strict reader and a lenient one disagree about
+// which files are valid.
+
+// TestRejectsBlobTableWaste: the table exists to store identical bytes once,
+// so a repeat is a second encoding, and a blob nothing references is content
+// no reader reads.
+func TestRejectsBlobTableWaste(t *testing.T) {
+	blob := func() []byte {
+		w := &writer{}
+		w.uvarint(1) // one palette entry
+		w.uvarint(0) // referencing global entry 0
+		w.u8(widthUniform)
+		return w.bytes()
+	}
+	two := &writer{}
+	two.uvarint(2)
+	two.raw(blob())
+	two.raw(blob())
+	if _, err := decodeBlobTable(&reader{b: two.bytes()}); err == nil {
+		t.Fatal("a repeated blob was accepted")
+	}
+	one := &writer{}
+	one.uvarint(1)
+	one.raw(blob())
+	if _, err := decodeBlobTable(&reader{b: one.bytes()}); err != nil {
+		t.Fatalf("a single blob was rejected: %v", err)
+	}
+}
+
+// TestRejectsUnreferencedBlob: a table entry no record uses is dead weight two
+// writers could differ on while encoding the same world.
+func TestRejectsUnreferencedBlob(t *testing.T) {
+	reg := testRegistry(t)
+	body := func(blobs int) []byte {
+		w := &writer{}
+		w.blob(nil) // settings
+		w.blob(nil) // user data
+		w.blob(nil) // markers
+		w.blob(nil) // border
+		w.uvarint(1)
+		w.str("minecraft:stone")
+		w.uvarint(0) // no properties
+		w.uvarint(0) // no version overrides
+		w.uvarint(0) // biome palette
+		w.uvarint(uint64(blobs))
+		for range blobs {
+			w.uvarint(1) // one local entry
+			w.uvarint(0) // global reference 0
+			w.u8(widthUniform)
+		}
+		w.uvarint(0) // no chunk records
+		return w.bytes()
+	}
+	if _, err := ReadWorld(solidFile(body(0)), reg); err != nil {
+		t.Fatalf("a world with an empty blob table was rejected: %v", err)
+	}
+	if _, err := ReadWorld(solidFile(body(1)), reg); err == nil {
+		t.Fatal("a blob no record references was accepted")
+	}
+}
+
+// TestRejectsStoreLightWithoutLight: the flag claims the records carry light.
+// Over a world with none it is a second encoding of the same world with the
+// flag clear, and content identity covers the whole body.
+func TestRejectsStoreLightWithoutLight(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	ch := chunk.New(reg, cube.Range{-64, 319})
+	ch.SetBlock(0, -64, 0, 0, stone)
+	d := &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}}}}
+
+	// A writer asked for light over a world that has none clears the flag
+	// rather than writing an empty light section.
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone, StoreLight: true}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, err := parseFrame(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.flags&FlagStoreLight != 0 {
+		t.Fatal("StoreLight was set over a world carrying no light")
+	}
+	// The same world with light baked in does set it.
+	chunk.LightArea([]*chunk.Chunk{ch}, 0, 0).Fill()
+	var lit bytes.Buffer
+	if err := WriteWorld(&lit, d, reg, Options{Compression: CompressionNone, StoreLight: true}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, err = parseFrame(lit.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.flags&FlagStoreLight == 0 {
+		t.Fatal("StoreLight was clear over a world carrying light")
+	}
+}
+
+// TestRejectsDuplicateCollectionEntries: the collection orders are total only
+// because their keys are unique, so uniqueness is a rule. The writer and the
+// reader both enforce it, or one produces files the other refuses.
+func TestRejectsDuplicateCollectionEntries(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	col := func(build func(c *chunk.Column)) *WorldData {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, stone)
+		c := &chunk.Column{Chunk: ch}
+		build(c)
+		return &WorldData{Columns: []Column{{X: 0, Z: 0, Col: c}}}
+	}
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, col(func(c *chunk.Column) {
+		c.BlockEntities = []chunk.BlockEntity{
+			{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest"}},
+			{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:furnace"}},
+		}
+	}), reg, Options{Compression: CompressionNone}); err == nil {
+		t.Error("two block entities at one position were written")
+	}
+	buf.Reset()
+	if err := WriteWorld(&buf, col(func(c *chunk.Column) {
+		c.ScheduledBlocks = []chunk.ScheduledBlockUpdate{
+			{Pos: cube.Pos{1, -60, 1}, Block: stone, Tick: 5},
+			{Pos: cube.Pos{1, -60, 1}, Block: stone, Tick: 5},
+		}
+	}), reg, Options{Compression: CompressionNone}); err == nil {
+		t.Error("a duplicate scheduled update was written")
 	}
 }

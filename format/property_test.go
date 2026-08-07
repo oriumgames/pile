@@ -301,9 +301,13 @@ func boundaryCases(t *testing.T, reg world.BlockRegistry) []boundaryCase {
 	ch.SetBlock(0, -64, 0, 0, stone)
 	cases = append(cases, wrap("tied_collections", Column{X: 0, Z: 0, Col: &chunk.Column{
 		Chunk: ch,
+		// Ties that remain legal now that the keys themselves are unique:
+		// block entities at different positions carrying identical NBT,
+		// entities sharing an id, and updates at one position differing only
+		// in the block they name.
 		BlockEntities: []chunk.BlockEntity{
-			{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "n": int32(2)}},
-			{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "n": int32(1)}},
+			{Pos: cube.Pos{2, -60, 1}, Data: map[string]any{"id": "minecraft:chest"}},
+			{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest"}},
 		},
 		Entities: []chunk.Entity{
 			{ID: 0, Data: map[string]any{"identifier": "minecraft:cow"}},
@@ -312,6 +316,7 @@ func boundaryCases(t *testing.T, reg world.BlockRegistry) []boundaryCase {
 		ScheduledBlocks: []chunk.ScheduledBlockUpdate{
 			{Pos: cube.Pos{2, -60, 2}, Block: stone, Tick: 7},
 			{Pos: cube.Pos{2, -60, 2}, Block: water, Tick: 7},
+			{Pos: cube.Pos{2, -60, 2}, Block: stone, Tick: 8},
 		},
 	}}))
 

@@ -409,7 +409,7 @@ type parsedState struct {
 // parseStatePalette reads a count-prefixed list of encoded block states.
 // parseStatePalette reads a count-prefixed list of encoded block states
 // followed by the sparse version-override table.
-func parseStatePalette(r *reader) ([]parsedState, error) {
+func parseStatePalette(r *reader, blockVersion int32) ([]parsedState, error) {
 	n, err := r.count(maxPalette, "block palette")
 	if err != nil {
 		return nil, err
@@ -502,6 +502,11 @@ func parseStatePalette(r *reader) ([]parsedState, error) {
 		if int32(v) == 0 {
 			return nil, corruptf("palette version override must not be zero")
 		}
+		// An override equal to the palette's own version says nothing, so it
+		// is a second encoding of an entry with no override at all.
+		if int32(v) == blockVersion {
+			return nil, corruptf("palette version override equals the palette's own version")
+		}
 		entries[idx].version = int32(v)
 		prev = idx
 	}
@@ -547,7 +552,7 @@ func placeholderRid(reg world.BlockRegistry) uint32 {
 // their original states are returned so callers can preserve them:
 // unknown[i] is -1 for resolved entries, otherwise an index into states.
 func decodeBlockPalette(r *reader, reg world.BlockRegistry, blockVersion int32) (rids []uint32, unknown []int32, states []BlockState, err error) {
-	entries, err := parseStatePalette(r)
+	entries, err := parseStatePalette(r, blockVersion)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -30,7 +30,7 @@ func UnresolvedStates(file []byte, reg world.BlockRegistry) ([]string, error) {
 	if _, _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
 		return nil, err
 	}
-	entries, err := parseStatePalette(r)
+	entries, err := parseStatePalette(r, h.blockVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (w *IndexedWorld) UnresolvedStates() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		entries, err := parseStatePalette(r)
+		entries, err := parseStatePalette(r, int32(segVersion))
 		if err != nil {
 			return nil, err
 		}
