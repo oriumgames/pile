@@ -231,6 +231,13 @@ const (
 	// a one-section chunk based at 2^40 is small and still unrepresentable.
 	minSectionIdx = -2048
 	maxSectionIdx = 2047
+	// maxDictLen bounds a stored dictionary. The window ceiling of §2.5 does
+	// not cover it: a decoder retains a dictionary's whole content, outside
+	// the window, and pins the backing array it was handed. Compaction trains
+	// dictionaries capped at 16 KiB, so a legitimate one is far below this,
+	// and a frame ceiling of 64 MiB would otherwise let a file pin that much
+	// per open handle in both an encoder and a decoder.
+	maxDictLen = 1 << 20
 	// maxDecodedStorages bounds how many paletted storages one file may decode
 	// into. Every stored layer costs a single blob reference on the wire and
 	// about a hundred bytes of live objects, so the byte ceilings bound the

@@ -412,6 +412,21 @@ func validateWorldData(d *WorldData) error {
 	if err := checkMetaSchemas(d.Settings, d.Markers, d.Border); err != nil {
 		return err
 	}
+	// The reader bounds how many section storages a file decodes into; the
+	// writer is bounded by the same number, so it cannot produce a file it
+	// would then refuse to read.
+	storages := 0
+	for _, c := range d.Columns {
+		if c.Col == nil || c.Col.Chunk == nil {
+			continue
+		}
+		for _, sub := range c.Col.Chunk.Sub() {
+			storages += len(sub.Layers())
+		}
+	}
+	if storages > maxDecodedStorages {
+		return fmt.Errorf("pile: world holds %d section storages, limit %d", storages, maxDecodedStorages)
+	}
 	if len(d.Columns) > maxChunks {
 		return fmt.Errorf("pile: %d chunks exceeds limit %d", len(d.Columns), maxChunks)
 	}

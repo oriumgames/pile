@@ -83,18 +83,28 @@ func clearPadding(s *StructureData, air uint32) {
 				if cell == nil {
 					continue
 				}
-				for lx := range uint8(16) {
-					for ly := range uint8(16) {
-						for lz := range uint8(16) {
-							x, y, z := cx*16+int32(lx), cy*16+int32(ly), cz*16+int32(lz)
-							if x < s.Size[0] && y < s.Size[1] && z < s.Size[2] {
-								continue
-							}
-							// The layer count is bounded by 256, which does
-							// not fit the uint8 SetBlock takes: counting in
-							// uint8 would wrap the maximum to zero and skip
-							// the padding entirely.
-							for layer := range len(cell.Layers()) {
+				// A cell wholly inside the box has no padding at all, which
+				// is every cell but the ones on three faces. Walking its 4096
+				// positions to discover that dominated the whole pass.
+				lim := cellExtent(s.Size, cx, cy, cz)
+				if lim == [3]int32{16, 16, 16} {
+					continue
+				}
+				for layer, st := range cell.Layers() {
+					// A layer that is already uniform air has nothing to
+					// clear, and spare layers usually are.
+					if st.Palette().Len() == 1 && st.At(0, 0, 0) == air {
+						continue
+					}
+					for lx := range uint8(16) {
+						for ly := range uint8(16) {
+							for lz := range uint8(16) {
+								if int32(lx) < lim[0] && int32(ly) < lim[1] && int32(lz) < lim[2] {
+									continue
+								}
+								// The layer count reaches 255, which does not
+								// fit the uint8 SetBlock takes if it is
+								// counted in one.
 								cell.SetBlock(lx, ly, lz, uint8(layer), air)
 							}
 						}
@@ -103,6 +113,17 @@ func clearPadding(s *StructureData, air uint32) {
 			}
 		}
 	}
+}
+
+// cellExtent returns how far into a cell the declared box reaches on each
+// axis: 16 when the cell is wholly inside, less where the box ends inside it.
+func cellExtent(size [3]int32, cx, cy, cz int32) [3]int32 {
+	base := [3]int32{cx * 16, cy * 16, cz * 16}
+	var lim [3]int32
+	for i := range 3 {
+		lim[i] = min(16, max(0, size[i]-base[i]))
+	}
+	return lim
 }
 
 // validateStructureData rejects content that would encode into a structure
@@ -145,11 +166,26 @@ func clipToStructure(s *StructureData, u UnknownBlock) []UnknownBlock {
 	if u.Index != WholeStorage || !cellExists(s, u.Section) {
 		return nil
 	}
+	// Expand over the positions the box actually reaches into this cell, not
+	// over all 4096 and a test each: an edge cell of a long thin structure
+	// contains a handful of real positions, and the difference between the two
+	// is the difference between a fast pass and one that never returns.
+	nx, ny, nz := CellDims(s.Size)
+	cy := u.Section % int32(ny)
+	t := u.Section / int32(ny)
+	cz := t % int32(nz)
+	cx := t / int32(nz)
+	_ = nx
+	lim := cellExtent(s.Size, cx, cy, cz)
 	var out []UnknownBlock
-	for idx := range uint16(4096) {
-		e := UnknownBlock{Section: u.Section, Layer: u.Layer, Index: idx, State: u.State}
-		if insideStructure(s, e) {
-			out = append(out, e)
+	for x := int32(0); x < lim[0]; x++ {
+		for z := int32(0); z < lim[2]; z++ {
+			for y := int32(0); y < lim[1]; y++ {
+				out = append(out, UnknownBlock{
+					Section: u.Section, Layer: u.Layer, State: u.State,
+					Index: uint16(x)<<8 | uint16(z)<<4 | uint16(y),
+				})
+			}
 		}
 	}
 	return out
@@ -204,6 +240,19 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	nx, ny, nz := CellDims(s.Size)
 	if int64(len(s.Cells)) != int64(nx)*int64(ny)*int64(nz) {
 		return fmt.Errorf("pile: cell count %d does not match size %v", len(s.Cells), s.Size)
+	}
+	// The same ceiling the reader applies. Writing is bounded too, or a
+	// structure this process cannot read back is one it will happily spend
+	// hours producing: the padding pass alone is proportional to cells times
+	// layers.
+	storages := 0
+	for _, c := range s.Cells {
+		if c != nil {
+			storages += len(c.Layers())
+		}
+	}
+	if storages > maxDecodedStorages {
+		return fmt.Errorf("pile: structure holds %d section storages, limit %d", storages, maxDecodedStorages)
 	}
 
 	// Positions outside the declared box live in edge cells but are not part

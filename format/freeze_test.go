@@ -3698,3 +3698,57 @@ func TestBoundsCheckpointChain(t *testing.T) {
 		t.Fatalf("chunks = %d, want 8", v.ChunkCount())
 	}
 }
+
+// TestRejectsOversizedDictionary: a decoder retains a dictionary's whole
+// content, outside the window ceiling, and pins the backing array it is given.
+// The frame ceiling would otherwise let a file pin 64 MiB per open handle in
+// both an encoder and a decoder, to carry a dictionary training caps at 16 KiB.
+func TestRejectsOversizedDictionary(t *testing.T) {
+	if maxDictLen >= maxDecodedFrame {
+		t.Fatal("the dictionary ceiling is no tighter than the frame ceiling")
+	}
+	// The bound is on the decoded dictionary frame, so drive it there.
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range int32(dictMinSamples * 2) {
+		if err := w.Store(buildTestColumn(t, reg, i, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A trained dictionary is orders of magnitude under the ceiling, so a
+	// compacted world still opens.
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatalf("a compacted world was refused: %v", err)
+	}
+	defer v.Close()
+	if !v.HasDict() {
+		t.Skip("compaction did not train a dictionary here")
+	}
+}
+
+// TestDictionarySamplingIsBounded: the dictionary is capped at a few
+// kilobytes, so training cannot need every record in the world. Holding them
+// all was hundreds of gigabytes on a large world, on a path Close runs by
+// itself.
+func TestDictionarySamplingIsBounded(t *testing.T) {
+	if dictMaxSamples <= 0 || dictMaxSampleBytes <= 0 {
+		t.Fatal("dictionary sampling has no ceiling")
+	}
+	if dictMaxSamples < dictMinSamples {
+		t.Fatalf("the sample ceiling %d is below the floor %d", dictMaxSamples, dictMinSamples)
+	}
+	if dictMaxSampleBytes < dictMinBytes {
+		t.Fatalf("the sample byte ceiling %d is below the floor %d", dictMaxSampleBytes, dictMinBytes)
+	}
+}

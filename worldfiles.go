@@ -242,7 +242,7 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 			Settings: wf.Settings, UserData: wf.UserData, Markers: wf.Markers, Border: wf.Border,
 			Columns: df.Columns, Dimension: format.DimensionOf(df.Dim),
 		}
-		f, err := os.Create(tmp)
+		f, err := createExclusive(tmp)
 		if err != nil {
 			return err
 		}

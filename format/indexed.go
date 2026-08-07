@@ -24,7 +24,12 @@ import (
 // worth its overhead.
 const (
 	dictMinSamples = 16
-	dictMinBytes   = 64 << 10
+	// dictMaxSamples and dictMaxSampleBytes bound what training holds at once.
+	// The output is capped at 16 KiB, so the samples only have to be
+	// representative, not exhaustive.
+	dictMaxSamples     = 256
+	dictMaxSampleBytes = 8 << 20
+	dictMinBytes       = 64 << 10
 )
 
 // ErrNoColumn is returned by IndexedWorld.Column for positions that have no
@@ -725,6 +730,14 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 		if err != nil {
 			return fmt.Errorf("pile: read dictionary frame: %w", err)
 		}
+		// A dictionary is retained whole and outside the window ceiling, so it
+		// needs one of its own rather than inheriting the frame limit.
+		if len(dict) > maxDictLen {
+			return corruptf("dictionary is %d bytes, limit %d", len(dict), maxDictLen)
+		}
+		// Hand the decoder a slice of its own: it pins the backing array of
+		// whatever it is given, and this one is a window into the frame buffer.
+		dict = cloneBytes(dict)
 		if err := w.setDict(dict); err != nil {
 			return err
 		}
@@ -1851,6 +1864,14 @@ func (w *IndexedWorld) Compact() error {
 			}
 			samples = append(samples, body)
 			total += len(body)
+			// The dictionary this produces is capped at a few kilobytes, and
+			// it cannot extract more signal from every record in the world
+			// than from a representative slice of them. Holding them all was
+			// hundreds of gigabytes on a large world, on a path Close runs by
+			// itself whenever garbage passes half the file.
+			if len(samples) >= dictMaxSamples || total >= dictMaxSampleBytes {
+				break
+			}
 		}
 		if len(samples) >= dictMinSamples && total >= dictMinBytes {
 			if d, err := buildDictionary(samples, opts.Compression); err == nil {

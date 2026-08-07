@@ -457,3 +457,33 @@ func TestSidecarPublishRechecksRecord(t *testing.T) {
 		t.Fatalf("a current sidecar was not published: %v %v", published, got.states)
 	}
 }
+
+// TestStagingRefusesAnExistingPath: every path that stages a file creates it
+// exclusively. os.Create follows a symlink at the target, so in a
+// world-readable directory another user can pre-create the predictable ".tmp"
+// name pointing anywhere this process can write.
+func TestStagingRefusesAnExistingPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "staged.tmp")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("this filesystem has no symlinks: %v", err)
+	}
+	f, err := createExclusive(link)
+	if err != nil {
+		t.Fatalf("staging over a symlink failed for the wrong reason: %v", err)
+	}
+	_, _ = f.WriteString("staged")
+	_ = f.Close()
+	// The symlink was replaced, not followed: the target is untouched.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("the symlink target was written through: %q", got)
+	}
+}

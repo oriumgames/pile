@@ -82,7 +82,7 @@ func LoadStructure(path string, opts ...StructureOption) (*Structure, error) {
 // Save writes the structure to a file atomically.
 func (s *Structure) Save(path string) error {
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := createExclusive(tmp)
 	if err != nil {
 		return err
 	}

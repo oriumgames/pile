@@ -1,6 +1,8 @@
 package pile
 
 import (
+	"fmt"
+	"os"
 	"slices"
 
 	"github.com/df-mc/dragonfly/server/world/chunk"
@@ -28,6 +30,26 @@ func cloneColumn(c *chunk.Column) *chunk.Column {
 	}
 	out.ScheduledBlocks = slices.Clone(c.ScheduledBlocks)
 	return out
+}
+
+// createExclusive creates a file that must not already exist.
+//
+// os.Create is O_WRONLY|O_CREATE|O_TRUNC, which follows a symlink at the
+// target: in a world-readable directory another user can pre-create the
+// predictable ".tmp" name pointing anywhere this process can write, and the
+// save goes through it. O_EXCL refuses to follow one, which is why the indexed
+// writer has always used it and why every other path that stages a file should
+// too. A stale temp file from a crashed run is removed first, deliberately and
+// by this process, rather than being silently written through.
+func createExclusive(path string) (*os.File, error) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("pile: clear stale temporary file: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("pile: create %s: %w", path, err)
+	}
+	return f, nil
 }
 
 // safeCompact reduces a chunk's palettes the way dragonfly's Compact does,

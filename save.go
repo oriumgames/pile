@@ -286,7 +286,7 @@ func (p *Provider) writeFile(path string, d *format.WorldData) error {
 		return fmt.Errorf("pile: create world directory: %w", err)
 	}
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := createExclusive(tmp)
 	if err != nil {
 		return fmt.Errorf("pile: create %s: %w", tmp, err)
 	}
