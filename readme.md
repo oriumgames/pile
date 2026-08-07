@@ -50,14 +50,28 @@ decodes into a gigabyte; this caps it. A world refused under the cap fails with
 is too big for your limit, not broken, so do not quarantine it as though it
 were.
 
-**If the worlds come from strangers, read the recipe** in
-[SECURITY.md](SECURITY.md), "Loading a file somebody sent you". It is three
-options long, it has been tested against hostile files rather than reasoned
-about, and it says plainly what is still not bounded — the short version being
-that `MaxDecodedBytes` charges columns and section storages and charges nothing
-for the entities, block entities and scheduled updates a column may hold a
-million of. `LoadSkip` is **not** a bound: it drops categories after the file is
-decoded, so it removes nothing from the peak.
+**If the worlds come from strangers**, open them like this:
+
+```go
+p, err := pile.Open(dir,
+    pile.ReadOnly(),                  // nothing is written back
+    pile.MaxDecodedBytes(256<<20),    // whatever your box can spare
+    pile.CacheColumns(0),             // no cache: one column at a time
+)
+```
+
+The ceiling charges everything a decode produces — columns, section storages,
+and the block entities, entities and scheduled updates inside them. What it does
+not bound is **wall-clock time**: a small file can legally cost seconds of CPU,
+so do not decode foreign worlds on a request path or unbounded in parallel.
+
+`LoadSkip` is **not** a bound. It drops categories after the file is decoded, so
+it removes nothing from the peak — use it to keep content out of your runtime,
+not to keep it out of memory.
+
+And the integrity hashes detect corruption, not tampering: xxHash64 is keyless,
+so anyone who can author a file can make its checksums agree. A file that
+verifies is well-formed, never trustworthy.
 
 ## Two file modes
 
