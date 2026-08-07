@@ -59,6 +59,13 @@ func parseFrame(file []byte) (header, []byte, error) {
 	if h.kind > KindStructure {
 		return h, nil, corruptf("file kind %d is not defined", h.kind)
 	}
+	// Zero is not a version: it is the value a palette entry's override uses to
+	// say "the palette's own version", and a field cannot mean both. A file
+	// declaring it leaves every state in the block palette with no version to
+	// be upgraded from.
+	if h.blockVersion == 0 {
+		return h, nil, corruptf("blockVersion is zero, which means \"the palette's own version\" and is not a version")
+	}
 	if h.flags&^knownFlags != 0 {
 		return h, nil, ErrUnknownFlags
 	}

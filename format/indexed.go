@@ -677,6 +677,13 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 	if d := Dimension((dirFlags & dimensionMask) >> dimensionShift); d > maxDimension {
 		return corruptf("dimension %d is reserved", uint8(d))
 	}
+	// The prologue repeats the header's semantic fields and is the authority
+	// over them, so every constraint the header is held to applies here and to
+	// this copy in particular. Zero is what a palette override uses to mean
+	// "the palette's own version" and cannot also be a version.
+	if int32(dirVersion) == 0 {
+		return corruptf("directory blockVersion is zero, which means \"the palette's own version\" and is not a version")
+	}
 	// The directory is authoritative: it is covered by the checkpoint hash,
 	// so it survives damage to the 16 physical header bytes.
 	w.headerFlags, w.headerBlockVersion = dirFlags, int32(dirVersion)

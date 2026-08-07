@@ -3317,6 +3317,63 @@ func TestIndexedRejectsReservedFlags(t *testing.T) {
 	}
 }
 
+// TestRejectsZeroBlockVersion: §2.1 requires blockVersion to be non-zero,
+// because zero is already spoken for -- it is what a palette entry's version
+// override uses to mean "the palette's own version". The field has two
+// readers, the physical header and the directory prologue that is authoritative
+// over it, and a fixture for one says nothing about the other.
+func TestRejectsZeroBlockVersion(t *testing.T) {
+	reg := testRegistry(t)
+	// A world with no chunks at all, so nothing but the header field decides
+	// whether the file is accepted.
+	empty := func() []byte {
+		w := &writer{}
+		for range 4 {
+			w.blob(nil)
+		}
+		w.uvarint(0) // block palette
+		w.uvarint(0) // version overrides
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(0) // chunks
+		return w.bytes()
+	}
+	solid := func(blockVersion int32) []byte {
+		hdr := &writer{}
+		hdr.raw(headerMagic[:])
+		hdr.u16(Version)
+		hdr.u8(KindWorld)
+		hdr.u8(ModeSolid)
+		hdr.u32(FlagUncompressed)
+		hdr.i32(blockVersion)
+		tail := &writer{}
+		for range 4 {
+			tail.u64(0)
+		}
+		tail.raw(footerMagic[:])
+		body := empty()
+		ftr := &writer{}
+		ftr.u64(checkpointHash(hdr.bytes(), body, tail.bytes()))
+		ftr.raw(tail.bytes())
+		return append(append(hdr.bytes(), body...), ftr.bytes()...)
+	}
+	if _, err := ReadWorld(solid(chunk.CurrentBlockVersion), reg); err != nil {
+		t.Fatalf("a file declaring a real block version was rejected: %v", err)
+	}
+	if _, err := ReadWorld(solid(0), reg); err == nil {
+		t.Error("a solid file declaring block version zero was accepted")
+	}
+
+	// The indexed half. The prologue is the authority over the semantic header
+	// fields, so a reader that trusts it has to hold it to the same rule.
+	opened, recovered := indexedWithPatchedPrologue(t, reg, func(dir []byte) {
+		binary.LittleEndian.PutUint32(dir[6:10], 0)
+	})
+	if opened && !recovered {
+		t.Error("a directory prologue declaring block version zero was accepted")
+	}
+}
+
 // TestIndexedRejectsUnsupportedVersion: the version is the one header field an
 // indexed reader has to trust, because everything after it is interpreted by
 // the rules of that version. It is checked before the directory is consulted,

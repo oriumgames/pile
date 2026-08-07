@@ -124,9 +124,15 @@ var invariants = []Invariant{
 	// -- Header and container (§2) ---------------------------------------
 	{
 		Name: "unknown versions and flags are rejected", Category: Presence, Enforce: Decoded,
-		Rules: []string{"a4590032", "648be581", "718f271d"},
+		Rules: []string{"a4590032", "648be581"},
 		Tests: []string{"TestRejectsReservedFlags", "TestIndexedRejectsReservedFlags", "TestIndexedRejectsUnsupportedVersion"},
 		Note:  "Ignoring a reserved bit spends it: an old reader could not tell a future file needs a feature it lacks. The version has a reader per mode: the indexed one checks it before the directory is consulted, so the recovery that repairs a damaged kind or mode never reaches it and the solid reader's fixture says nothing about it.",
+	},
+	{
+		Name: "blockVersion names a version", Category: Presence, Enforce: Decoded,
+		Rules: []string{"718f271d"},
+		Tests: []string{"TestRejectsZeroBlockVersion"},
+		Note:  "Zero is taken: it is what a palette entry's version override uses to mean \"the palette's own version\", so a field carrying it says nothing rather than something. Held apart from the version and flag rules because it has its own two readers -- the physical header and the directory prologue that is authoritative over it -- and a fixture for either says nothing about the other.",
 	},
 	{
 		Name: "the dictionary bit stays reserved", Category: Presence, Enforce: Decoded,
