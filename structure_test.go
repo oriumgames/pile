@@ -144,7 +144,7 @@ func TestTemplateInstancesCOW(t *testing.T) {
 
 	dir := t.TempDir()
 	src := buildArena(t)
-	src.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: [3]float64{10, 5, 10}})
+	src.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{10, 5, 10}})
 	if err := src.SaveAs(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestBuilderFill(t *testing.T) {
 
 	b := NewBuilder(reg, cube.Range{-64, 319})
 	b.Fill(cube.Pos{-20, 0, -20}, cube.Pos{20, 5, 20}, block.Stone{})
-	b.SetMarker(Marker{Name: "mid", Kind: "poi", Pos: [3]float64{0, 6, 0}})
+	b.SetMarker(Marker{Name: "mid", Kind: "poi", Pos: &[3]float64{0, 6, 0}})
 
 	dir := t.TempDir()
 	if err := b.Save(dir); err != nil {

@@ -151,6 +151,31 @@ var invariants = []Invariant{
 		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist. The sentence also covers every value of either field the table does not list, which is a separate check from the pairing and needs its own fixture.",
 	},
 	{
+		Name: "a marker marks something", Category: Presence, Enforce: Decoded,
+		Rules: []string{"df794981"},
+		Tests: []string{"TestRejectsMalformedAreaMarkers"},
+		Note:  "pos stopped being mandatory when areas arrived, because an area has no distinguished point in it and writing one would raise the question of whether it meant the centre or a corner. What replaces it is weaker but is still a rule: a marker with neither a point nor bounds names nothing, and nothing is not a thing a map can describe.",
+	},
+	{
+		Name: "marker doubles are finite and unsigned-zero", Category: Normalisation, Enforce: Decoded,
+		Rules: []string{"e7fb3300"},
+		Tests: []string{"TestRejectsMalformedAreaMarkers"},
+		Note: "A double admits values that are equal without being identical, which a format built on one content one encoding cannot carry: negative zero is a second spelling of zero, and NaN has many bit patterns. NaN also makes every comparison false, so it would walk straight through the min<=max rule below. " +
+			"pos carried none of this until areas arrived and the question had to be answered for min and max; it had been true of pos since markers existed, and a marker at -0.0 had always been the same point as one at +0.0 stored as different bytes.",
+	},
+	{
+		Name: "an area carries both corners", Category: Presence, Enforce: Decoded,
+		Rules: []string{"5d1cf830"},
+		Tests: []string{"TestRejectsMalformedAreaMarkers"},
+		Note:  "One corner describes nothing, and which corner it was would have no answer.",
+	},
+	{
+		Name: "an area's corners are ordered", Category: Ordering, Enforce: Decoded,
+		Rules: []string{"4c12487a"},
+		Tests: []string{"TestRejectsMalformedAreaMarkers"},
+		Note:  "Refused rather than normalised by swapping. Swapping would give one region two encodings, and a reader that repaired the file would disagree with one that did not -- the same reason every other rule here rejects instead of repairing. The Go API orders the corners for a caller (pile.Area), which is where repairing belongs: before the bytes exist.",
+	},
+	{
 		Name: "an NBT string fits what a Bedrock reader can address", Category: Bound, Enforce: Decoded,
 		Rules: []string{"51ab5d05"},
 		Tests: []string{"TestRejectsOversizedNBTString", "TestNBTWriterHoldsTheContainerBudget"},

@@ -548,8 +548,41 @@ func checkMarkersBlob(b []byte) error {
 		if _, ok := mk["kind"].(string); !ok {
 			return fmt.Errorf("pile: markers blob: marker %q has no string kind", name)
 		}
-		if _, err := doubleTriple(mk["pos"]); err != nil {
-			return fmt.Errorf("pile: markers blob: marker %q pos: %w", name, err)
+		_, hasPos := mk["pos"]
+		if hasPos {
+			if _, err := finiteTriple(mk["pos"]); err != nil {
+				return fmt.Errorf("pile: markers blob: marker %q pos: %w", name, err)
+			}
+		}
+		// Bounds make the marker an area (§7.4). Both or neither: a marker
+		// carrying one corner describes nothing, and which corner it is would
+		// have no answer.
+		rawMin, hasMin := mk["min"]
+		rawMax, hasMax := mk["max"]
+		if hasMin != hasMax {
+			return fmt.Errorf("pile: markers blob: marker %q carries one of min/max, want both or neither", name)
+		}
+		if hasMin {
+			lo, err := finiteTriple(rawMin)
+			if err != nil {
+				return fmt.Errorf("pile: markers blob: marker %q min: %w", name, err)
+			}
+			hi, err := finiteTriple(rawMax)
+			if err != nil {
+				return fmt.Errorf("pile: markers blob: marker %q max: %w", name, err)
+			}
+			for axis := range lo {
+				if lo[axis] > hi[axis] {
+					// Refused rather than normalised by swapping: swapping
+					// would give one area two encodings, and a reader that
+					// repaired the file would disagree with one that did not.
+					return fmt.Errorf("pile: markers blob: marker %q min[%d] %v exceeds max[%d] %v",
+						name, axis, lo[axis], axis, hi[axis])
+				}
+			}
+		}
+		if !hasPos && !hasMin {
+			return fmt.Errorf("pile: markers blob: marker %q has neither pos nor min/max, so it marks nothing", name)
 		}
 		if i > 0 && name <= prev {
 			return fmt.Errorf("pile: markers blob: marker %q follows %q, want ascending unique names", name, prev)
@@ -557,6 +590,36 @@ func checkMarkersBlob(b []byte) error {
 		prev = name
 	}
 	return nil
+}
+
+// finiteTriple is doubleTriple plus §7.4's rules on the doubles themselves.
+//
+// A double admits values that are equal but not identical, and a format whose
+// whole doctrine is one content one encoding cannot carry them. NaN has many
+// bit patterns and makes every comparison false, so an inverted-box check
+// would silently pass over one. Negative zero is a second spelling of zero.
+// Infinities describe a bound no reader can act on.
+//
+// These apply to pos as well, which carried none of them until areas arrived
+// and the question had to be answered: a marker at -0.0 and one at +0.0 are
+// the same point stored as different bytes, and that has been true since
+// markers existed.
+func finiteTriple(v any) ([3]float64, error) {
+	out, err := doubleTriple(v)
+	if err != nil {
+		return out, err
+	}
+	for i, f := range out {
+		switch {
+		case math.IsNaN(f):
+			return out, fmt.Errorf("element %d is NaN", i)
+		case math.IsInf(f, 0):
+			return out, fmt.Errorf("element %d is infinite", i)
+		case f == 0 && math.Signbit(f):
+			return out, fmt.Errorf("element %d is negative zero, which is a second spelling of zero", i)
+		}
+	}
+	return out, nil
 }
 
 // compoundList normalises a decoded NBT list of compounds, which arrives as a

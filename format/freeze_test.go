@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -5510,6 +5511,73 @@ func TestRejectsOversizedNBTString(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("an oversized NBT string was accepted")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}
+
+// TestRejectsMalformedAreaMarkers drives §7.3 and the float rules of §7.2.
+//
+// Every case is a marker blob a caller could hand the writer, so the check has
+// to run on the way in: §7's own reasoning is that a dynamically typed decoder
+// cannot recover which tag a value came from, and the same is true of a double
+// that arrived as a negative zero.
+func TestRejectsMalformedAreaMarkers(t *testing.T) {
+	blob := func(t *testing.T, mk map[string]any) []byte {
+		t.Helper()
+		full := map[string]any{"name": "a", "kind": "k"}
+		maps.Copy(full, mk)
+		return mustNBT(t, map[string]any{"markers": []map[string]any{full}})
+	}
+	negZero := math.Copysign(0, -1)
+	for _, c := range []struct {
+		name string
+		mk   map[string]any
+		want string // "" means it must be accepted
+	}{
+		{"a point", map[string]any{"pos": []float64{1, 2, 3}}, ""},
+		{"an area", map[string]any{"min": []float64{-1, -2, -3}, "max": []float64{1, 2, 3}}, ""},
+		{"an area with a point", map[string]any{
+			"pos": []float64{0, 0, 0},
+			"min": []float64{-1, -1, -1}, "max": []float64{1, 1, 1},
+		}, ""},
+		{"a degenerate area is legal", map[string]any{
+			"min": []float64{1, 2, 3}, "max": []float64{1, 2, 3},
+		}, ""},
+
+		{"neither point nor area", map[string]any{}, "marks nothing"},
+		{"min without max", map[string]any{"min": []float64{0, 0, 0}}, "one of min/max"},
+		{"max without min", map[string]any{"max": []float64{0, 0, 0}}, "one of min/max"},
+		{"inverted on one axis", map[string]any{
+			"min": []float64{0, 5, 0}, "max": []float64{1, 1, 1},
+		}, "exceeds max"},
+		{"min is NaN", map[string]any{
+			"min": []float64{math.NaN(), 0, 0}, "max": []float64{1, 1, 1},
+		}, "NaN"},
+		{"max is infinite", map[string]any{
+			"min": []float64{0, 0, 0}, "max": []float64{math.Inf(1), 1, 1},
+		}, "infinite"},
+		{"pos is negative zero", map[string]any{"pos": []float64{negZero, 0, 0}}, "negative zero"},
+		{"min is negative zero", map[string]any{
+			"min": []float64{negZero, 0, 0}, "max": []float64{1, 1, 1},
+		}, "negative zero"},
+		{"min has two elements", map[string]any{
+			"min": []float64{0, 0}, "max": []float64{1, 1, 1},
+		}, "want 3"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkMarkersBlob(blob(t, c.mk))
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("a conforming marker was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("a malformed marker was accepted")
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("refused for the wrong reason: %v", err)

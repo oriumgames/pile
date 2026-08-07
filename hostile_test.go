@@ -293,14 +293,19 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	// §7.2 fixes the markers schema too, so the interesting hostile marker list
-	// is one that satisfies it and is still absurd: non-finite positions, empty
+	// is one that satisfies it and is still absurd: extreme positions, empty
 	// strings, and far more markers than any map has.
+	//
+	// The positions used to be NaN and the infinities. §7.2 refuses those now,
+	// because a double that compares false against everything walks straight
+	// through the area bounds rule -- so the hostile-but-legal version is the
+	// largest finite doubles instead.
 	const markerN = 20000
 	list := make([]map[string]any, 0, markerN)
 	list = append(list, map[string]any{"name": "", "kind": "", "pos": []any{0.0, 0.0, 0.0}})
 	list = append(list, map[string]any{
 		"name": "\x01nan", "kind": "spawn",
-		"pos":   []any{math.NaN(), math.Inf(1), math.Inf(-1)},
+		"pos":   []any{math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64},
 		"extra": int64(1),
 	})
 	for i := range markerN - 2 {
@@ -798,7 +803,7 @@ func TestLongNBTStringsRoundTrip(t *testing.T) {
 	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
 		t.Fatal(err)
 	}
-	p.SetMarker(Marker{Name: long, Kind: "spawn"})
+	p.SetMarker(Marker{Name: long, Kind: "spawn", Pos: &[3]float64{}})
 	if err := p.Close(); err != nil {
 		t.Fatalf("a world holding %d-byte strings did not save: %v", len(long), err)
 	}

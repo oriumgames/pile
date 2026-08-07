@@ -27,7 +27,7 @@ func TestAppendProviderRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.SaveSettings(&world.Settings{Name: "append-world", Time: 99, TickRange: 5})
-	p.SetMarker(Marker{Name: "hub", Kind: "poi", Pos: [3]float64{0, 64, 0}})
+	p.SetMarker(Marker{Name: "hub", Kind: "poi", Pos: &[3]float64{0, 64, 0}})
 	_ = p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("cud"))
 	if err := p.Close(); err != nil {
 		t.Fatal(err)

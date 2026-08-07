@@ -87,7 +87,7 @@ func TestProviderRoundTrip(t *testing.T) {
 		DefaultGameMode: world.GameModeAdventure, Difficulty: world.DifficultyPeaceful}
 	p.SaveSettings(s)
 	p.SetUserData([]byte("cfg"))
-	p.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: [3]float64{1, 65, 2}})
+	p.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{1, 65, 2}})
 	_ = p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("chunky"))
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestProviderRoundTrip(t *testing.T) {
 		t.Fatal("user data did not round trip")
 	}
 	ms := q.Markers()
-	if len(ms) != 1 || ms[0].Name != "spawn" || ms[0].Pos != [3]float64{1, 65, 2} {
+	if len(ms) != 1 || ms[0].Name != "spawn" || ms[0].Pos == nil || *ms[0].Pos != [3]float64{1, 65, 2} {
 		t.Fatalf("markers did not round trip: %+v", ms)
 	}
 	if !bytes.Equal(q.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld), []byte("chunky")) {
@@ -210,7 +210,7 @@ func TestReadOnlyRefusesEveryMutator(t *testing.T) {
 	}
 	p.SaveSettings(&world.Settings{Name: "original", TickRange: 6})
 	p.SetUserData([]byte("original"))
-	p.SetMarker(Marker{Name: "keep", Kind: "spawn"})
+	p.SetMarker(Marker{Name: "keep", Kind: "spawn", Pos: &[3]float64{}})
 	if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("original")); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestReadOnlyRefusesEveryMutator(t *testing.T) {
 	if got := r.UserData(); !bytes.Equal(got, []byte("original")) {
 		t.Fatalf("SetUserData changed a read-only provider: %q", got)
 	}
-	r.SetMarker(Marker{Name: "added", Kind: "spawn"})
+	r.SetMarker(Marker{Name: "added", Kind: "spawn", Pos: &[3]float64{}})
 	if ms := r.Markers(); len(ms) != 1 || ms[0].Name != "keep" {
 		t.Fatalf("SetMarker changed a read-only provider: %+v", ms)
 	}

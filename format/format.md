@@ -1012,14 +1012,51 @@ preserved verbatim and unconstrained.
 ### 7.2 Markers
 
 Compound `{markers: [compound]}`; each marker has `name` (string), `kind`
-(string), `pos` (list of 3 doubles), plus arbitrary extra keys. The list is
+(string), an optional `pos` (list of 3 doubles), an optional `min` and `max`
+(each a list of 3 doubles, §7.3), plus arbitrary extra keys. The list is
 sorted by `name`, **strictly** ascending: names are unique, since two markers
 with one name would have no defined order and no way to be told apart.
 Writers MUST reject an unsorted list rather than copy it through, because the
 same marker collection would otherwise have as many encodings as it has
 permutations.
 
-### 7.3 Border
+A marker MUST carry `pos`, or `min` and `max`, or both, and decoders MUST
+reject one carrying neither: a marker that is neither a point nor a region
+marks nothing.
+
+Every double in `pos`, `min` and `max` MUST be finite, and MUST NOT be negative
+zero; decoders MUST reject a marker carrying NaN, an infinity or a negative
+zero in any of them. A double admits values that are equal without being
+identical, and a format whose whole rule is that one content has one encoding
+cannot carry them: negative zero is a second spelling of zero, and NaN makes
+every comparison false, so the bounds rule below would silently pass over one.
+
+### 7.3 Areas
+
+A marker carrying `min` and `max` describes a region rather than a point. Both
+MUST be present or both absent, and decoders MUST reject a marker carrying one
+without the other: a single corner describes nothing, and which corner it was
+would have no answer.
+
+Each component of `min` MUST be less than or equal to the same component of
+`max`, and decoders MUST reject a marker where it is not. An inverted box is
+refused rather than normalised by swapping the corners, because swapping would
+give one region two encodings and a reader that repaired the file would
+disagree with one that did not.
+
+The bounds are doubles rather than block coordinates so that a region can have
+a margin, or sit at sub-block precision, or describe something that is not a
+box of whole blocks. Whether they are inclusive is the application's business:
+the format stores two corners and orders them, and says nothing about what
+lies between.
+
+What makes an area an area is that it carries bounds, not its `kind`. `kind`
+stays the application's own category — `spawn_region`, `no_pvp`, whatever the
+map means — because a field that has to say `"area"` to be understood is a
+field doing two jobs, and the second one is already answered by the bounds
+being there.
+
+### 7.4 Border
 
 Compound `{min: int_array[2], max: int_array[2]}`: the inclusive XZ block
 bounds of the playable area. Advisory.

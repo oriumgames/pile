@@ -116,8 +116,8 @@ func TestMarkerRemoveAndSnapshotDelete(t *testing.T) {
 	defer p.Close()
 	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
 
-	p.SetMarker(Marker{Name: "a", Kind: "poi"})
-	p.SetMarker(Marker{Name: "b", Kind: "poi"})
+	p.SetMarker(Marker{Name: "a", Kind: "poi", Pos: &[3]float64{}})
+	p.SetMarker(Marker{Name: "b", Kind: "poi", Pos: &[3]float64{}})
 	if !p.RemoveMarker("a") {
 		t.Fatal("RemoveMarker(a) = false")
 	}
@@ -246,5 +246,76 @@ func TestProviderMaxDecodedBytes(t *testing.T) {
 				t.Fatalf("a policy refusal claimed the world is corrupt: %v", err)
 			}
 		})
+	}
+}
+
+// TestAreaMarkersRoundTrip: an area is a marker carrying bounds (§7.3), so it
+// has to survive everything a point marker survives -- a save, a reopen, and a
+// move -- without a code path of its own.
+//
+// The move is the half worth testing. moveMarkers translated positions and
+// nothing else, so an area added without touching it would have been left
+// behind while every point followed, and the world would look right until
+// somebody stood in a region that was no longer where it said.
+func TestAreaMarkersRoundTrip(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	p, err := Open(dir, Registry(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos := world.ChunkPos{0, 0}
+	if err := p.StoreColumn(pos, world.Overworld, testColumn(t, reg, pos)); err != nil {
+		t.Fatal(err)
+	}
+	p.SetMarker(Point("hub", "spawn", [3]float64{1, 65, 2}))
+	// Corners deliberately the wrong way round: Area orders them, which is
+	// where repairing belongs -- before the bytes exist. The wire refuses an
+	// inverted box rather than fixing it.
+	p.SetMarker(Area("arena", "pvp", [3]float64{10, 70, 10}, [3]float64{-10, 60, -10}))
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopen := func(t *testing.T) map[string]Marker {
+		t.Helper()
+		q, err := Open(dir, Registry(reg), ReadOnly())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Close() }()
+		out := map[string]Marker{}
+		for _, m := range q.Markers() {
+			out[m.Name] = m
+		}
+		return out
+	}
+
+	got := reopen(t)
+	area, ok := got["arena"]
+	if !ok || area.Bounds == nil {
+		t.Fatalf("the area did not survive the save: %+v", got["arena"])
+	}
+	if area.Pos != nil {
+		t.Errorf("an area with no point came back carrying one: %v", *area.Pos)
+	}
+	if area.Bounds.Min != [3]float64{-10, 60, -10} || area.Bounds.Max != [3]float64{10, 70, 10} {
+		t.Errorf("bounds came back as %+v, want min{-10,60,-10} max{10,70,10}", *area.Bounds)
+	}
+	if hub := got["hub"]; hub.Pos == nil || hub.Bounds != nil {
+		t.Errorf("the point marker came back as %+v", hub)
+	}
+
+	// And the move.
+	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{100, 0, -50}}); err != nil {
+		t.Fatal(err)
+	}
+	moved := reopen(t)
+	if b := moved["arena"].Bounds; b == nil ||
+		b.Min != [3]float64{90, 60, -60} || b.Max != [3]float64{110, 70, -40} {
+		t.Errorf("the area did not move with the world: %+v", moved["arena"].Bounds)
+	}
+	if pt := moved["hub"].Pos; pt == nil || *pt != [3]float64{101, 65, -48} {
+		t.Errorf("the point marker moved to %v", moved["hub"].Pos)
 	}
 }

@@ -49,9 +49,14 @@ type exportSettings struct {
 }
 
 type exportMarker struct {
-	Name  string         `json:"name"`
-	Kind  string         `json:"kind"`
-	Pos   [3]float64     `json:"pos"`
+	Name string      `json:"name"`
+	Kind string      `json:"kind"`
+	Pos  *[3]float64 `json:"pos,omitempty"`
+	// Min and Max make the marker an area (§7.3). Omitted for a point, so an
+	// exported file shows what the marker is rather than padding every one
+	// with zeroed corners.
+	Min   *[3]float64    `json:"min,omitempty"`
+	Max   *[3]float64    `json:"max,omitempty"`
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
@@ -116,7 +121,12 @@ func cmdExport(args []string) error {
 		},
 	}
 	for _, m := range p.Markers() {
-		data.Markers = append(data.Markers, exportMarker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra})
+		em := exportMarker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
+		if m.Bounds != nil {
+			lo, hi := m.Bounds.Min, m.Bounds.Max
+			em.Min, em.Max = &lo, &hi
+		}
+		data.Markers = append(data.Markers, em)
 	}
 	if ud := p.UserData(); len(ud) > 0 {
 		if json.Valid(ud) {
@@ -200,7 +210,11 @@ func cmdImport(args []string) error {
 	p.SaveSettings(set)
 
 	for _, m := range data.Markers {
-		p.SetMarker(pile.Marker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra})
+		mk := pile.Marker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
+		if m.Min != nil && m.Max != nil {
+			mk.Bounds = &pile.Bounds{Min: *m.Min, Max: *m.Max}
+		}
+		p.SetMarker(mk)
 	}
 	switch {
 	case len(data.UserData) > 0:

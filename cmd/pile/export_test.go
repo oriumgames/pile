@@ -41,7 +41,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 		DefaultGameMode: world.GameModeAdventure, Difficulty: world.DifficultyHard,
 		Spawn: cube.Pos{1, 7, 2},
 	})
-	b.SetMarker(pile.Marker{Name: "spawn", Kind: "spawn", Pos: [3]float64{1, 7, 2}})
+	b.SetMarker(pile.Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{1, 7, 2}})
 	b.SetUserData([]byte(`{"game":"bedwars"}`))
 	if err := b.Save(srcDir); err != nil {
 		t.Fatal(err)

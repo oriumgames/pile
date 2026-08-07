@@ -438,10 +438,30 @@ func moveMarkers(blob []byte, off cube.Pos) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	d := [3]float64{float64(off.X()), float64(off.Y()), float64(off.Z())}
+	shift := func(t *[3]float64) {
+		for i := range t {
+			t[i] += d[i]
+			// A translation must not turn a legal marker into one the codec
+			// refuses: -1 + 1 is negative zero on no platform, but 0 + -0.0 is,
+			// and a world moved to the origin is the ordinary case.
+			if t[i] == 0 {
+				t[i] = 0
+			}
+		}
+	}
 	for i := range ms {
-		ms[i].Pos[0] += float64(off.X())
-		ms[i].Pos[1] += float64(off.Y())
-		ms[i].Pos[2] += float64(off.Z())
+		if ms[i].Pos != nil {
+			shift(ms[i].Pos)
+		}
+		// Areas move with the world. Translating the points and leaving the
+		// regions behind would be worse than refusing to move at all: every
+		// region would silently point at whatever now occupies its old
+		// coordinates.
+		if b := ms[i].Bounds; b != nil {
+			shift(&b.Min)
+			shift(&b.Max)
+		}
 	}
 	return markersToNBT(ms)
 }

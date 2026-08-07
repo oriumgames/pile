@@ -40,7 +40,7 @@ func TestConcurrentProviderHammer(t *testing.T) {
 						_ = col.Chunk.Block(1, 1, 1, 0)
 					}
 				case 2:
-					p.SetMarker(Marker{Name: fmt.Sprintf("m%d", g), Kind: "poi", Pos: [3]float64{float64(i), 0, 0}})
+					p.SetMarker(Marker{Name: fmt.Sprintf("m%d", g), Kind: "poi", Pos: &[3]float64{float64(i), 0, 0}})
 					_ = p.Markers()
 					p.SetUserData([]byte{byte(g), byte(i)})
 					_ = p.UserData()

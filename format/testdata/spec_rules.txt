@@ -25,6 +25,7 @@
 3bc3297f reference counts are not stored, so a reader cannot verify the order and MUST NOT try):
 43ff86c5 Decoders MUST NOT panic on any input; every violation is a clean error.
 4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
+4c12487a Each component of `min` MUST be less than or equal to the same component of `max`, and decoders MUST reject a marker where it is not.
 4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
 51ab5d05 An NBT string -- a value or a compound key -- MUST NOT exceed 32 767 bytes, and decoders MUST reject a blob carrying a longer one.
 5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
@@ -34,6 +35,7 @@
 5ab4d3d6 refs sorted ascending; indices remapped accordingly; the palette contains only entries actually used by the indices; a storage whose used palette collapses to one entry MUST be written uniform (width 0).
 5bb2554d - **How a field is spelled is a rule.** When one of these fields *is* present it MUST carry the tag and shape stated below, and the marker list MUST be ordered as stated.
 5befe4df Because the prologue is the authority, a writer that has opened a file with a damaged physical header MUST hash **new** checkpoints against the canonical header image rebuilt from the semantic fields, never against the damaged bytes it found on disk.
+5d1cf830 Both MUST be present or both absent, and decoders MUST reject a marker carrying one without the other:
 5ed7d87f Property keys ascend bytewise and are unique, and decoders MUST reject a repeated or out-of-order key.
 62b04284 a structure is always solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value of either field this table does not list.
 648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
@@ -80,11 +82,13 @@ cf8e4eb4 Padding bits above `n` MUST be zero
 d2702006 Flags `Stats` and `DefaultBiome` MUST be clear in an indexed file, and readers MUST reject one that sets either:
 d3997566 It is a name rather than a palette reference because the palette may legitimately be empty (a file written with biomes skipped), so a reference would be out of range in exactly the files that need it; and a name rather than a numeric id because ids are a property of the running game version, and one file MUST NOT decode to different biomes on two of them.
 ddf5c7be Decoders MUST reject a palette that carries both:
+df794981 A marker MUST carry `pos`, or `min` and `max`, or both, and decoders MUST reject one carrying neither:
 e01f257a Decoders MUST reject blobs that violate them.
 e0479882 In **mode 0** it MUST be clear when no section carries any, since a solid file's flag and content are written together and setting it over a light-free world is a second encoding of that world.
 e23c42de a writer emits all five, but a compound missing one is **valid** and a reader MUST NOT reject it, while a key that is present MUST carry the tag named here.
 e6b20330 Writers MUST reject an unsorted list rather than copy it through, because the same marker collection would otherwise have as many encodings as it has permutations.
 e72263a7 - `width` MUST be 0 iff `paletteN == 1`; then every position holds `ref[0]`.
+e7fb3300 Every double in `pos`, `min` and `max` MUST be finite, and MUST NOT be negative zero; decoders MUST reject a marker carrying NaN, an infinity or a negative zero in any of them.
 f1047fc4 The tag of each listed field is fixed and writers MUST reject a blob carrying the wrong one:
 f61eb7d5 a layer that never reaches the file contributes nothing, and writers MUST NOT count it.
 f930c4ef Decoders MUST reject lengths > 16 777 216 (16 MiB)

@@ -26,7 +26,7 @@ func buildMoveWorld(t *testing.T, dir string) {
 		"identifier": "minecraft:armor_stand",
 		"Pos":        []any{float32(6.5), float32(4), float32(6.5)},
 	})
-	b.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: [3]float64{6, 4, 6}})
+	b.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{6, 4, 6}})
 	b.Settings(&world.Settings{Name: "move-test", Spawn: cube.Pos{6, 4, 6}, TickRange: 6})
 	if err := b.Save(dir); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestMoveFastPath(t *testing.T) {
 	if got := p.Settings().Spawn; got != (cube.Pos{38, 4, -10}) {
 		t.Fatalf("spawn not translated: %v", got)
 	}
-	if ms := p.Markers(); len(ms) != 1 || ms[0].Pos != [3]float64{38, 4, -10} {
+	if ms := p.Markers(); len(ms) != 1 || ms[0].Pos == nil || *ms[0].Pos != [3]float64{38, 4, -10} {
 		t.Fatalf("marker not translated: %+v", ms)
 	}
 	// Backup exists and holds the pre-move world.
