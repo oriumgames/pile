@@ -10,7 +10,6 @@ import (
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
-	"github.com/klauspost/compress/zstd"
 )
 
 // StructureData is the decoded content of a structure file: a block grid of
@@ -415,14 +414,11 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	if opts.Compression == CompressionNone {
 		flags |= FlagUncompressed
 	} else {
-		enc, err := zstd.NewWriter(nil,
-			zstd.WithEncoderLevel(zstdLevel(opts.Compression)),
-			zstd.WithEncoderConcurrency(1))
-		if err != nil {
-			return fmt.Errorf("pile: create zstd encoder: %w", err)
-		}
-		stored = enc.EncodeAll(stored, make([]byte, 0, len(stored)/4))
-		_ = enc.Close()
+		// The process-wide encoder, as the world path uses. Building one per
+		// call allocates its whole compression state each time: at the level
+		// Structure.Save hardcodes that is tens of megabytes to write a file
+		// of a few hundred bytes.
+		stored = compressBody(stored, opts.Compression, false)
 	}
 
 	hdr := &writer{}
