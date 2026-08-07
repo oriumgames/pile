@@ -154,7 +154,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "palette entries are unique", Category: Normalisation,
-		Rules: []string{"afea490c", "ddf5c7be", "22ececda"},
+		Rules: []string{"afea490c", "ddf5c7be"},
 		Tests: []string{"TestPaletteMergesIdenticalEntries", "TestRejectsDuplicatePaletteEntries"},
 		Note:  "Two entries that encode identically at one version have nothing to order them by.",
 	},
@@ -166,7 +166,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "reference counts predate deduplication", Category: Ordering,
-		Rules: []string{"999897c0"},
+		Rules: []string{},
 		Tests: []string{"TestPaletteCountsOccurrencesNotBlobs"},
 		Note:  "Counting distinct blobs instead reorders the palette exactly when deduplication succeeds.",
 	},
@@ -256,11 +256,6 @@ var invariants = []Invariant{
 		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections"},
 		Note:  "Ties break on the bytes that get written, not on the caller's value.",
 	},
-	{
-		Name: "stats keys are extensible", Category: Presence,
-		Rules: []string{"8578b8c5"},
-		Tests: []string{"TestStatsPreservesUnknownKeys"},
-	},
 
 	// -- Indexed mode (§5) -----------------------------------------------
 	{
@@ -331,5 +326,46 @@ var invariants = []Invariant{
 		Name: "decoders never panic", Category: Integrity,
 		Rules: []string{"43ff86c5"},
 		Tests: []string{"FuzzReadWorld", "FuzzReadStructure", "FuzzOpenIndexed", "FuzzNBTStability"},
+	},
+	// -- Specification review (round 23) ---------------------------------
+	{
+		Name: "the hash seed is zero", Category: Normalisation,
+		Rules: []string{},
+		Tests: []string{"TestHashSeedIsZero"},
+		Note:  "xxHash64 takes a seed and nothing else in the format implies which. An implementation that guesses differently agrees with this one on nothing.",
+	},
+	{
+		Name: "the biome palette order is defined", Category: Ordering,
+		Rules: []string{"ca3a49c4", "230b214c"},
+		Tests: []string{"TestBiomePaletteOrder", "TestRejectsDuplicatePaletteEntries"},
+	},
+	{
+		Name: "dropped layers do not count", Category: Ordering,
+		Rules: []string{"cd420726", "f61eb7d5"},
+		Tests: []string{"TestDroppedAirLayersDoNotCount", "TestPaletteCountsOccurrencesNotBlobs"},
+		Note:  "A layer that never reaches the file contributes nothing to the palette order.",
+	},
+	{
+		Name: "blob ids follow the field order", Category: Ordering,
+		Rules: []string{"078b2b7d"},
+		Tests: []string{"TestDedup"},
+		Note:  "The whole dedup table's identity depends on the assignment sequence, which is otherwise only deducible from the record layout.",
+	},
+	{
+		Name: "structure cells are computed in 64 bits", Category: Bound,
+		Rules: []string{"0b740420"},
+		Tests: []string{"TestRejectsOverLimitCounts"},
+		Note:  "Each axis alone may reach 1048576, so the rounding overflows a 32-bit value near the top of its range and the product far below it.",
+	},
+	{
+		Name: "zstd frames are bounded", Category: Bound,
+		Rules: []string{"8745186e", "7b6bfb2d", "edd065ba"},
+		Tests: []string{"TestRejectsOversizedZstdWindow"},
+		Note:  "The decoded-size ceilings bound the output, not the memory needed to produce it.",
+	},
+	{
+		Name: "stats fields are optional but typed", Category: Presence,
+		Rules: []string{"e23c42de", "fa104a93"},
+		Tests: []string{"TestStatsMissingKeyAccepted", "TestStatsPreservesUnknownKeys"},
 	},
 }

@@ -266,6 +266,7 @@ func (w *IndexedWorld) setDict(dict []byte) error {
 	}
 	dec, err := zstd.NewReader(nil,
 		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxWindow(maxZstdWindow),
 		zstd.WithDecoderMaxMemory(maxDecodedFrame),
 		zstd.WithDecoderDicts(dict))
 	if err != nil {

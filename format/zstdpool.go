@@ -24,6 +24,12 @@ const (
 	// maxDecodedDirectory is larger: one directory describes every chunk in
 	// the file, and it bounds maxDirEntries.
 	maxDecodedDirectory = 512 << 20
+	// maxZstdWindow bounds the window a frame may ask a decoder to hold. The
+	// decoded-size ceilings bound the output, not the memory needed to produce
+	// it, so without this a small frame can still demand an arbitrary window.
+	// Pile's own frames never need more: a record is one chunk and a body is
+	// written in one pass.
+	maxZstdWindow = 8 << 20
 )
 
 var (
@@ -46,6 +52,7 @@ func sharedDirectoryDecoder() *zstd.Decoder {
 	dirDecOnce.Do(func() {
 		d, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(runtime.GOMAXPROCS(0)),
+			zstd.WithDecoderMaxWindow(maxZstdWindow),
 			zstd.WithDecoderMaxMemory(maxDecodedDirectory))
 		if err != nil {
 			panic("pile: create zstd directory decoder: " + err.Error())
@@ -100,6 +107,7 @@ func sharedDecoder() *zstd.Decoder {
 	bodyDecOnce.Do(func() {
 		d, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(runtime.GOMAXPROCS(0)),
+			zstd.WithDecoderMaxWindow(maxZstdWindow),
 			zstd.WithDecoderMaxMemory(maxDecodedBody))
 		if err != nil {
 			panic("pile: create zstd decoder: " + err.Error())
@@ -115,6 +123,7 @@ func sharedFrameDecoder() *zstd.Decoder {
 	frameDecOnce.Do(func() {
 		d, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(runtime.GOMAXPROCS(0)),
+			zstd.WithDecoderMaxWindow(maxZstdWindow),
 			zstd.WithDecoderMaxMemory(maxDecodedFrame))
 		if err != nil {
 			panic("pile: create zstd frame decoder: " + err.Error())

@@ -11,9 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
+	"github.com/klauspost/compress/zstd"
 )
 
 // Tests for the normative validity rules the freeze review added: a decoder
@@ -837,7 +839,10 @@ func TestTrailingAirLayersDropped(t *testing.T) {
 
 	padded := chunk.New(reg, cube.Range{-64, 319})
 	padded.SetBlock(0, -64, 0, 0, stone)
-	padded.SetBlock(0, -64, 0, 3, air) // forces layers 1..3 into existence
+	// Setting air on an unallocated layer is a no-op, so layers 1..3 are
+	// brought into existence and then cleared.
+	padded.SetBlock(0, -64, 0, 3, stone)
+	padded.SetBlock(0, -64, 0, 3, air)
 
 	a := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: bare}}}}, reg, CompressionNone)
 	b := encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0, Col: &chunk.Column{Chunk: padded}}}}, reg, CompressionNone)
@@ -3117,5 +3122,151 @@ func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	ftr.raw(tail.bytes())
 	if _, err := ReadStructure(append(append(hdr.bytes(), withSettings.bytes()...), ftr.bytes()...), reg); err == nil {
 		t.Error("a structure carrying settings was accepted")
+	}
+}
+
+// Round 23: rules a specification review found stated ambiguously or not at
+// all. Most already held in code; these pin them.
+
+// TestHashSeedIsZero: xxHash64 takes a seed, and nothing else in the format
+// implies which one. An implementation that guesses differently produces files
+// this reader rejects and rejects files it produces, so the value is pinned to
+// published seed-0 vectors rather than to whatever the library defaults to.
+func TestHashSeedIsZero(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want uint64
+	}{
+		{"", 0xEF46DB3751D8E999},
+		{"a", 0xD24EC4F1A98C6E5B},
+		{"as", 0x1C330FB2D66BE179},
+		{"asd", 0x631C37CE72A97393},
+		{"asdf", 0x415872F599CEA71E},
+	} {
+		if got := xxhash.Sum64String(c.in); got != c.want {
+			t.Errorf("xxhash64(%q) = %016x, want %016x: the seed is not 0", c.in, got, c.want)
+		}
+	}
+}
+
+// TestBiomePaletteOrder: the biome palette is sorted by descending reference
+// count then ascending name, compared bytewise. Nothing else in the format
+// pins the direction or the comparison.
+func TestBiomePaletteOrder(t *testing.T) {
+	b := newBiomePaletteBuilder()
+	// "b" appears twice, "a" and "c" once each: count orders b first, and the
+	// tie between a and c is broken by name.
+	b.add("minecraft:b", 2)
+	b.add("minecraft:c", 1)
+	b.add("minecraft:a", 1)
+	enc, _, err := b.finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bi, ai, ci := bytes.Index(enc, []byte("minecraft:b")), bytes.Index(enc, []byte("minecraft:a")), bytes.Index(enc, []byte("minecraft:c"))
+	if bi < 0 || ai < 0 || ci < 0 {
+		t.Fatalf("palette lost an entry: %q", enc)
+	}
+	if !(bi < ai && ai < ci) {
+		t.Fatalf("biome order is b@%d a@%d c@%d, want descending count then ascending name", bi, ai, ci)
+	}
+}
+
+// TestDroppedAirLayersDoNotCount: trailing all-air layers never reach the
+// file, so their air references must not influence the palette order. A writer
+// counting on the other side of the drop would order the palette differently.
+func TestDroppedAirLayersDoNotCount(t *testing.T) {
+	reg := testRegistry(t)
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	air := reg.AirRuntimeID()
+
+	build := func(spare int) []byte {
+		ch := chunk.New(reg, cube.Range{-64, 319})
+		ch.SetBlock(0, -64, 0, 0, stone)
+		for l := 1; l <= spare; l++ {
+			// Setting air on an unallocated layer is a no-op, so the layer has
+			// to be brought into existence and then cleared.
+			ch.SetBlock(0, -64, 0, uint8(l), stone)
+			ch.SetBlock(0, -64, 0, uint8(l), air)
+		}
+		return encode(t, &WorldData{Columns: []Column{{X: 0, Z: 0,
+			Col: &chunk.Column{Chunk: ch}}}}, reg, CompressionNone)
+	}
+	// However many spare air layers the caller allocated, they are dropped and
+	// contribute nothing, so the bytes are identical.
+	a, b := build(0), build(3)
+	if !bytes.Equal(a, b) {
+		t.Fatalf("dropped air layers changed the file: %d vs %d bytes", len(a), len(b))
+	}
+}
+
+// TestStatsMissingKeyAccepted: a stats compound is a summary, so a missing key
+// is valid and a wrongly tagged one is not.
+func TestStatsMissingKeyAccepted(t *testing.T) {
+	reg := testRegistry(t)
+	partial, err := marshalNBT(map[string]any{"chunks": int64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := &writer{}
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(nil)
+	body.blob(partial)
+	body.uvarint(0)
+	body.uvarint(0)
+	body.uvarint(0)
+	body.uvarint(0)
+	body.uvarint(0)
+	hdr := &writer{}
+	hdr.raw(headerMagic[:])
+	hdr.u16(Version)
+	hdr.u8(KindWorld)
+	hdr.u8(ModeSolid)
+	hdr.u32(FlagUncompressed | FlagStats)
+	hdr.i32(chunk.CurrentBlockVersion)
+	tail := &writer{}
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.u64(0)
+	tail.raw(footerMagic[:])
+	ftr := &writer{}
+	ftr.u64(checkpointHash(hdr.bytes(), body.bytes(), tail.bytes()))
+	ftr.raw(tail.bytes())
+	file := append(append(hdr.bytes(), body.bytes()...), ftr.bytes()...)
+	if _, err := ReadWorld(file, reg); err != nil {
+		t.Fatalf("a stats compound missing keys was rejected: %v", err)
+	}
+}
+
+// TestRejectsOversizedZstdWindow: the decoded-size ceilings bound the output,
+// not the memory needed to produce it, so a small frame can still demand an
+// arbitrary window unless the window itself is bounded.
+func TestRejectsOversizedZstdWindow(t *testing.T) {
+	// A frame encoded with a window larger than the ceiling.
+	enc, err := zstd.NewWriter(nil, zstd.WithWindowSize(32<<20))
+	if err != nil {
+		t.Skipf("this build cannot request a %d byte window: %v", 32<<20, err)
+	}
+	payload := make([]byte, 40<<20)
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	frame := enc.EncodeAll(payload, nil)
+	enc.Close()
+	if _, err := sharedDecoder().DecodeAll(frame, nil); err == nil {
+		t.Fatal("a frame demanding a window past the ceiling was decoded")
+	}
+	// A frame within the ceiling still decodes.
+	small, err := zstd.NewWriter(nil, zstd.WithWindowSize(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := small.EncodeAll(payload, nil)
+	small.Close()
+	if _, err := sharedDecoder().DecodeAll(ok, nil); err != nil {
+		t.Fatalf("a frame within the window ceiling was refused: %v", err)
 	}
 }

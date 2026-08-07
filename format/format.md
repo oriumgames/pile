@@ -14,8 +14,8 @@ an optional append-oriented mode for large worlds.
 - Header magic: the four bytes `P I L E`
 - Footer magic: the four bytes `E L I P`
 - Version: 2
-- Compression: Zstandard
-- Checksums: xxHash64
+- Compression: Zstandard (see §2.5 for the constraints on a frame)
+- Checksums: xxHash64, **seed 0**
 
 ---
 
@@ -122,6 +122,20 @@ payload meaning). Not every `kind`/`mode` pair exists: a structure is always
 solid, so `kind = 1` with `mode = 1` MUST be rejected, and so MUST any value
 of either field this table does not list.
 
+**There is no forward-compatibility lane, by decision.** A v2 reader refuses
+every v3 file outright rather than skipping what it does not recognise. The
+alternative — a class of ignorable extensions — cannot coexist with the
+canonicality this format is built on: if a reader may ignore a field, then two
+files differing only in that field decode identically, and the guarantee that
+one content has one encoding is gone. Every rule in §4.8 rests on that.
+
+The cost is real and is accepted: shipping a v3 means every reader must be
+upgraded before any writer produces one, and old readers give a clean
+`ErrUnsupportedVersion` rather than a partial read. The mechanism for that is
+the version field, not silent tolerance. Reserved bits are required to be zero
+for the same reason — a bit an old reader ignores is a bit that changes the
+bytes without changing the content.
+
 ### 2.2 Footer (44 bytes, at end of file)
 
 | offset | type | field |
@@ -162,15 +176,41 @@ there would change how the payload decodes while every integrity check still
 passed.
 
 ```
-preimage = header (16 bytes)
+preimage = header image (16 bytes, §2.1)
         || payload            (solid: the stored body; indexed: the stored directory frame)
         || footer bytes 8..44 (the control words and the footer magic)
-hash     = xxHash64(preimage)
+hash     = xxHash64(preimage, seed = 0)
 ```
+
+Every xxHash64 in this format uses **seed 0**, here and in §3.4 and §5.5.
+
+The preimage's first component is the **header image**: the 16 bytes §2.1
+lays out for this file's semantic fields. On an intact file that is exactly
+the 16 bytes on disk. When those bytes are damaged they are not, and §5.5
+requires a writer to hash the image rebuilt from the directory prologue
+rather than what it found at offset 0 — so the preimage is defined by the
+semantic fields, and the physical bytes are one materialisation of it.
 
 Everything but the hash field itself is therefore covered. Indexed files
 recompute this per checkpoint, so `generation` and `prevFooter` are
 authenticated too.
+
+### 2.5 Zstandard frames
+
+Compressed payloads are ordinary Zstandard frames, with two constraints that
+the decompressed-size ceilings of §8 do not cover on their own:
+
+- The **window size** MUST NOT exceed 8 MiB. A ceiling on the decompressed
+  size bounds the output but not the memory a decoder must hold to produce it,
+  so without this a small frame can still demand an arbitrary window. Readers
+  MUST refuse a frame that asks for more.
+- The frame **MUST** declare its content size. Readers are entitled to
+  allocate the output in one piece, and a frame that hides its size forces
+  either a growing buffer or a second pass; the ceilings of §8 are then checked
+  against the declared size before anything is allocated.
+
+Neither constrains which encoder produced the frame: as §4.8 says, the
+compressed bytes are not part of the format's identity.
 
 ---
 
@@ -229,7 +269,13 @@ In solid mode writers MUST sort the palette by:
    happens before the blob table deduplicates anything, so a section blob
    shared by a hundred sections contributes a hundred, not one. Writers MUST
    count occurrences rather than distinct blobs, since the two disagree
-   whenever deduplication succeeds;
+   whenever deduplication succeeds. Counting happens **after** the trailing
+   all-air layers of §4.3 are dropped: a layer that never reaches the file
+   contributes nothing, and writers MUST NOT count it. There is no circularity
+   here, unlike the biome case in §3.2, because dropping a trailing air layer
+   does not depend on the palette order; the rule is stated because two writers
+   counting on either side of it would order the palette differently and change
+   every byte downstream;
 2. then **ascending bytewise comparison of the entry's own encoded bytes**,
    that is the length-prefixed `name` followed by the encoded property block
    exactly as written above (so the name's length prefix leads, and a shorter
@@ -276,8 +322,16 @@ depend on what elision removed. Counting first breaks the loop, and writers
 MUST count that way or two of them will disagree on the palette order, on
 `defaultBiomeRef` and therefore on every byte downstream.
 
-One entry per biome: decoders MUST reject a repeated name, for the reason §3.1
-gives for block states.
+Writers MUST sort the biome palette by:
+
+1. **descending reference count**, as defined above;
+2. then **ascending bytewise comparison of the name**, the same comparison
+   §3.1 applies to a block entry's encoded bytes. Names are UTF-8 (§1) and are
+   compared as bytes rather than as decoded code points, so no implementation
+   needs a collation table to agree.
+
+The order is total because names are unique: one entry per biome, and decoders
+MUST reject a repeated name, for the reason §3.1 gives for block states.
 
 Names, not numeric IDs, so entries stay stable across game versions. Names are
 **fully qualified**: every one MUST contain a namespace and a colon, and a bare
@@ -328,8 +382,14 @@ blob[count]      section blobs, concatenated (self-delimiting)
 ```
 
 Blob ids are assigned in first-use order over the (Morton-sorted) record
-stream. Block and biome blobs share the table; a blob's refs are interpreted
-against the block or biome palette according to the use site.
+stream. Within one record the order is the order §4.3 writes the fields in:
+present block sections by ascending section index, and within each section its
+layers by ascending layer number, then present biome sections by ascending
+section index. That is deducible from the field order, but the whole table's
+identity depends on it, so writers MUST assign ids in exactly that sequence.
+
+Block and biome blobs share the table; a blob's refs are interpreted against
+the block or biome palette according to the use site.
 
 ---
 
@@ -402,11 +462,17 @@ stats            blob             present iff flag Stats; NBT (§4.2)
 
 ### 4.2 Stats compound (optional)
 
-NBT compound with at least: `chunks` (long), `filledSections` (long),
-`uniqueBlobs` (long), `blockStates` (long), `biomes` (long). They are longs
-because the format's own ceilings exceed what a 32-bit tag can hold. Tools may read it
-via the meta block without decoding chunk data. Readers MUST ignore unknown
-keys.
+NBT compound holding `chunks` (long), `filledSections` (long), `uniqueBlobs`
+(long), `blockStates` (long) and `biomes` (long). They are longs because the
+format's own ceilings exceed what a 32-bit tag can hold. Tools may read it via
+the meta block without decoding chunk data.
+
+The same split as §7 applies, and for the same reason: a writer emits all five,
+but a compound missing one is **valid** and a reader MUST NOT reject it, while
+a key that is present MUST carry the tag named here. Readers MUST ignore keys
+they do not know, so a later version can add one without invalidating this
+one's files. Stats are a summary of the payload and carry no information the
+payload lacks, which is why absence is tolerable here and a wrong tag is not.
 
 ### 4.3 Chunk record
 
@@ -518,6 +584,12 @@ biomes are uniform and the chosen reference fits the 16 bits available; they
 MUST leave it clear otherwise, including when the reference does not fit. The
 flag is not an optimisation a writer may decline, because declining it is a
 second encoding of the same world.
+
+Not falling back to a runner-up when the winner's reference exceeds 16 bits is
+deliberate, not an oversight. A search for the best biome that still fits would
+be a second rule for two writers to disagree about, and the case needs a palette
+of more than 65 536 biomes to arise at all; giving up the flag entirely is one
+rule with one outcome.
 
 Writers pick the biome with the most uniform sections, breaking ties by the
 **lowest global biome palette reference**. Without a tie-break two conforming
@@ -748,7 +820,8 @@ meta block       §4.1 (settings/markers/border empty; userData usable; no stats
 block palette    §3.1
 biome palette    §3.2 with count = 0   (structures store no biomes)
 blob table       §3.4
-sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576)
+sizeX,Y,Z        uvarint × 3      dimensions in blocks (≥ 1; ≤ 1 048 576 each,
+                                  and see the cell ceiling below, which binds first)
 originX,Y,Z      svarint × 3      paste anchor offset; each MUST be in int32
                                   range, so that one value has one encoding
 cellPresence     bitset(cells)
@@ -784,8 +857,16 @@ unchanged, and are normative here rather than merely inherited:
   and two structures that differ only in that padding are the same structure
   and MUST encode identically.
 
-The box is covered by 16³ **cells**: `cells{X,Y,Z} = ceil(size/16)`. The cell
-at cell-coordinates (cx, cy, cz) has index
+The box is covered by 16³ **cells**: `cells{X,Y,Z} = ceil(size/16)`. Readers
+MUST compute that rounding and the resulting product in at least 64 bits and
+check it against the cell ceiling of §8 **before** allocating anything: each
+axis alone may be as large as 1 048 576, so `size + 15` overflows a 32-bit
+value near the top of its range and their product overflows one far below it,
+and a truncated product turns an impossible structure into a small allocation
+that then disagrees with the presence bitset. The cell ceiling binds long
+before the per-axis one for any structure that is not a sliver.
+
+The cell at cell-coordinates (cx, cy, cz) has index
 
 ```
 (cx * cellsZ + cz) * cellsY + cy
@@ -871,8 +952,8 @@ remain, not from these ceilings.
 | decompressed size of a solid body | 512 MiB |
 | decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
 | decompressed size of an indexed directory frame | 512 MiB |
-| structure cells | 1 048 576 |
-| structure size per axis, in blocks | 1 048 576 |
+| structure cells | 1 048 576 (binds first: it caps a cubic structure near 160 blocks per axis) |
+| structure size per axis, in blocks | 1 048 576 (a ceiling on any one axis; only reachable when the others are small) |
 | global palette entries | 1 048 576 |
 | blob table entries | 16 777 216 |
 | section blob local palette entries | 65 536 (the u16 index width) |
@@ -888,7 +969,12 @@ solid body assembled from individually legal blobs can still pass 512 MiB, and
 an indexed metadata frame built from four legal 16 MiB blobs already exceeds
 the 64 MiB frame ceiling. Every completed body and every appended frame is
 therefore checked against its own limit before compression, along with the
-stored frame length against the 32-bit field that carries it. A record whose
+stored frame length against its own ceiling. That ceiling is a validity rule
+in its own right rather than the width of any field: a directory carries a
+frame length as a `uvarint` and the footer carries the directory's own as a
+`u64`, so nothing on the wire truncates, but 2³²−1 is the largest value a
+reader may be asked to hold in the 32-bit counter such a length naturally
+fits, and a file naming more is invalid. A record whose
 decompressed size exceeds the reader's frame ceiling, or NBT nested deeper
 than the reader accepts, is data loss even though every individual field is
 within limits. In indexed mode it is worse than data loss: a checkpoint that
