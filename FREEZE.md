@@ -96,13 +96,29 @@ Nothing below is optional. Each line names its exit criterion.
 
 ### Conformance
 
-- [ ] A vector appendix exists: for each of a minimal solid world, an empty
+- [x] A vector appendix exists: for each of a minimal solid world, an empty
       chunk, a waterlogged-only section, a 256- and a 257-entry palette, a
       structure with edge padding, a torn-write indexed file, a preserved-state
       sidecar, and each dimension — the exact bytes and the expected
-      `ContentHash`.
-- [ ] The vectors are generated from the implementation and checked into
-      `format/testdata`, and a test verifies them.
+      `ContentHash`. *Exit: `format/vectors.md` documents 17 positive vectors
+      (the nine named cases plus layer numbering, default-biome elision with a
+      tie, blob dedup and Morton order, the per-column collections, light,
+      stats and a full structure) and 39 negative ones, each with the rule a
+      conforming reader must refuse it for. The appendix also records what it
+      does not cover: the palette sort orders and cell padding, which no vector
+      can express because nothing in a file proves them, and most of indexed
+      mode, whose bytes are history-dependent.*
+- [x] The vectors are generated from the implementation and checked into
+      `format/testdata`, and a test verifies them. *Exit:
+      `format/testdata/vectors/` plus `TestConformanceVectors` and
+      `TestConformanceVectorsNegative`. Each positive vector is byte-compared,
+      decoded, re-encoded back to the same bytes, and parsed a second time by
+      a walker written from the specification rather than from the decoder,
+      which accounts for every byte and re-checks the rules independently;
+      each negative vector must be rejected, with an error naming the rule, by
+      both readers. Regeneration is the golden suite's guard — the same
+      `-update` and `-format-change` flags — so locking `-update` out at freeze
+      locks the vectors with the goldens.*
 
 *Rationale: the specification concedes that where prose and implementation
 disagree, the implementation wins. Vectors are what make that concession safe
