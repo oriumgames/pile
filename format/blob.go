@@ -197,6 +197,12 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 	if pn == 0 {
 		return decBlob{}, corruptf("empty section palette in blob")
 	}
+	// A reference is at least one byte and the width code follows them, so a
+	// count larger than what is left cannot be honest. Sizing the slice from
+	// the declared count alone let four bytes of input ask for 65,536 entries.
+	if pn > r.remaining() {
+		return decBlob{}, corruptf("section palette count %d exceeds input", pn)
+	}
 	refs := make([]uint32, pn)
 	for j := range pn {
 		v, err := r.uvarint()
@@ -303,21 +309,32 @@ func decodeBlobTable(r *reader) ([]decBlob, error) {
 		return nil, corruptf("blob table count %d exceeds input", n)
 	}
 	blobs := make([]decBlob, 0, n)
-	seen := make(map[string]int, n)
+	// Duplicate detection by hash over spans of the body, not by copying every
+	// blob into a map key: a section blob is 4 KiB or 8 KiB of indices, so
+	// keying on the bytes made reading a file cost more than the file. The
+	// xxhash-then-compare prefilter is the one blobTable.add already uses to
+	// deduplicate on the way in.
+	seen := make(map[uint64][]int, n)
+	spans := make([][2]int, 0, n)
 	for i := range n {
 		start := r.off
 		b, err := decodeOneBlob(r)
 		if err != nil {
 			return nil, fmt.Errorf("blob %d: %w", i, err)
 		}
+		raw := r.b[start:r.off]
+		h := xxhash.Sum64(raw)
 		// The table exists to store identical bytes once, so a repeat is a
 		// second encoding of the same file. A reader can check this even
 		// though it cannot check the palette's order, and where it can check
 		// it should.
-		if prev, dup := seen[string(r.b[start:r.off])]; dup {
-			return nil, corruptf("blob %d repeats blob %d", i, prev)
+		for _, prev := range seen[h] {
+			if bytes.Equal(r.b[spans[prev][0]:spans[prev][1]], raw) {
+				return nil, corruptf("blob %d repeats blob %d", i, prev)
+			}
 		}
-		seen[string(r.b[start:r.off])] = i
+		seen[h] = append(seen[h], i)
+		spans = append(spans, [2]int{start, r.off})
 		blobs = append(blobs, b)
 	}
 	return blobs, nil

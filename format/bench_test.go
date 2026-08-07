@@ -172,6 +172,59 @@ func BenchmarkReadWorld(b *testing.B) {
 	}
 }
 
+// benchVariedWorld builds a world whose sections almost all differ, so the
+// blob table cannot deduplicate them away and reading one exercises the
+// duplicate check over a table of realistic size.
+func benchVariedWorld(b *testing.B) *WorldData {
+	b.Helper()
+	reg := testRegistry(b)
+	stone := reg.BlockRuntimeID(block.Stone{})
+	dirt := reg.BlockRuntimeID(block.Dirt{})
+	d := &WorldData{}
+	seed := uint32(12345)
+	next := func() uint32 {
+		seed = seed*1664525 + 1013904223
+		return seed >> 16
+	}
+	for x := range int32(4) {
+		for z := range int32(4) {
+			ch := chunk.New(reg, overworldRange)
+			for y := int16(-64); y < 64; y++ {
+				for bx := range uint8(16) {
+					for bz := range uint8(16) {
+						if next()%2 == 0 {
+							ch.SetBlock(bx, y, bz, 0, stone)
+						} else {
+							ch.SetBlock(bx, y, bz, 0, dirt)
+						}
+					}
+				}
+			}
+			d.Columns = append(d.Columns, Column{X: x, Z: z, Col: &chunk.Column{Chunk: ch}})
+		}
+	}
+	return d
+}
+
+// BenchmarkReadWorldVaried reads a world with a large blob table. Duplicate
+// detection there must not cost a copy of the table.
+func BenchmarkReadWorldVaried(b *testing.B) {
+	reg := testRegistry(b)
+	d := benchVariedWorld(b)
+	var buf bytes.Buffer
+	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionDefault}); err != nil {
+		b.Fatal(err)
+	}
+	file := buf.Bytes()
+	b.SetBytes(int64(len(file)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := ReadWorld(file, reg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkIndexedStore(b *testing.B) {
 	b.ReportAllocs()
 	reg := testRegistry(b)
