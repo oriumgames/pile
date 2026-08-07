@@ -554,3 +554,53 @@ func TestStagingRefusesAnExistingPath(t *testing.T) {
 		t.Fatalf("the symlink target was written through: %q", got)
 	}
 }
+
+// TestColumnsAppendLazy: an append-mode iteration must decode one record at a
+// time. It used to decode and retain every column in the dimension before
+// yielding the first, which is what WorldBounds pays to compute a bounding box
+// it consumes one column at a time, and what any caller that stops early pays
+// for columns it never looks at.
+func TestColumnsAppendLazy(t *testing.T) {
+	reg := testRegistry(t)
+	p, err := Open(t.TempDir(), AppendMode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	col := testColumn(t, reg)
+	const n = 64
+	for i := range int32(n) {
+		if err := p.StoreColumn(world.ChunkPos{i, 0}, world.Overworld, col); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := 0
+	for range p.Columns(world.Overworld) {
+		seen++
+	}
+	if seen != n {
+		t.Fatalf("full iteration yielded %d columns, want %d", seen, n)
+	}
+	if err := p.IterError(); err != nil {
+		t.Fatal(err)
+	}
+
+	first := testing.AllocsPerRun(3, func() {
+		for range p.Columns(world.Overworld) {
+			break
+		}
+	})
+	full := testing.AllocsPerRun(3, func() {
+		for range p.Columns(world.Overworld) {
+		}
+	})
+	// Stopping after one column must not cost anything like the whole
+	// dimension. The eager version made these two identical.
+	if first > full/8 {
+		t.Fatalf("stopping after one column allocated %.0f, a full iteration %.0f", first, full)
+	}
+	if err := p.IterError(); err != nil {
+		t.Fatal(err)
+	}
+}

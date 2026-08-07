@@ -578,29 +578,106 @@ func (p *Provider) dimKeys(dim world.Dimension) [][2]int32 {
 }
 
 // Columns iterates over copies of all stored columns of a dimension,
-// including base-provider columns not shadowed locally. The snapshot is taken
-// when iteration starts; storing columns during iteration is safe and not
-// observed.
+// including base-provider columns not shadowed locally.
+//
+// The set of positions is fixed when iteration starts, so storing a column at
+// a new position during iteration is safe and not observed. Each column is
+// produced when it is reached, one at a time: iterating does not require
+// memory for the whole dimension, and a caller that stops early pays only for
+// what it took. In append mode that means a column overwritten during the
+// iteration may be yielded with its new content.
 func (p *Provider) Columns(dim world.Dimension) iter.Seq2[world.ChunkPos, *chunk.Column] {
 	return func(yield func(world.ChunkPos, *chunk.Column) bool) {
-		snapshot, err := p.snapshotDim(dim)
-		if err != nil {
-			// An iterator cannot yield an error; record it so callers that
-			// care about completeness (conversion, export) can check
-			// IterError after iterating.
-			p.mu.Lock()
-			if p.iterErr == nil {
-				p.iterErr = err
-			}
-			p.mu.Unlock()
+		if p.conf.appendMode {
+			p.columnsAppend(dim, yield)
 			return
 		}
-		for _, c := range snapshot {
-			if !yield(world.ChunkPos{c.X, c.Z}, c.Col) {
+		p.mu.Lock()
+		ds := p.dim(dim)
+		own := make(map[[2]int32]struct{}, len(ds.cols))
+		keys := make([][2]int32, 0, len(ds.cols))
+		for k := range ds.cols {
+			own[k] = struct{}{}
+			keys = append(keys, k)
+		}
+		p.mu.Unlock()
+		for _, k := range keys {
+			// Clone under the lock and one at a time: a concurrent save
+			// compacts stored chunks in place, so reading them unlocked races,
+			// and cloning the whole dimension up front is the cost this
+			// iterator exists to avoid.
+			p.mu.Lock()
+			c, ok := ds.cols[k]
+			var col *chunk.Column
+			if ok {
+				col = cloneColumn(c.Col)
+			}
+			p.mu.Unlock()
+			if !ok {
+				continue
+			}
+			if !yield(world.ChunkPos{k[0], k[1]}, col) {
 				return
 			}
 		}
+		if p.base == nil {
+			return
+		}
+		for pos, col := range p.base.Columns(dim) {
+			if _, shadowed := own[[2]int32{pos[0], pos[1]}]; shadowed {
+				continue
+			}
+			if !yield(pos, col) {
+				return
+			}
+		}
+		p.noteIterErr(p.base.IterError())
 	}
+}
+
+// columnsAppend yields an append-mode dimension's columns, decoding one record
+// per step.
+//
+// Positions is the directory's key list and costs nothing; decoding is what is
+// expensive, and doing it all before the first result meant a caller looking
+// for one column, or computing a bounding box it could answer from positions
+// alone, held every column in the dimension at once.
+func (p *Provider) columnsAppend(dim world.Dimension, yield func(world.ChunkPos, *chunk.Column) bool) {
+	p.mu.Lock()
+	iw := p.dim(dim).iw
+	p.mu.Unlock()
+	if iw == nil {
+		return
+	}
+	for _, k := range iw.Positions() {
+		c, err := iw.Column(k[0], k[1])
+		if errors.Is(err, format.ErrNoColumn) {
+			// Removed since the key list was taken; not data loss.
+			continue
+		} else if err != nil {
+			// A record that cannot be read is data loss if skipped: stop and
+			// report it rather than producing a short world.
+			p.noteIterErr(fmt.Errorf("pile: read column (%d,%d): %w", k[0], k[1], err))
+			return
+		}
+		if !yield(world.ChunkPos{c.X, c.Z}, c.Col) {
+			return
+		}
+	}
+}
+
+// noteIterErr records the first error an iteration hit. An iterator cannot
+// yield one, so callers for which a short iteration would mean data loss
+// retrieve it with IterError afterwards.
+func (p *Provider) noteIterErr(err error) {
+	if err == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.iterErr == nil {
+		p.iterErr = err
+	}
+	p.mu.Unlock()
 }
 
 // IterError returns and clears the first error a Columns iteration hit. An
