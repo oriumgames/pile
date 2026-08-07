@@ -224,6 +224,14 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 			return decBlob{}, corruptf("uniform blob with %d palette entries", pn)
 		}
 	case widthU8:
+		if pn == 1 {
+			// The rule is "width is 0 if and only if paletteN is 1". Only the
+			// forward direction was checked, so a uniform section could also
+			// be written with a byte index array of 4096 zeroes: a second
+			// encoding of the same section, which is the one thing a canonical
+			// blob may not have.
+			return decBlob{}, corruptf("single-entry palette must use the uniform width")
+		}
 		if pn > 256 {
 			return decBlob{}, corruptf("u8 indices with %d palette entries", pn)
 		}
@@ -231,6 +239,9 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 			return decBlob{}, err
 		}
 	case widthU16:
+		if pn == 1 {
+			return decBlob{}, corruptf("single-entry palette must use the uniform width")
+		}
 		if pn <= 256 {
 			return decBlob{}, corruptf("non-minimal index width for %d palette entries", pn)
 		}

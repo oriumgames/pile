@@ -3530,3 +3530,27 @@ func TestHashSeedIsUsedInProduction(t *testing.T) {
 		t.Fatal("a footer hashed with seed 1 was accepted: production is not using seed 0")
 	}
 }
+
+// TestRejectsNonMinimalUniformWidth: the rule is "width is 0 if and only if
+// paletteN is 1", and only the forward direction was checked. A uniform
+// section could also be written with an index array of 4096 zeroes, which is a
+// second encoding of the same section.
+func TestRejectsNonMinimalUniformWidth(t *testing.T) {
+	blob := func(width uint8, idx int) []byte {
+		w := &writer{}
+		w.uvarint(1) // one palette entry
+		w.uvarint(0) // referencing global entry 0
+		w.u8(width)
+		w.b = append(w.b, make([]byte, idx)...)
+		return w.bytes()
+	}
+	if _, err := decodeOneBlob(&reader{b: blob(widthUniform, 0)}); err != nil {
+		t.Fatalf("a uniform single-entry blob was rejected: %v", err)
+	}
+	if _, err := decodeOneBlob(&reader{b: blob(widthU8, 4096)}); err == nil {
+		t.Error("a single-entry palette with byte indices was accepted")
+	}
+	if _, err := decodeOneBlob(&reader{b: blob(widthU16, 8192)}); err == nil {
+		t.Error("a single-entry palette with u16 indices was accepted")
+	}
+}
