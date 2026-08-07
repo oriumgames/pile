@@ -122,11 +122,61 @@ pile), inspect, verify, stats, check, render, compact, mode, upgrade, prune,
 move, extract, paste, origin, diff, patch/apply, export/import. See
 [cmd/pile/readme.md](cmd/pile/readme.md).
 
-## Format
+## Compatibility
 
-Binary specification for other implementations:
-[format/format.md](format/format.md). Codec package docs:
-[format/readme.md](format/readme.md).
+The v2 wire format is frozen. What that does and does not promise, for anyone
+deciding whether to depend on it:
+
+**What is frozen.** The bytes a writer produces for given content are fixed:
+identical content encodes to an identical file, on any build that writes v2, and
+moving those bytes is a breaking change requiring `format.Version` to be
+incremented. A v2 reader accepts exactly the files
+[format/format.md](format/format.md) defines and refuses everything else. That
+includes other versions in both directions: a v3 reader will refuse a v2 file and
+a v2 reader will refuse a v3 file. There is no forward-compatibility lane, by the
+decision recorded in §2.1 — not an omission.
+
+**What is not frozen.**
+
+- **Compressed bytes.** Zstandard admits many valid encodings of the same
+  content, so a different compressor, level or version can store the same world
+  as different bytes without the format having changed. This is why file
+  identity is `format.ContentHash` (decode, re-encode uncompressed) rather than
+  a hash of the stored bytes.
+- **Indexed-mode byte layout over time.** Indexed files (`pile.AppendMode()`)
+  are history-dependent by design: the same content stored in a different order
+  is a different file. Their identity is `ContentHash` too.
+- **The Go API.** Frozen separately and later; it has not yet been reviewed as
+  a surface. Expect it to move.
+- **Performance and memory.** Optimisation is permitted at any time, provided
+  the bytes do not move.
+
+**`ContentHash` identifies the body, not the file.** The dimension lives in the
+header, and decoding does not fold it into the body, so two files holding the
+same chunks in different dimensions have the *same* `ContentHash`. That is
+deliberate and is frozen along with everything else. A caller that spans
+dimensions must key on the dimension separately — this is the easiest thing here
+to get wrong.
+
+**Integrity against corruption, not against tampering.** xxHash64 is not a
+cryptographic hash. The checksums catch damage; they do not establish that a
+file is the one you wrote, and an attacker who can author content and induce a
+truncation can forge a checkpoint that verifies. Files from untrusted sources
+are untrusted content. Decoding one will not panic and malformed input is
+rejected, but a *conforming* file of about a kilobyte can still legally decode
+into more than a gigabyte, because the format's own ceilings are set at what it
+can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the codec
+— is the knob for that case, and the full threat model is in
+[SECURITY.md](SECURITY.md).
+
+**Writing a second implementation.** The binary specification is
+[format/format.md](format/format.md); where it and this implementation disagree,
+the implementation wins and the specification has a bug. The conformance
+appendix is [format/vectors.md](format/vectors.md): 17 positive vectors with
+their expected `ContentHash` and 59 negative ones, each naming the rule a
+conforming reader must refuse it for, with the files themselves in
+`format/testdata/vectors/`. It also records what no vector can express. Codec
+package docs: [format/readme.md](format/readme.md).
 
 ## Notes
 

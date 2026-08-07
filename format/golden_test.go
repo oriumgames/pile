@@ -43,6 +43,36 @@ var (
 	formatChange = flag.Bool("format-change", false, "confirm an intentional wire format change when updating goldens")
 )
 
+// requireUnfrozen is the freeze lockout. While format.Version is the frozen
+// version, no fixture in the byte-locked suites may be regenerated at all —
+// not with -update, and not with -update -format-change, which before the
+// freeze was the escape hatch for a deliberate change. Incrementing
+// format.Version is the only way to move a byte, which is the whole content of
+// the freeze.
+//
+// It is called first thing in every test that writes a fixture, so a refusal
+// leaves nothing behind: the goldens and vectors are rewritten as they are
+// compared, and a guard that fired at the end would refuse a regeneration that
+// had already happened on disk.
+//
+// TestSpecRulesPinned is deliberately *not* locked. Its -update re-pins the
+// specification's normative sentences, and adding a MUST that states a rule the
+// implementation already enforces moves no byte and stays permitted after the
+// freeze (FREEZE.md, "After the freeze"). What is forbidden there is changing
+// what a reader accepts, and that shows up as a moved fixture here.
+func requireUnfrozen(t *testing.T) {
+	t.Helper()
+	if !*update || Version != FrozenVersion {
+		return
+	}
+	t.Fatalf("refusing to regenerate: the pile v%d wire format is frozen "+
+		"(format.FrozenVersion = %d), so no fixture may move and -format-change does not lift this.\n"+
+		"To change the bytes: set format.Version = %d in format/format.go, which lifts this lock; "+
+		"re-run with -update; then freeze the new version by setting format.FrozenVersion = %d. "+
+		"See FREEZE.md, \"Moving to v%d\".",
+		Version, FrozenVersion, Version+1, Version+1, Version+1)
+}
+
 const manifestPath = goldenDir + "/golden_manifest.txt"
 
 // goldenManifest records the format version the fixtures were generated at
@@ -83,6 +113,28 @@ func writeManifest(t *testing.T, hashes map[string]uint64) {
 	}
 	if err := os.WriteFile(manifestPath, []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestManifestsAgreeWithVersion pins FREEZE.md's first Mechanics box: the
+// version the code writes is the version every byte-locked manifest was
+// generated at. Each manifest is written by its own -update path, so a
+// regeneration that ran at a different version — or a Version bump that
+// regenerated only some of them — shows up here rather than in whichever suite
+// is run next.
+func TestManifestsAgreeWithVersion(t *testing.T) {
+	if FrozenVersion > Version {
+		t.Errorf("format.FrozenVersion is %d, which is ahead of format.Version %d: "+
+			"a version that was never written cannot be frozen", FrozenVersion, Version)
+	}
+	gv, _ := readManifest(t)
+	if gv != Version {
+		t.Errorf("%s declares version %d, format.Version is %d", manifestPath, gv, Version)
+	}
+	for _, path := range []string{vectorManifest, negManifest} {
+		if v, _ := readVectorManifest(t, path); v != Version {
+			t.Errorf("%s declares version %d, format.Version is %d", path, v, Version)
+		}
 	}
 }
 
@@ -378,6 +430,7 @@ func goldenDenseWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 // TestGoldenFormatStability fails when the encoder's output for fixed content
 // changes, which is exactly when the wire format has changed.
 func TestGoldenFormatStability(t *testing.T) {
+	requireUnfrozen(t)
 	reg := testRegistry(t)
 	prevVersion, prevHashes := readManifest(t)
 	newHashes := map[string]uint64{}
@@ -394,8 +447,9 @@ func TestGoldenFormatStability(t *testing.T) {
 		sort.Strings(changed)
 		if len(changed) > 0 && prevVersion == Version && !*formatChange {
 			t.Fatalf("refusing to bless a wire format change: %v changed while format.Version is still %d.\n"+
-				"Bump format.Version for a released format, or re-run with -format-change if v%d is not frozen yet.",
-				changed, Version, Version)
+				"v%d is not the frozen version (format.FrozenVersion = %d), so re-run with -format-change "+
+				"if the change is deliberate, or bump format.Version if v%d has been released.",
+				changed, Version, Version, FrozenVersion, Version)
 		}
 		writeManifest(t, newHashes)
 	})

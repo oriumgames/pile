@@ -286,10 +286,16 @@ something that cannot fail.
 
 ## Sequence from here
 
-Freeze. What still gates it is under Security in `FREEZE.md`, none of which can
-change a byte: the extended fuzzing session, the hostile-input matrix, crash
-durability, the written threat model. The API surface review can follow the tag,
-since it cannot invalidate a file already written.
+Freeze — and the freeze is now done except for the tag itself. Every
+Correctness, Security and Conformance box in `FREEZE.md` is ticked, and so are
+three of the four under Mechanics: `format.Version` and all three manifests
+agree at 2, the byte-locked suites refuse `-update` while `format.Version` is
+`format.FrozenVersion` (`HARNESS.md` §7 has the controls), and the
+compatibility statement is in the root readme. The fourth is the tag, which is
+the maintainer's to place. `FREEZE.md` ends with the pre-tag summary: what is
+done, what is knowingly accepted and unfixed, and what a maintainer needs on
+day one. The API surface review can follow the tag, since it cannot invalidate
+a file already written.
 
 The closed door the harness pass turned up is now carried by the vectors as
 well as by `HARNESS.md`: a reader could plausibly reconstruct the solid block

@@ -1139,3 +1139,50 @@ touched. The real regression is a future pass that degrades the builder **and
 regenerates**, so the control has to do both — and the guard is then what
 catches a fixture that has quietly stopped covering its rule. Both controls
 above run `-update` before the assertion for exactly that reason.
+
+---
+
+# 7. The freeze lockout
+
+`FREEZE.md`'s second Mechanics box: after the freeze, `-update -format-change`
+must stop being an escape hatch, and incrementing `format.Version` must be the
+only way to move a byte. The frozen version is stated once, as
+`format.FrozenVersion` beside `Version` in `format/format.go`, and
+`requireUnfrozen` (`format/golden_test.go`) refuses `-update` whenever
+`Version == FrozenVersion`. The two conformance vector suites are locked with
+the goldens: they are as much the arbiter as the goldens are.
+
+**One thing was wrong with the old guard and is fixed here.** It ran in
+`t.Cleanup`, so by the time it refused, `compareGolden` had already rewritten
+every `.pile` file on disk — the refusal blocked the manifest write and nothing
+else. `requireUnfrozen` runs first thing in each test, before a byte is written,
+which is why every control below leaves `git status` clean without a restore.
+
+The lock's controls are of a different shape from the rest of this document:
+the subject is a guard that must *refuse*, so the control is to invoke it and
+require the refusal, and then to lift the stated condition and require the
+refusal to stop. Runs at `Version = 3` were made in a **copy of the tree** under
+a scratch directory, never in the repository, because regenerating at v3 rewrites
+every fixture. `-count=1` throughout.
+
+| # | control | command | result |
+|---|---|---|---|
+| L1 | goldens refuse while frozen | `go test ./format -run TestGoldenFormatStability -count=1 -update -format-change` | **refused** — "refusing to regenerate: the pile v2 wire format is frozen (format.FrozenVersion = 2), so no fixture may move and -format-change does not lift this." `git status --porcelain format/testdata` empty |
+| L2 | positive vectors refuse | `go test ./format -run 'TestConformanceVectors$' -count=1 -update -format-change` | **refused**, same message from `vectors_test.go`; testdata untouched |
+| L3 | negative vectors refuse | `go test ./format -run TestConformanceVectorsNegative -count=1 -update -format-change` | **refused**, same message from `vectors_negative_test.go`; testdata untouched |
+| L4 | the message names the way out | the same three runs | each says: set `format.Version = 3`, "which lifts this lock"; re-run with `-update`; then set `format.FrozenVersion = 3`; and points at `FREEZE.md`, "Moving to v3" |
+| L5 | the lock lifts on a version bump | `Version = 3`, `FrozenVersion = 2`, then `-update` with **no** `-format-change` | **regenerated.** Goldens `ok`; all three manifests rewritten to `version 3`; byte 5 of `golden_world_plain.pile` — the header's version field — moved from 2 to 3, and the footer hash with it. `-format-change` was not needed, because the manifests still named the previous version |
+| L6 | re-freezing re-locks | `Version = 3`, `FrozenVersion = 3`, `-update -format-change` | **refused** by all three suites, now naming v4: the cycle is closed rather than a one-off |
+| L7 | the manifests are checked against `Version` | `Version = 3` against v2 manifests, no flags | `TestManifestsAgreeWithVersion` **RED** on all three: "testdata/golden_manifest.txt declares version 2, format.Version is 3", and the same for both vector manifests |
+| L8 | the ordinary run is unaffected | `go test ./... -count=1`, and again with `-race` | green; the guard returns immediately when `-update` is not set |
+
+One deliberate exclusion, recorded here so it is not read as an oversight.
+**`TestSpecRulesPinned` is not locked.** Its `-update` re-pins the
+specification's normative sentences, and adding a `MUST` that states a rule the
+implementation already enforces moves no byte — it has happened once already,
+for the solid body's trailing-bytes rule, and `STATUS.md` records it as a
+specification edit rather than a format change. Locking it would make an
+editorial correction look like a format change and would push the next person
+towards editing `spec_rules.txt` by hand. What the freeze forbids is a change to
+which files a reader accepts, and that always shows up as a moved fixture, which
+*is* locked.

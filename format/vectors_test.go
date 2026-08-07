@@ -1005,8 +1005,10 @@ func writeVectorManifest(t *testing.T, path, header string, recs map[string]vect
 
 // vectorManifestGuard is the golden suite's guard, applied to the vectors: a
 // regeneration that changes bytes while format.Version stays put is a wire
-// format change made by accident unless -format-change says otherwise. Locking
-// out -update at freeze locks both suites, because both read the same flag.
+// format change made by accident unless -format-change says otherwise. The
+// vectors are as much the arbiter as the goldens, so the freeze lockout applies
+// to them too: requireUnfrozen refuses -update outright while format.Version is
+// format.FrozenVersion, before either suite writes a file.
 func vectorManifestGuard(t *testing.T, path, header string, prevVersion int, prev, next map[string]vectorRecord) {
 	t.Helper()
 	if !*update {
@@ -1021,8 +1023,9 @@ func vectorManifestGuard(t *testing.T, path, header string, prevVersion int, pre
 	sort.Strings(changed)
 	if len(changed) > 0 && prevVersion == Version && !*formatChange {
 		t.Fatalf("refusing to bless a wire format change: %v changed while format.Version is still %d.\n"+
-			"Bump format.Version for a released format, or re-run with -format-change if v%d is not frozen yet.",
-			changed, Version, Version)
+			"v%d is not the frozen version (format.FrozenVersion = %d), so re-run with -format-change "+
+			"if the change is deliberate, or bump format.Version if v%d has been released.",
+			changed, Version, Version, FrozenVersion, Version)
 	}
 	writeVectorManifest(t, path, header, next)
 }
@@ -1036,6 +1039,7 @@ func vectorManifestGuard(t *testing.T, path, header string, prevVersion int, pre
 // decode/re-encode round trip and the independent walker's reading of every
 // vecField.
 func TestConformanceVectors(t *testing.T) {
+	requireUnfrozen(t)
 	reg := testRegistry(t)
 	prevVersion, prev := readVectorManifest(t, vectorManifest)
 	next := map[string]vectorRecord{}

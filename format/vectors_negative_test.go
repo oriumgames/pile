@@ -1107,6 +1107,7 @@ func vecReplaceMeta(t *testing.T, l *vecLayout, b []byte, path string, blob []by
 // TestConformanceVectorsNegative generates (under -update) and verifies the
 // files a conforming reader must reject.
 func TestConformanceVectorsNegative(t *testing.T) {
+	requireUnfrozen(t)
 	reg := testRegistry(t)
 	prevVersion, prev := readVectorManifest(t, negManifest)
 	next := map[string]vectorRecord{}

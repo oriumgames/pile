@@ -22,6 +22,27 @@ const (
 	// Version is the pile format version written by this package.
 	Version = 2
 
+	// FrozenVersion is the format version whose bytes are frozen. While
+	// Version equals it, the bytes a writer produces for given content are
+	// fixed and may not move: the golden suite and both conformance vector
+	// suites refuse to regenerate their fixtures at all, and -format-change
+	// does not lift that refusal.
+	//
+	// Moving the bytes therefore takes three steps, in this order:
+	//
+	//  1. set Version to the next number (leave FrozenVersion where it is,
+	//     which is what lifts the lock: a version that is not the frozen one
+	//     may still move);
+	//  2. make the change and re-run the fixture suites with -update, which
+	//     rewrites the goldens, the vectors and their manifests;
+	//  3. freeze the new version by setting FrozenVersion to it as well.
+	//
+	// Between steps 1 and 3 the format is unfrozen and the older guard
+	// applies instead: -update refuses to bless a changed fixture without
+	// -format-change. There is no forward-compatibility lane (format.md
+	// §2.1), so a reader of one version refuses another version's files.
+	FrozenVersion = 2
+
 	headerSize = 16
 	footerSize = 44
 )

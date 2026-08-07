@@ -270,11 +270,43 @@ disagree, the implementation wins. Vectors are what make that concession safe
 
 ### Mechanics
 
-- [ ] `format.Version` is 2 and the golden manifest agrees.
-- [ ] The golden guard refuses `-update` once frozen. *Today `-update
+- [x] `format.Version` is 2 and the golden manifest agrees.
+      `format/format.go` says 2; `format/testdata/golden_manifest.txt` and both
+      vector manifests (`vectors_manifest.txt`, `vectors_negative_manifest.txt`)
+      each declare `version 2`. That is now a checked property rather than an
+      observation: `TestManifestsAgreeWithVersion` reads all three and requires
+      them to equal `format.Version`, so a bump that regenerates only some of
+      them fails a test instead of surfacing in whichever suite runs next. Its
+      control is a `Version` of 3 against the v2 manifests, which turns it red
+      on all three lines. The specification is titled "Pile File Format, Version
+      2", `spec_rules.txt` is in step with it (`TestSpecRulesPinned` green), and
+      nothing in the tree describes the format as provisional, draft or subject
+      to change.
+- [x] The golden guard refuses `-update` once frozen. *Today `-update
       -format-change` regenerates goldens; after freeze that combination must
       fail and a version bump must be the only way to move bytes.*
-- [ ] A compatibility statement is in the README.
+      The frozen version is stated once, declaratively: `format.FrozenVersion`,
+      beside `Version` in `format/format.go`, with the path to a v3 in its doc
+      comment. `requireUnfrozen` (in `format/golden_test.go`) refuses `-update`
+      whenever `Version == FrozenVersion`, and `-format-change` does not lift
+      it. It runs **first thing** in each of the three tests that write
+      fixtures — `TestGoldenFormatStability`, `TestConformanceVectors`,
+      `TestConformanceVectorsNegative` — because the old guard ran in
+      `t.Cleanup`, after every fixture had already been rewritten on disk, so a
+      refusal used to leave the regeneration behind. The vectors are as much
+      the arbiter as the goldens and are locked with them. `HARNESS.md` §7
+      records the controls: all three suites refuse `-update -format-change`
+      and write nothing, the message names the version bump, and with `Version`
+      bumped to 3 the lock lifts and the fixtures regenerate.
+- [x] A compatibility statement is in the README.
+      In the root `readme.md`, under "Compatibility": what v2 guarantees, what
+      is not frozen, the `ContentHash`-identifies-the-body caveat, the
+      xxHash64-is-not-cryptographic line with `pile.MaxDecodedBytes` as the
+      knob, and where the specification, the vectors and the conformance
+      appendix live. `format/readme.md` carries the mechanics instead — the
+      lock, the four steps to a v3 — and points at the root statement, since
+      that is the file a second implementer opens. `cmd/pile/readme.md` is a
+      command reference and gets neither.
 - [ ] The release is tagged.
 
 ## Validity tightened before the freeze
@@ -330,9 +362,41 @@ never wrote.
 **Requires a version bump:** any change to layout, canonical form, or validity
 rules — including tightening a rule, which invalidates files already written.
 
-**The check:** run the golden suite. If it passes without `-format-change`, the
-change is permitted. If it does not, it is a version bump. That is the whole
-rule, and it is why the goldens exist.
+**The check:** run the golden suite and the two vector suites with no flags. If
+they pass, the change is permitted. If they do not, it is a version bump — and
+the suites will not let you bless it any other way, because `-update` is locked
+out while `format.Version` is `format.FrozenVersion`. That is the whole rule,
+and it is why the goldens exist.
+
+## Moving to v3
+
+The lock is deliberate and it is not meant to be worked around, so the way past
+it is written down here as well as in `format.FrozenVersion`'s doc comment and
+`format/readme.md`. In order:
+
+1. **Set `format.Version = 3`** in `format/format.go`, and leave
+   `FrozenVersion` at 2. That is what lifts the lock: a version that is not the
+   frozen one may still move. Every fixture fails at this point, which is
+   correct — the version byte is in every header.
+2. **Make the change, and regenerate:**
+   `go test ./format -run 'TestGoldenFormatStability|TestConformanceVectors' -update`.
+   While unfrozen the older guard still applies, so a fixture whose bytes change
+   at an unchanged `Version` needs `-format-change`; immediately after a bump it
+   does not, because the manifests still name the previous version.
+3. **Update the specification** — `format/format.md`'s title and §2.1, the
+   normative sentences the change touches — re-pin it with
+   `go test ./format -run TestSpecRulesPinned -update`, claim any new rule in
+   `format/invariants.go`, and update the independent vector walker in
+   `format/vectorwalk_test.go`, which asserts the version it parses and is
+   deliberately not derived from `format.Version`.
+4. **Freeze v3** by setting `FrozenVersion = 3`.
+
+`TestSpecRulesPinned` is outside the lock on purpose. Adding a `MUST` sentence
+that states a rule the implementation already enforces moves no byte and stays
+permitted after the freeze — it has already happened once, for the solid body's
+trailing-bytes rule — and locking it would make an editorial correction look
+like a format change. What is forbidden is changing which files a reader
+accepts, and that shows up as a moved fixture, which is locked.
 
 ## Known deferred work
 
@@ -348,3 +412,118 @@ palettes, and one record at a time", and several paths held more. They no
 longer do, and the goldens were green throughout, which is the whole of what
 this section's first sentence claims. `STATUS.md` records the measurements and
 the two shapes that must not be optimised back.
+
+---
+
+# Pre-tag summary
+
+Written for someone who was not here. Everything above this line is the
+argument; this is the state of it on the day the tag goes on. The tag itself is
+the only unticked box, and it is the maintainer's to place.
+
+## What is done
+
+Every Correctness, Security and Conformance precondition above is ticked, and
+each one names the artefact that holds its evidence rather than asserting it:
+
+- **The specification is pinned to the implementation.** Every normative `MUST`
+  in `format/format.md` is extracted and hashed into
+  `format/testdata/spec_rules.txt`, claimed by an entry in
+  `format/invariants.go`, and the claim names a test that exists. Editing a rule
+  is therefore a visible event.
+- **The tests have been shown to reach the rules they name.** Not once but
+  three times, by disabling the production check and requiring a named test to
+  go red: the invariant table (17 checks across 11 entries were vacuous, 12
+  fixed, 5 explained), then the rest of the suite (82 controls, 44 green, 41
+  fixed), then a systematic sweep of every writer-side ordering decision against
+  the goldens. `HARNESS.md` is the whole record, and it is the most useful file
+  in the repository for judging what the suite is worth.
+- **Hostile input has been driven through every reader.** `format/hostile_test.go`
+  is a truncation-and-boundary matrix; it found six allocations sized from
+  counts that were bounded against the remaining bytes and nothing else.
+  `SECURITY.md` records each with a measured before and after. Four validity
+  rules were tightened as a result — the last moment at which that was possible.
+- **Crash durability is exercised, not asserted.** `TestCheckpointTornWriteExhaustive`
+  crashes a checkpoint at every byte position of every write it issues (9,073
+  positions) and requires the result to be the old checkpoint or the new one.
+  `DURABILITY.md`.
+- **The four fuzz targets ran twenty minutes each, clean.**
+- **A second implementation has an arbiter.** `format/vectors.md` plus 17
+  positive and 59 negative vectors in `format/testdata/vectors/`, verified on
+  every flagless run, each positive one re-parsed by a walker written from the
+  specification rather than from the decoder.
+- **The bytes are locked.** `format.FrozenVersion` and the `requireUnfrozen`
+  guard, above.
+
+## What is knowingly accepted and unfixed
+
+None of these is an oversight. Each was measured, argued and left, and closing
+several of them now would be a format change.
+
+- **A legal 1,161-byte solid file decodes into 1.12 GiB** and takes about a
+  second. An 11-byte chunk record is valid — a record must declare a section but
+  need not mark one present — and each becomes about a kilobyte of live objects.
+  Refusing it means a world-size limit below 1024×1024 chunks, which a real
+  server reaches, and that trade was refused. §8's column ceiling caps the worst
+  case at 4,194,304 columns, about four gigabytes; it does not bound this file.
+  A caller that opens worlds it did not write should set
+  `pile.MaxDecodedBytes` / `format.MaxDecodedBytes`. `SECURITY.md`, "What
+  remains".
+- **4,194,304 columns is now a maximum world size in a frozen format.** Chosen
+  deliberately; 400× a real overworld.
+- **Recovery can still spend about four seconds of CPU on a 9.5 KB file.**
+  Bounded at 16,777,216 directory entries across one open, so it no longer grows
+  with the candidate count, but the residual is the price of reaching a fourth
+  fallback on a million-column world.
+- **`ReadMeta` can allocate ~82 MiB transiently from a 132-byte settings blob.**
+  Within the §8 NBT container budget.
+- **xxHash64 is not a cryptographic hash.** Integrity against corruption, not
+  against tampering; an attacker who can author content and induce truncation
+  can forge a checkpoint that verifies.
+- **`ContentHash` identifies the body, not the file.** Two files holding the
+  same chunks in different dimensions share a hash. Frozen that way on purpose.
+- **A world directory is assumed to have one owner.** `O_EXCL` staging is
+  protection against a pre-created path, not mutual exclusion between processes.
+  `FSBEHAVIOUR.md` §5.
+- **`FuzzOpenIndexed` is not saturated.** It now runs at ~31,400 exec/s rather
+  than 2/s, but its corpus was still taking new inputs at twenty minutes, so it
+  has more to find than the other three targets do.
+- **The writer paths have not been audited against hostile-but-legal input**,
+  and neither has the `pile` provider surface or the CLI: the matrix drives
+  `format` directly. `FREEZE-BLOCKERS.md` records the first; note that that
+  file's "roughly a dozen uncontrolled entries" is stale — the harness pass
+  closed it — while its point 1 (only `MUST` sentences are pinned, so layout
+  annotations are not) is still live and is how §3.1's ascent rule went
+  half-enforced for as long as it did.
+- **No performance baselines, and the Go API has never been reviewed as a
+  surface.** Both are post-tag work; neither can invalidate a file.
+- **One golden is deliberately not byte-locked**: `golden_indexed_compact.pile`,
+  because dictionary training is not reproducible. Its structure is checked by
+  `TestGoldenFormatReadable`.
+
+## What a maintainer must know on day one
+
+1. **The rule for any change is one command.** Run `go test ./... -count=1`. If
+   the goldens and the two vector suites pass with no flags, the change is
+   permitted. If they do not, it is a version bump, and "Moving to v3" above is
+   the only path — `-update -format-change` will refuse.
+2. **Do not "fix" the block palette order check.** A reader could plausibly
+   reconstruct the solid block palette's reference counts and verify §3.1's
+   order. §3.1 says readers MUST NOT, and after the freeze such a check would
+   reject files this version wrote. `HARNESS.md`, "Rules a reader could check
+   and must not".
+3. **`ContentHash` is the identity mechanism, not the file's bytes.**
+   Compressed bytes and indexed-mode layout are not frozen; do not build
+   anything that assumes a byte-for-byte comparison of two files means
+   different content, in either direction.
+4. **Dragonfly is pinned for a reason.** The codec reaches into `chunk`
+   internals through layout-asserted unsafe mirrors and panics at package init
+   if a dragonfly upgrade moves them. Currently `v0.11.1`. Bumping it means
+   running the whole suite.
+5. **The method that found nearly everything here was mutation, not reading.**
+   Disable the production check, run the named test with `-count=1`, require it
+   to fail. Tests written and controlled two rounds earlier still turned out to
+   patch bytes inside the wrong structure. Do the same for every new test.
+6. **`STATUS.md` is a working note and says so**; delete it once the tag has
+   settled. `FREEZE.md`, `SECURITY.md`, `HARNESS.md`, `DURABILITY.md`,
+   `FSBEHAVIOUR.md` and `format/vectors.md` are the durable record.

@@ -88,17 +88,41 @@ implementation, extraction, pasting and rotation.
 
 ## Wire format stability
 
-`testdata/golden_world.pile` pins the encoder's output for fixed content, and
-`TestGoldenFormatStability` fails if the bytes change. A deliberate format
-change means bumping `format.Version` and regenerating:
+**v2 is frozen.** `format.FrozenVersion` says so declaratively, and while
+`format.Version` equals it the byte-locked fixtures cannot be regenerated at
+all: `TestGoldenFormatStability`, `TestConformanceVectors` and
+`TestConformanceVectorsNegative` refuse `-update` outright, and `-format-change`
+— which before the freeze blessed a deliberate change — does not lift the
+refusal. Incrementing `format.Version` is the only way to move a byte.
 
-```sh
-go test ./format -run TestGolden -update
-```
+The fixtures in `testdata/` pin the encoder's output for fixed content, and
+`TestGoldenFormatStability` fails if it changes. `TestGoldenFormatReadable`
+separately checks that the current decoder still reads the stored files, which
+is the direction that matters for worlds already on disk;
+`TestManifestsAgreeWithVersion` checks that every manifest was generated at the
+version this build writes.
 
-`TestGoldenFormatReadable` separately checks the current decoder still reads
-the stored file, which is the direction that matters for worlds already on
-disk.
+Moving to v3, in order:
+
+1. set `format.Version = 3` in `format.go` and leave `FrozenVersion` at 2 —
+   that is what lifts the lock, since 3 is not the frozen version;
+2. make the change, and regenerate with
+   `go test ./format -run 'TestGoldenFormatStability|TestConformanceVectors' -update`
+   (while unfrozen, a fixture whose bytes change at an unchanged `Version` still
+   needs `-format-change`, which is the old accident guard);
+3. update the specification, re-pin it with
+   `go test ./format -run TestSpecRulesPinned -update`, and update the
+   independent vector walker, which asserts the version it parses
+   (`vectorwalk_test.go`);
+4. freeze the new version by setting `FrozenVersion = 3`.
+
+`TestSpecRulesPinned` is deliberately outside the lock: adding a `MUST` sentence
+that states a rule the implementation already enforces moves no byte and stays
+permitted after the freeze. What is forbidden is changing which files a reader
+accepts, and that shows up as a moved fixture.
+
+The compatibility statement — what v2 guarantees, what is not frozen, and the
+`ContentHash` and threat-model caveats — is in the [root readme](../readme.md).
 
 ## Bounding a decode
 
