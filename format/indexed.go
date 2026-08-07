@@ -59,6 +59,12 @@ const (
 // stored column.
 var ErrNoColumn = errors.New("pile: no column at position")
 
+// errRecoveryBudget is returned when a checkpoint candidate's directory would
+// take this open past maxRecoveryEntries. It is not exported: to a caller it is
+// one more reason a file did not open, and naming it in the API would invite
+// code that retries with a larger budget, which is the thing being bounded.
+var errRecoveryBudget = errors.New("pile: checkpoint recovery exceeded its total work limit")
+
 // IndexedWorld is an append-only, random-access pile world file for large
 // worlds. Records are self-contained per-chunk zstd frames referencing global
 // palette segments; a checkpoint appends pending palette segments, updated
@@ -171,6 +177,15 @@ type IndexedWorld struct {
 	// each is cleared as its frame is appended, so a checkpoint that failed
 	// after the last of them would look like a world with nothing to save.
 	checkpointPending bool
+
+	// recoveryLeft is how many more directory entries this open may parse,
+	// summed over every checkpoint candidate it tries. adoptCheckpoint sets it
+	// and finishDirectory spends it; see maxRecoveryEntries.
+	recoveryLeft int
+	// recoveryBudget overrides maxRecoveryEntries. Zero means the format's
+	// value; only tests set it, so the bound can be reached without building a
+	// file that takes a quarter of a minute to parse.
+	recoveryBudget int
 }
 
 // frameRef locates a stored frame and authenticates it: every frame the
@@ -325,6 +340,9 @@ func newIndexedWorld(f indexedFile, path string, reg world.BlockRegistry, opts O
 		blockIdx: map[uint32]uint32{},
 		stateIdx: map[string]uint32{},
 		biomeIdx: map[string]uint32{},
+		// A full budget from the start, so a directory loaded outside
+		// adoptCheckpoint is not charged against a budget nobody set.
+		recoveryLeft: maxRecoveryEntries,
 	}, nil
 }
 
@@ -542,6 +560,35 @@ func (w *IndexedWorld) resetLoadedState() {
 // footers is a hang rather than a failed open.
 const maxCheckpointChain = 256
 
+// maxRecoveryEntries bounds the total work one open may spend on recovery:
+// directory entries parsed, summed over every checkpoint candidate tried.
+//
+// §8 used to bound the two factors and not the product. A candidate costs a
+// directory frame decompressed and every entry it names parsed into the map,
+// and a directory may name 4,194,304 entries, and the chain may run to 256
+// candidates; 256 x 4,194,304 is a billion entries, which measured at roughly
+// fourteen minutes and 186 GB of churn from a file of about 20 KB. Forging the
+// candidates is free — the footer hash is xxHash64 over bytes the attacker
+// wrote — so the candidate count is not a factor anyone else controls.
+//
+// Memoising by directory reference was considered first and does not bound
+// anything: it collapses the case where every footer names one directory, and
+// an attacker pays about 200 bytes per distinct frame to evade it. That buys a
+// number, not a bound.
+//
+// 2^24 is four directories at the entry ceiling, which is where a legitimate
+// recovery lives: a torn checkpoint's directory frame usually fails its hash
+// and costs nothing, and the crash model of DURABILITY.md leaves either the
+// old checkpoint or the new one, so one fallback is the ordinary case and four
+// full parses is generous for the stacked-crash case. Measured on one machine,
+// 16 forged footers over a directory at the ceiling went from 17.5 s to 4.2 s
+// and stopped growing with the candidate count, which is the part that matters:
+// the cost no longer multiplies. The other half of the choice is what it does
+// *not* restrict: 256 x 65,536 is exactly 2^24, so any world of 65,536 chunks
+// or fewer keeps every one of its 256 candidates and this limit can never be
+// what refuses it.
+const maxRecoveryEntries = 1 << 24
+
 // adoptCheckpoint walks footer candidates newest-first and adopts the first
 // whose directory (including palette segments, metadata and dictionary)
 // validates completely, so a torn or rotten checkpoint falls back to the
@@ -570,11 +617,24 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 			prev = c.prev
 		}
 	}
+	// One budget for the whole pass, spent by finishDirectory. Bounding the
+	// candidates or the directory alone leaves their product unbounded, which
+	// is where the cost actually is.
+	w.recoveryLeft = maxRecoveryEntries
+	if w.recoveryBudget > 0 {
+		w.recoveryLeft = w.recoveryBudget
+	}
 	err := error(corruptf("no valid checkpoint footer found"))
 	for _, c := range cands {
 		w.resetLoadedState()
 		if lerr := w.loadDirectory(c.dirRef); lerr != nil {
 			err = lerr
+			if errors.Is(lerr, errRecoveryBudget) {
+				// The budget is spent, so every remaining candidate would cost
+				// what this one could not afford. Stop rather than walk the
+				// rest of the chain refusing each in turn.
+				break
+			}
 			continue
 		}
 		// A checkpoint is only adopted if every record it references is
@@ -919,6 +979,14 @@ func (w *IndexedWorld) finishDirectory(r *reader) error {
 	chunkN, err := r.count(maxDirEntries, "directory chunk")
 	if err != nil {
 		return err
+	}
+	// Charge the whole table against the recovery budget before parsing any of
+	// it, so a candidate that cannot be afforded costs nothing rather than the
+	// remainder of the budget. Recovery is the only path that sets the budget;
+	// an ordinary open sets it too, and one directory at the entry ceiling is a
+	// quarter of it.
+	if w.recoveryLeft -= chunkN; w.recoveryLeft < 0 {
+		return fmt.Errorf("%w: directory of %d entries", errRecoveryBudget, chunkN)
 	}
 	var px, pz, poff int64
 	var prevKey uint64
@@ -1481,6 +1549,11 @@ func (w *IndexedWorld) Store(c Column) error {
 	if err := validateColumn(c); err != nil {
 		return err
 	}
+	// The column ceiling, checked before the column is encoded so a refused
+	// Store costs nothing. There used to be a second copy of this check further
+	// down, against maxDirEntries, from when the two constants differed by
+	// three orders of magnitude; they are one number now, so the second copy
+	// had no input that could reach it.
 	if _, exists := w.dir[[2]int32{c.X, c.Z}]; !exists && len(w.dir) >= maxChunks {
 		return fmt.Errorf("pile: indexed world already holds %d chunks, the format limit", maxChunks)
 	}
@@ -1532,9 +1605,6 @@ func (w *IndexedWorld) Store(c Column) error {
 		return err
 	}
 	key := [2]int32{c.X, c.Z}
-	if _, ok := w.dir[key]; !ok && len(w.dir) >= maxDirEntries {
-		return fmt.Errorf("pile: indexed world already holds %d chunks (limit %d)", len(w.dir), maxDirEntries)
-	}
 	if prev, ok := w.dir[key]; ok {
 		w.liveBytes -= int64(prev.length)
 	}

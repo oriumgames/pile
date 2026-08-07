@@ -17,9 +17,10 @@ const maxNBTDepth = 64
 type nbtWalker struct {
 	b   []byte
 	off int
-	// elems counts the values the blob will decode into. Lengths are bounded
-	// against the bytes that remain, which bounds arrays but not lists of
-	// compounds: an empty compound is one byte and one map.
+	// elems counts the containers the blob will decode into. Lengths are
+	// bounded against the bytes that remain, which bounds arrays but not
+	// containers nested in containers: an empty compound is a handful of bytes
+	// and a whole map, whether it sits in a list or in another compound.
 	elems int
 }
 
@@ -239,6 +240,20 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 			}
 			if _, ok := minPayloadSize(ct); !ok {
 				return corruptf("nbt: unknown tag type %d", ct)
+			}
+			// A compound that is a field of another compound decodes into its
+			// own map, exactly as an element of a list of compounds does, and
+			// costs about as little to write: a tag byte, a two-byte name
+			// length, a name (keys ascend strictly, so siblings cannot repeat
+			// one) and TAG_End. Charging only the list case left the stated
+			// ceiling unimplemented — a blob of two million sibling compounds
+			// fitted inside the 16 MiB blob limit and decoded into twice the
+			// budget. The root compound is not charged: it is the blob, not
+			// something nested in it.
+			if ct == tagCompound || ct == tagList {
+				if err := w.count(1); err != nil {
+					return err
+				}
 			}
 			key, err := w.name()
 			if err != nil {

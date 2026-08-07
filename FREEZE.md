@@ -108,22 +108,29 @@ Nothing below is optional. Each line names its exit criterion.
       an allocation far larger than those bytes — the worst being a 1,634-byte
       file that asked for 2.42 GiB — and each fix is proved by disabling it and
       watching a named ceiling test go red. `SECURITY.md` records every finding
-      with its measured before and after, and the residual: the ceilings §8
-      sets are large, so a legal 1,161-byte file still decodes into 1.04 GiB,
-      and lowering that is a format change rather than a bug.
+      with its measured before and after, and the residual: a legal 1,161-byte
+      file still decodes into 1.12 GiB. That residual is deliberate and now has
+      a ceiling over it. §8 caps the columns a file decodes into at 4,194,304 in
+      both modes, where it used to cap only the width of the count field, so the
+      worst case within the rules fell from about forty-eight gigabytes to about
+      four; refusing the 1,161-byte file itself would mean a world-size limit
+      below 1024x1024 chunks, and that was refused deliberately.
 - [x] No integer computation on input-derived values can wrap before its
       bounds check.
-      One does. §3.1's version-override index chain accumulates uvarint deltas
-      in a `uint64`, and a delta can express the modular representative of a
-      negative step, so the indices descend where §3.1 says they ascend. It is
-      not memory-unsafe — the bounds test that follows catches an index past
-      the palette — but it is a second encoding of one palette. Refusing it
-      rejects a file this reader accepts today, so it is reported in
-      `SECURITY.md` under "Format changes: found, not fixed" rather than
-      closed here, and pinned by `TestHostileOverrideDeltaWraps` so the change
-      cannot be made by accident. Every other accumulation in the decode paths
-      was checked and does not have the shape: the two signed delta chains land
-      a wrap next to the bottom of `int64`, nowhere near a legal value.
+      One did, and it is fixed. §3.1's version-override index chain accumulated
+      uvarint deltas in a `uint64`, and a delta can express the modular
+      representative of a negative step, so the indices descended where §3.1
+      says they ascend. It was never memory-unsafe — the bounds test that
+      follows catches an index past the palette, and a wrapped index lands on a
+      legal one — but it was a second encoding of one palette, which is what the
+      canonical form exists to prevent. The chain is now refused when it fails
+      to increase, §3.1 states the ascent as a normative sentence rather than as
+      an annotation inside a layout fence (which is why nothing pinned it), and
+      `TestHostileOverrideDeltaWraps`, the independent vector walker and
+      `neg_override_index_chain_wraps.pile` all hold it. Every other
+      accumulation in the decode paths was checked and does not have the shape:
+      the two signed delta chains land a wrap next to the bottom of `int64`,
+      nowhere near a legal value.
 - [x] No input can cause an unbounded loop. *Two such hangs have already been
       found in a dependency; the shape is a length narrowed to a smaller type
       before comparison against an index.*
@@ -132,11 +139,14 @@ Nothing below is optional. Each line names its exit criterion.
       `uint16` in `blobIndices` — is now compared as an `int`. It was
       unreachable, and `SECURITY.md` says so rather than claiming a test it
       cannot have. What the matrix did find is a loop bounded at a number large
-      enough to be a denial of service: recovery tries up to 256 checkpoint
-      candidates and loads each one's directory in full, so a 20 KB file makes
-      `OpenIndexed` run for about fourteen minutes. Bounding it further refuses
-      files that open today; the measurements and the reasoning are in
-      `SECURITY.md`.
+      enough to be a denial of service: recovery tried up to 256 checkpoint
+      candidates and loaded each one's directory in full, and §8 bounded those
+      two factors and not their product. §8 now bounds the product — 16,777,216
+      directory entries parsed across one open's whole candidate list — which is
+      four directories at the entry ceiling and also exactly 256 times 65,536,
+      so no world of 65,536 columns or fewer can ever meet it. Measured on one
+      machine, 16 forged footers over a directory at the ceiling went from
+      17.5 s to 4.2 s and stopped growing with the candidate count.
 - [ ] Decoders never panic on any input. *Exit: the four fuzz targets run
       clean for an extended session, not the 10s smoke run.*
 - [x] Crash durability is tested, not merely implemented. *Exit: an injectable
@@ -188,7 +198,7 @@ Nothing below is optional. Each line names its exit criterion.
       `ContentHash`. *Exit: `format/vectors.md` documents 17 positive vectors
       (the nine named cases plus layer numbering, default-biome elision with a
       tie, blob dedup and Morton order, the per-column collections, light,
-      stats and a full structure) and 58 negative ones, each with the rule a
+      stats and a full structure) and 59 negative ones, each with the rule a
       conforming reader must refuse it for. The appendix also records what it
       does not cover: the palette sort orders and cell padding, which no vector
       can express because nothing in a file proves them, and indexed mode's
@@ -220,6 +230,35 @@ disagree, the implementation wins. Vectors are what make that concession safe
       fail and a version bump must be the only way to move bytes.*
 - [ ] A compatibility statement is in the README.
 - [ ] The release is tagged.
+
+## Validity tightened before the freeze
+
+Four rules were tightened deliberately in the run-up to the freeze. Each of them
+**rejects files a v2 reader used to accept**, which after the freeze would
+require a version bump; before it, it is the last chance to make them, and that
+is the whole reason they were made now. None of them moves a byte any writer
+produces, so the goldens were green throughout with no flags.
+
+1. **The §8 NBT container budget charges compounds nested in compounds.** The
+   ceiling was stated and only half implemented: list elements were charged and
+   compound fields were not, so a 14 MB blob decoded into twice the ceiling.
+2. **§3.1's version-override index chain may not wrap.** A uvarint can carry the
+   modular representative of a negative step, so the chain could descend onto a
+   legal index — a second encoding of one palette. The ascent rule is now a
+   normative sentence rather than an annotation inside a layout fence, which is
+   why nothing had pinned it.
+3. **§8 caps the columns a file decodes into, at 4,194,304 in both modes.** It
+   used to cap only the width of the count field. This one picks a maximum world
+   size into a frozen format, deliberately: it is the number an indexed
+   directory already had, it is 400x a real overworld, and it is where a solid
+   file — which holds every column at once by design — stops being openable.
+4. **§8 bounds total recovery work at 16,777,216 directory entries** across one
+   open's whole candidate list, rather than bounding the chain length and the
+   directory size separately and leaving their product free.
+
+`SECURITY.md`, "Format changes: made", gives each one's before-and-after
+measurement, what became invalid, why the writer cannot emit the refused shape,
+and the negative control.
 
 ## After the freeze
 

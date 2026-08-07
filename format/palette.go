@@ -497,6 +497,16 @@ func parseStatePalette(r *reader, blockVersion int32) ([]parsedState, error) {
 			return nil, corruptf("palette version overrides must be strictly ascending")
 		}
 		idx := prev + delta
+		// The sum is modular and a uvarint can express the modular
+		// representative of a negative step: after an override at index 5, a
+		// delta of 2^64-2 lands on index 3. The bounds test below cannot see
+		// that, because 3 is a legal index, so the chain descends where §3.1
+		// says it ascends and one palette has two encodings. The wrap is the
+		// only way idx can fail to exceed prev here: a zero delta is already
+		// refused above, and the first delta starts from prev == 0.
+		if idx < prev {
+			return nil, corruptf("palette version override index chain wraps: delta %d after index %d", delta, prev)
+		}
 		if idx >= uint64(len(entries)) {
 			return nil, corruptf("palette version override index %d out of range", idx)
 		}

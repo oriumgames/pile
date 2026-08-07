@@ -155,14 +155,34 @@ run for a quarter of an hour — and both were missed the first time for the sam
 reason the memory pass gives: the count was checked against the bytes that
 remain, so it looked bounded.
 
-Two findings cannot be closed without rejecting a file this reader accepts
-today, so they are reported and pinned rather than fixed: the §8 NBT container
-budget does not charge compounds nested inside compounds, and §3.1's
-version-override index chain wraps in `uint64` before its bounds check.
-`SECURITY.md` says precisely which files each would invalidate.
+**Four validity rules were then tightened**, which is the last thing that can
+happen before a freeze and could not have happened after it. Two of them were
+the findings the security pass had reported and pinned rather than fixed — the
+§8 NBT container budget not charging compounds nested inside compounds, and
+§3.1's version-override index chain wrapping in `uint64` before its bounds check
+— and their characterisation tests are now enforcement tests rather than
+deletions. The other two bound what §8 had left unbounded: the columns a file
+decodes into, and the total work recovery may spend.
+
+Each has a normative sentence, a table entry, a control that turns a named test
+red, and a measured before and after in `SECURITY.md` under "Format changes:
+made". Only one of the four could have a negative conformance vector — the
+override wrap, which is small. The other three need a file of five, thirty-three
+and eighty megabytes respectively to express, so they join the other §8 ceilings
+under "Rules no vector here exercises", where `format/vectors.md` now says so
+explicitly rather than leaving a second implementation to wonder.
+
+The column ceiling is the one with a real cost and it is worth stating flatly:
+4,194,304 columns is now a maximum world size in a frozen format. It was chosen
+because an indexed directory already had that ceiling, because it is four
+hundred times a real overworld, and because a solid file holds every column at
+once, so at four million the file is already about four gigabytes of live
+objects and stops being openable for reasons no ceiling can help with. It does
+**not** refuse the 1,161-byte file that decodes into 1.12 GiB; refusing that one
+means a limit below 1024x1024 chunks, which a real server can reach.
 
 **Conformance vectors** — done. `format/vectors.md` is the appendix, 17 positive
-and 58 negative vectors in `format/testdata/vectors/`, verified on every run
+and 59 negative vectors in `format/testdata/vectors/`, verified on every run
 with no flags. Each positive vector is also parsed by a second reader written
 from the specification, and each negative one must be refused by both with an
 error naming its rule.

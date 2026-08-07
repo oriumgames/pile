@@ -56,14 +56,14 @@ can name any block state, any biome, any entity NBT and any position inside its
 own declared span, and the decoder's job is to hand those to you cleanly rather
 than to decide they are reasonable.
 
-**Resource use is bounded but not small.** §8's ceilings are set at what the
+**Resource use is bounded but not small.** §8's ceilings are set near what the
 underlying models can represent, not at what a deployment expects. A legal
-solid body is up to 512 MiB decompressed and a legal indexed directory names up
-to 4,194,304 chunks, and zstd will deliver either from a file of a few
+solid body is up to 512 MiB decompressed and a legal file of either mode names
+up to 4,194,304 columns, and zstd will deliver either from a file of a few
 kilobytes. The measured consequences are in "What remains" below. A process
 that decodes files it did not write should bound its own concurrency and treat
-a decode as an operation that can cost hundreds of megabytes and seconds of
-CPU, because a hostile file will make it do exactly that within the rules.
+a decode as an operation that can cost a gigabyte and seconds of CPU, because a
+hostile file will make it do exactly that within the rules.
 
 ### What this means for a caller
 
@@ -92,13 +92,16 @@ under `-race`.
 | `TestUnresolvedStatesHoldsTheLock` | `UnresolvedStates` against a concurrent `Compact`, and after `Close`. |
 | `TestHostileCheckpointReplay` | A file whose every checkpoint candidate fails, so recovery tries all of them. Asserts the open terminates and stays linear in the candidate count. |
 | `TestIndexedVerifyReusesOneBuffer` | A directory at 16,384 entries of 4 KiB, all intact, so `verifyRecords` walks the whole thing. |
-| `TestHostileNBTContainerBudget` | The §8 container budget at its limit and one past it, and the case it does not cover. |
-| `TestHostileOverrideDeltaWraps` | The one integer computation that wraps before its bounds check. |
+| `TestHostileNBTContainerBudget` | The §8 container budget at its limit and one past it, by list elements and by sibling compounds alike. |
+| `TestNBTWriterHoldsTheContainerBudget` | The writer half of the same rule: the marshaller refuses what the reader refuses. |
+| `TestHostileOverrideDeltaWraps` | The one integer computation that wrapped before its bounds check. |
+| `TestHostileDecodedColumnCeiling` | The §8 column ceiling, and that a count at the ceiling is refused for its records rather than for the ceiling. |
+| `TestRecoveryWorkIsBounded` | The §8 total-work limit on recovery, spent across candidates rather than per candidate. |
 
-Two of those tests assert that a hostile input is **accepted**. They are
-characterisation tests for findings recorded below as format changes: if they
-start failing, someone has decided to make the change, and this document is out
-of date.
+Two of those tests used to assert that a hostile input is **accepted**. They
+were characterisation tests for the two findings that could not be closed
+without a validity change. Both changes have since been made, along with two
+more, and the tests are now enforcement tests. See "Format changes: made" below.
 
 ### Method
 
@@ -114,10 +117,11 @@ demonstrating it is what this project keeps having to redo.
 
 ## What it found
 
-Nothing below changes which files a reader accepts. Every fix bounds an
-allocation to what the input can actually justify, or moves work behind a check
-the input has to pass anyway. The golden and vector suites were green
-throughout with no `-update` and no `-format-change`.
+Nothing in *this* section changes which files a reader accepts. Every fix here
+bounds an allocation to what the input can actually justify, or moves work
+behind a check the input has to pass anyway. The four validity changes are in
+the next section. The golden and vector suites were green throughout, for both
+sections, with no `-update` and no `-format-change`.
 
 ### Fixed
 
@@ -219,157 +223,255 @@ not read as an oversight.
 
 ---
 
-## Format changes: found, not fixed
+## Format changes: made
 
-Two findings cannot be fixed without rejecting a file this reader accepts
-today. Under the freeze that is a validity change and therefore a format
-change, so both are reported rather than made. Each says precisely which files
-would become invalid.
+Four validity rules were tightened. Every one of them **rejects files this
+reader used to accept**, which is what makes them format changes rather than
+hardening, and they are permitted only because they were made before the
+freeze. Two were reported by the previous pass and pinned by characterisation
+tests; those tests are now enforcement tests, which is what "inverted" means
+here — none of them was deleted.
 
-### A. The NBT container budget does not charge compounds nested in compounds
+Each has a normative sentence in §8 or §3.1, an entry in `format/invariants.go`,
+a test proved by disabling the production check, and a recorded before and
+after. The golden and vector suites were green throughout with no `-update` and
+no `-format-change`, because none of these moves a byte a writer produces.
 
-§8 states: *NBT containers per blob (compounds and nested lists) — 1 048 576*,
-and *decoders MUST therefore bound the result as well as the input*.
+### A. The NBT container budget now charges compounds nested in compounds
 
-`nbtvalidate.go` charges the budget for the elements of a list whose element
-type is a compound or a list, which is the amplification it was written for: an
-empty compound inside a list is one byte of `TAG_End` and a whole Go map. It
-does **not** charge a compound that is a field of another compound. Such a
-compound costs six bytes on the wire — tag, a two-byte name length, a
-distinct name (keys must strictly ascend, so they cannot repeat), and
-`TAG_End` — and also becomes a map.
+§8 stated *NBT containers per blob (compounds and nested lists) — 1 048 576*
+and `nbtvalidate.go` implemented half of it. It charged the elements of a list
+whose element type is a compound or a list, which is the amplification it was
+written for, and it did not charge a compound that is a field of another
+compound — although such a compound costs six bytes on the wire (a tag, a
+two-byte name length, a name that cannot repeat a sibling's, and `TAG_End`) and
+becomes a map exactly as a list element does. The ceiling was stated; the
+accounting did not implement it.
 
-Measured: a blob of **2,097,152 sibling compounds**, twice the stated ceiling,
-is accepted. It is 14,680,068 bytes, within the 16 MiB blob limit, and decodes
-into 2,097,152 maps at a cost of **461 MiB allocated, 265 MiB retained**. The
-list-shaped equivalent is refused at 1,048,577.
+- **Before:** a blob of **2,097,152 sibling compounds** — twice the ceiling,
+  **14,680,068 bytes**, inside the 16 MiB blob limit — was accepted and decoded
+  into 2,097,152 maps at **461 MiB allocated, 265 MiB retained**.
+- **After:** refused by `validateNBT` at 3.4 MB allocated, before any of it is
+  handed to a decoder.
+- The accounting is now one rule: every container nested inside another is
+  charged one, and the blob's own root compound is not, because it is the blob
+  rather than something inside it. That moves the list boundary by one as well
+  — a top-level list of exactly 1,048,576 compounds is 1,048,577 containers and
+  is now refused — which is the same rule applied consistently rather than a
+  second change.
+- **What became invalid:** any file carrying an NBT blob (settings, markers,
+  border, stats, a block entity, an entity, or a structure's) that decodes into
+  more than 1,048,576 containers.
+- **Can the writer emit one?** Not now. The metadata blobs were already
+  revalidated with `validateNBT` on write, in `encode.go` and in `indexed.go`,
+  so those were covered by accident; a block entity's or an entity's NBT went to
+  the wire straight from `marshalNBT` with no container count at all. The
+  marshaller now keeps the same count, charged in the same two places, so the
+  writer refuses exactly what the reader refuses. §8 already required that
+  ("writers MUST additionally refuse content that their own readers would
+  reject"); this was the one ceiling it was not done for.
+  `TestNBTWriterHoldsTheContainerBudget` is the check, and its negative control
+  is below.
 
-- **What would become invalid:** any file carrying an NBT blob — settings,
-  markers, border, stats, a block entity, an entity, or a structure's — that
-  decodes into more than 1,048,576 containers where the excess comes from
-  compounds nested inside compounds rather than from list elements.
-- **Could this version have written one?** Only from a runtime value that
-  already had that shape: the writer checks nesting depth but not container
-  count, so `WriteWorld` would emit such a blob if handed one. No file this
-  project has produced in testing has more than a handful.
-- **Note** that `FREEZE.md`'s own "After the freeze" section permits
-  "additional validation that rejects only files this version never wrote"
-  without a version bump. Whether this qualifies turns on whether a writer that
-  *can* emit such a file counts as one that wrote one. That is a decision for
-  whoever owns the freeze, not for this pass.
-- Pinned by `TestHostileNBTContainerBudget`, which fails if the gap is closed.
-
-### B. The version-override delta chain wraps before its bounds check
+### B. The version-override index chain may not wrap
 
 §3.1's sparse version-override table carries index deltas as uvarints, and
-`parseStatePalette` accumulates them in a `uint64`:
+`parseStatePalette` accumulated them in a `uint64`:
 
 ```go
 idx := prev + delta
 if idx >= uint64(len(entries)) { ... }
 ```
 
-The bounds test catches an index past the palette, so nothing here is
+The bounds test catches an index past the palette, so nothing here was ever
 memory-unsafe. But the sum is modular, and a uvarint can express the modular
 representative of a *negative* step. After an override at index 5, a delta of
-2^64−2 lands on index 3. §3.1 says the indices strictly ascend; the decoder
-enforces that only through "every later delta MUST be non-zero", which is
-sufficient exactly as long as the sum cannot wrap.
+2⁶⁴−2 lands on index 3 — in range, so the bounds test says nothing — and the
+chain has descended where §3.1 says it ascends. The decoder enforced the ascent
+only through "every later delta MUST be non-zero", which is sufficient exactly
+as long as the sum cannot wrap.
 
-The consequence is a second encoding of one palette — the thing the canonical
-form exists to prevent — reachable from a legal-looking file, and it is the one
-place in the decode paths where an integer computation on an input-derived
-value wraps before its bounds check.
+This is the most important of the four, and not because of what it costs: it is
+a **second encoding of one palette**, and one content, one encoding is the
+doctrine the rest of the format rests on.
 
-The other two delta chains in the format do not have this shape. A record's
-chunk position and a directory entry's frame offset both accumulate in an
-`int64` from signed varints and range-check every step; there the modular
-representative of a wrap lands next to the bottom of `int64`, nowhere near a
-legal value, which is what `FREEZE-BLOCKERS.md` item 6 records.
+- **Before:** accepted.
+- **After:** refused, with an error naming the wrap. The check is `idx < prev`,
+  which has a distinguishing input of its own: a zero delta is already refused
+  above it, and the first delta starts from `prev == 0`, so the only way the sum
+  can fail to increase is the wrap.
+- **Why it was never caught.** The ascent rule lived as an annotation inside
+  §3.1's layout fence — *indices strictly ascending* — and `extractSpecRules`
+  strips fences, so there was no sentence for `TestEveryRuleIsClaimed` to
+  require an invariant for. It is a normative sentence now, with an entry, and
+  the same gap `FREEZE-BLOCKERS.md` names under "Only sentences containing MUST
+  are pinned" is one instance smaller.
+- **What became invalid:** any file whose block palette (or indexed palette
+  segment) has two or more version overrides where a later delta exceeds
+  `2^64 − 1 − prev`.
+- **Can the writer emit one?** No. `encodeStatePalette` sorts the override
+  indices ascending and emits `o.index - prev` between distinct indices bounded
+  by 1,048,576, so every delta it writes is a true positive difference. Checked
+  by reading the encoder, and by the negative vector, which had to move the
+  base vector's first override off index 0 before there was anything to step
+  back from.
+- Covered by `TestHostileOverrideDeltaWraps`, by the independent walker of the
+  vector suite (which had the same wrap and now refuses it), and by
+  `neg_override_index_chain_wraps.pile`.
 
-- **What would become invalid:** any file whose block palette (or indexed
-  palette segment) has two or more version overrides where a later delta
-  exceeds `2^64 − 1 − prev`, i.e. where the running index wraps. No conforming
-  file has one: the deltas are differences between ascending indices bounded by
-  1,048,576.
-- **Could this version have written one?** No. The writer emits deltas between
-  sorted indices.
-- The rule is already in the specification as a layout-table annotation
-  ("indices strictly ascending") rather than as a MUST sentence, which is why
-  `TestEveryRuleIsClaimed` never pinned it — the exact gap `FREEZE-BLOCKERS.md`
-  names under "Only sentences containing MUST are pinned".
-- Pinned by `TestHostileOverrideDeltaWraps`, which fails if the gap is closed.
+### C. The columns a file decodes into are bounded
 
----
+§8 bounded decoded section storages, NBT containers and the recovery chain, and
+left the column count at 4,294,967,295 — the width of the count field, which is
+not a bound on anything. A chunk record must declare at least one section but
+need not mark any present, so eleven bytes on the wire become a `recRaw`, a
+`chunk.Chunk` and a `Column`.
+
+- **Before:** ceiling 4,294,967,295. In practice the 512 MiB body ceiling bound
+  first, at roughly 48.8 million columns and something near 48 GiB of live
+  objects. A legal **1,161-byte** file of 1,048,576 eleven-byte records decoded
+  into **2.99 GB allocated, 1.12 GiB retained**.
+- **After:** ceiling **4,194,304**, in both modes. A file naming more is refused
+  before any record byte is read: a 93-byte file declaring 4,194,305 costs
+  23,528 bytes to refuse.
+- **This does not reduce the 1,161-byte figure, and is not meant to.** That file
+  declares 1,048,576 columns, which is a quarter of the new ceiling and still
+  legal. What the change replaces is a ceiling that bounded nothing with one
+  that bounds the worst case at about four gigabytes instead of about forty-
+  eight. Getting the 1.12 GiB case refused would mean a ceiling below 1,048,576
+  columns — 1024×1024 chunks — and that is a world size a real server could
+  reach. The number was chosen to be far above any plausible world and below the
+  point where a solid file stops being openable at all, and the residual is
+  recorded under "What remains" rather than papered over.
+- **Why this number.** An indexed directory has been capped at 4,194,304 entries
+  all along, so the format now states one column ceiling instead of two that
+  differed by three orders of magnitude, and neither mode invents a value. It is
+  2048×2048 chunks, or 32,768 blocks square, against roughly ten thousand chunks
+  for a real overworld. And every column holding a single block already consumes
+  one of the 4,194,304 decoded storages of `maxDecodedStorages`, so a world with
+  more content-bearing columns than this was already invalid — the only thing
+  newly refused is a world with more than four million *empty* columns.
+- **What became invalid:** a solid body declaring more than 4,194,304 chunk
+  records.
+- **Can the writer emit one?** This is the one of the four where the answer is
+  "not any more" rather than "it never could". The writer's own check, in
+  `encode.go`, is `len(d.Columns) > maxChunks` against the same constant the
+  reader uses, so lowering the constant lowered both at once and they cannot
+  disagree. Said plainly: this is a **ceiling being lowered**, not a
+  canonicality rule being enforced, and a caller who really does hand the writer
+  more than four million columns will now be refused where before it would have
+  succeeded. That is the cost the ceiling buys, it is why the change belongs
+  before the freeze and not after, and no world produced anywhere in this
+  repository comes within three orders of magnitude of it.
+- The duplicate ceiling check inside `Store` went with it: `maxChunks` and
+  `maxDirEntries` are one number now, so the second copy had no input that could
+  reach it.
+
+### D. Recovery is bounded by its total work
+
+§8 stated 256 chain links and a 4,194,304-entry directory as separate limits.
+The cost is their product: every candidate whose directory parses is loaded in
+full — frame decompressed, every entry parsed into the map — and 256 × 4,194,304
+is a billion entries. Forging the candidates is free, because the footer hash is
+xxHash64 over bytes the attacker wrote.
+
+Measured on the machine this pass ran on, with a directory at the entry ceiling
+and every record's hash wrong so no candidate is adopted:
+
+| footers | file | before | after |
+|---------|------|--------|-------|
+| 1 | 9,205 bytes | 1.14 s | 1.16 s |
+| 4 | 9,337 bytes | 4.63 s | 4.32 s |
+| 16 | 9,865 bytes | 17.51 s | **4.21 s** |
+
+Linear before, flat past four directories after. The earlier pass recorded
+4.1 s / 14.9 s / 53.2 s for the same three cases; the shape is identical and the
+constant is not, so the extrapolation to the full 256 candidates is about five
+minutes on this machine rather than the quarter of an hour recorded then. Either
+way it was a denial of service from a file that fits in a network packet, and
+either way it is now bounded by a limit no candidate count can multiply.
+
+- **The limit is 16,777,216 directory entries parsed, summed over every
+  candidate an open tries** — the product, not the factors. Bounding the
+  candidate count or the directory size alone leaves the other free.
+- **Why that value.** It is four directories at the entry ceiling, which is more
+  than a legitimate recovery needs: a torn checkpoint's directory frame normally
+  fails its own hash and costs nothing to skip, and the crash model in
+  `DURABILITY.md` leaves either the old checkpoint or the new one, so one
+  fallback is the ordinary case. It is also exactly 256 × 65,536, so **no world
+  of 65,536 columns or fewer can ever be refused by it**: such a world keeps
+  every one of its 256 candidates. Only a world above that trades candidates for
+  size, and only after four full directory loads have already failed.
+- **Memoising by directory reference was considered and rejected**, by the
+  previous pass and again here. It collapses the case where every footer names
+  one directory, and an attacker pays about 200 bytes for a distinct frame to
+  evade it, so it buys a number and not a bound. The enforcement test uses a
+  file whose every footer names one directory, which is exactly the case the
+  memo would have collapsed, and the budget still bounds it.
+- **What became invalid:** a file whose valid checkpoint is reachable only after
+  more than 16,777,216 directory entries have been parsed.
+- **Can the writer emit one?** Not by writing. The writer appends checkpoints;
+  it never produces a file with a chain of unusable ones. Reaching the limit
+  requires four full-size directories to fail in succession, which needs either
+  four stacked crashes on a world of over a million columns or an author who
+  forged the footers. Checked by reading `checkpointLocked` and `Compact`: both
+  write one footer per checkpoint over the directory they just wrote.
 
 ## What remains
 
 Everything here is bounded — no unbounded loop, no unbounded allocation — and
 several of them are bounded at a number large enough to matter. They are not
-defects in the sense of the three `FREEZE.md` boxes this pass owns; they are
-the cost of the ceilings §8 sets, and lowering any of them is a format change.
-They are written down because a caller needs them to size its own limits.
+defects; they are the cost of the ceilings §8 sets, and lowering any of them
+further is a format change, which after the freeze means a version bump. They
+are written down because a caller needs them to size its own limits.
 
 ### The decompression ratio is the amplifier
 
 zstd will deliver 512 MiB of body from a few hundred bytes, and the §8 ceilings
-bound the body, not what the body decodes into. There is a ceiling on decoded
-section storages (`maxDecodedStorages`), on NBT containers per blob, and on the
-recovery chain — §8 says those three exist for exactly this reason — and there
-is none on decoded chunk records, block entities, entities or scheduled
-updates.
+bound the body, not what the body decodes into. There are ceilings on decoded
+section storages (`maxDecodedStorages`), on NBT containers per blob, on columns
+per file, on the recovery chain and on total recovery work — §8 says they exist
+for exactly this reason — and there is none on block entities, entities or
+scheduled updates beyond their per-chunk limits, which the column ceiling now
+multiplies rather than leaves free.
 
-Measured, after the fixes above:
+Measured:
 
 | input | file | result |
 |-------|------|--------|
-| A solid world of 1,048,576 records, each 11 bytes and holding nothing | **1,161 bytes** | 2.79 GiB allocated, **1.04 GiB retained**, 1.2 s |
-| An indexed directory at the 4,194,304-entry ceiling | **9,206 bytes** | 693 MiB allocated, **320 MiB retained**, 6.2 s |
-| A settings blob of 1,048,576 NBT compounds, exactly at the budget | **132 bytes** | 82 MiB allocated transiently by `ReadMeta` |
+| A solid world of 1,048,576 records, each 11 bytes and holding nothing | **1,161 bytes** | 2.99 GB allocated, **1.12 GiB retained**, about a second |
+| An indexed directory at the 4,194,304-entry ceiling | **9,205 bytes** | 320 MiB retained, 1.1 s |
+| A settings blob at the container budget | **132 bytes** | 82 MiB allocated transiently by `ReadMeta` |
 
-The first is the one to know about: an eleven-byte chunk record is legal — a
-record must declare at least one section but need not mark any present — and it
-becomes a `recRaw`, a `chunk.Chunk` and a `Column`, about a kilobyte of live
-objects. Bounding it needs a ceiling on decoded columns, which §8 sets at
-4,294,967,295, and lowering that is a format change.
+The first is the one to know about, and it is **still within the rules after
+this pass**. An eleven-byte chunk record is legal — a record must declare at
+least one section but need not mark any present — and it becomes a `recRaw`, a
+`chunk.Chunk` and a `Column`, about a kilobyte of live objects. The column
+ceiling of §8 bounds the worst case at 4,194,304 of them, roughly four
+gigabytes; it does not bound this one, which is a quarter of that. Bounding
+*this* file means a ceiling below 1,048,576 columns, which is 1024×1024 chunks
+and a world size a real server can reach, and that trade was refused
+deliberately. See "Format changes: made", item C.
 
-### Recovery work is the product of two limits
+A caller that decodes solid files it did not write should therefore still size
+its own limits as though a decode can cost a gigabyte, and should not run such
+decodes unbounded in parallel. What changed is the ceiling above it: forty-eight
+gigabytes was reachable within the rules before, and four is now.
 
-`adoptCheckpoint` collects up to 64 footer candidates by scanning backwards and
-then follows each candidate's `prev` chain to a total of
-`maxCheckpointChain = 256`, and every candidate whose directory parses is
-loaded in full: the directory frame is decompressed, every entry is parsed into
-the map, and records are verified until one fails. §8 bounds the chain at 256
-and a directory at 4,194,304 entries, separately. Their product is not bounded.
+### Recovery work
 
-Measured, with a directory at the entry ceiling and every record's hash wrong
-so no candidate is adopted:
+Bounded, as of this pass: §8 limits the directory entries parsed across one
+open's whole candidate list to 16,777,216, so the product of the chain limit and
+the directory limit is no longer free. The measurements and the reasoning are in
+"Format changes: made", item D.
 
-| footers | file | elapsed | allocated |
-|---------|------|---------|-----------|
-| 1 | 9,205 bytes | 4.1 s | 726 MB |
-| 4 | 9,337 bytes | 14.9 s | 2.9 GB |
-| 16 | 9,865 bytes | 53.2 s | 11.6 GB |
+What remains is the residual: four full-size directory loads is still about four
+seconds of CPU from a file of about 9.5 KB, and that is the price of leaving
+recovery able to reach a fourth fallback on a world of over a million columns.
+It no longer grows with the candidate count, which was the denial of service.
 
-Linear in the candidate count. Extrapolated to the full 256, a file of about
-**20 KB makes `OpenIndexed` run for roughly fourteen minutes** and churn
-something near 186 GB — transient, so it is CPU and collector pressure rather
-than a heap that cannot be satisfied, but it is a denial of service from a file
-that fits in a network packet.
-
-Forging the candidates is free: the footer hash is xxHash64 over bytes the
-attacker controls, which is the threat model's first paragraph made concrete.
-
-Bounding it means either trying fewer candidates — which refuses files that
-open today, because a file whose 200th candidate is the good one currently
-opens — or bounding the total work across candidates, which is the same thing
-with a different shape. Both are validity changes. Memoising by directory
-reference was considered and rejected: it collapses the case where every footer
-names one directory, and an attacker pays about 200 bytes per distinct
-directory frame to evade it, so it would buy a number rather than a bound.
-
-`TestHostileCheckpointReplay` runs a scaled-down version and asserts the shape
-stays linear and the open terminates.
+`TestHostileCheckpointReplay` holds the shape below the bound and
+`TestRecoveryWorkIsBounded` holds the bound.
 
 ### Process-global caches keyed by attacker-controlled bytes
 
@@ -433,7 +535,22 @@ throughout; the file was restored and confirmed with `git diff` after each.
 
 Finding 8 (`blobIndices`) has no control, for the reason given above.
 
-The first control taken in this pass was run before the fix rather than after
+The first control taken in that pass was run before the fix rather than after
 it, which is the only order that proves the input was ever dangerous: the
 2.42 GiB figure for the blob table is a measurement of the shipped code, not a
 projection.
+
+And the four validity tightenings, each disabled the same way:
+
+| # | production line disabled | test | result with it disabled |
+|---|--------------------------|------|-------------------------|
+| A | `format/nbtvalidate.go`, the compound field's `if ct == tagCompound \|\| ct == tagList` charge → `if false && (...)` | `TestHostileNBTContainerBudget` | **FAIL** — a blob of 1,048,577 containers was accepted |
+| A′ | `format/nbt.go`, `nbtCompound`'s `n.charge(1)` guard → `if false && (...)` | `TestNBTWriterHoldsTheContainerBudget` | **FAIL** — the writer emitted a value of 1,048,577 containers, which its reader refuses |
+| B | `format/palette.go`, `if idx < prev` → `if false && idx < prev` | `TestHostileOverrideDeltaWraps` | **FAIL** — the wrapping chain was accepted |
+| B′ | the same, and separately the independent walker's own wrap check in `format/vectorwalk_test.go` | `TestConformanceVectorsNegative/override_index_chain_wraps` | **FAIL** — with B, the reader accepted the vector; with the walker's check disabled, the walker accepted it |
+| C | `format/decode.go`, `r.count(maxChunks, "chunk")` → `r.count(1<<32-1, ...)` | `TestHostileDecodedColumnCeiling` | **FAIL** — 4,194,305 columns were accepted by the count and refused later for a different reason |
+| D | `format/indexed.go`, `finishDirectory`'s `w.recoveryLeft -= chunkN; w.recoveryLeft < 0` → `; false` | `TestRecoveryWorkIsBounded` | **FAIL** — recovery walked the whole candidate list |
+
+The recovery measurement in item D was taken in both directions on one machine
+— the bound disabled and then restored — rather than extrapolated, which is why
+its table has a before column and an after column rather than a projection.

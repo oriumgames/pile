@@ -14,7 +14,9 @@
 27513eef Decoders MUST reject lengths > 65 535, the largest an NBT string length can express, so one concept has one ceiling, and MUST reject bytes that are not valid UTF-8:
 27ea7bc1 Counting first breaks the loop, and writers MUST count that way or two of them will disagree on the palette order, on `defaultBiomeRef` and therefore on every byte downstream.
 2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
+2a4c2ef2 The override indices MUST strictly ascend, and decoders MUST reject a table whose running index does not increase, including one whose accumulated sum wraps.
 2b1d7218 MUST be zero (indexed dictionary presence is signalled by the directory, §5.5)
+2e70d107 **The column ceiling is one number for both modes.** Decoders MUST refuse a solid body declaring more chunk records than the ceiling above, and an indexed directory declaring more entries, and the two are deliberately the same value:
 2ed66e73 it is pure garbage that two writers could differ on, and decoders MUST reject one.
 2fcb9dbf Values 3–7 are reserved and MUST be rejected.
 2ffce926 Structures MUST leave these bits zero
@@ -26,6 +28,7 @@
 4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
 4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
 5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
+56fab33d **Recovery is bounded by its total work and not by its factors.** A reader MUST stop recovery, and refuse the file, once the directory entries it has parsed during one open reach the ceiling above, counted across every checkpoint candidate it tries rather than per candidate.
 5789390a A structure header MUST set no flags other than `Uncompressed`, its settings, markers and border blobs MUST be empty, and its biome palette MUST have zero entries.
 58866f01 - An absent frame reference MUST have offset, length and hash all zero; a non-zero offset or hash with a zero length is invalid.
 5ab4d3d6 refs sorted ascending; indices remapped accordingly; the palette contains only entries actually used by the indices; a storage whose used palette collapses to one entry MUST be written uniform (width 0).
@@ -36,8 +39,9 @@
 648be581 MUST be zero; readers MUST reject files with any reserved or unknown bit set, so those bits stay available for future features
 673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
 6dd8dd9c only meaningful when bit 3 is set, and MUST be zero when it is clear
+6fbfdbc2 **The NBT container budget charges every container nested inside another.** Decoders MUST charge a compound or a list that is an element of a list, and a compound or a list that is a field of a compound, and MUST NOT charge the blob's own root compound, which is the blob rather than something inside it.
+70802cc1 Decoders MUST therefore bound the **result** as well as the input, and the decoded ceilings above exist for exactly that.
 718f271d MUST be non-zero, for the reason §3.1 gives for overrides:
-74948bd9 Decoders MUST therefore bound the **result** as well as the input, and the three ceilings above exist for exactly that.
 7984f33b Sections whose biomes are uniformly that biome MUST be omitted from `biomePresence`, and decoders MUST fill absent sections with the default.
 7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
 7b6bfb2d Readers MUST refuse a frame that asks for more.

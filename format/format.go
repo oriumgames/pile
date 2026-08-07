@@ -210,12 +210,27 @@ const (
 	// concept has one ceiling rather than two that differ by a byte.
 	maxStringLen = 1<<16 - 1
 	maxBlobLen   = 16 << 20
-	// maxChunks bounds chunk records in a solid body and entries in an
-	// indexed directory. It is the largest value a u32 holds, so a reader that
-	// keeps the count in one cannot be handed a legal file it must truncate.
-	// 2^32-1 chunks is 2^36 blocks square: far beyond any reachable world, and
-	// not a limit a growing server can hit.
-	maxChunks  = 1<<32 - 1
+	// maxChunks bounds the columns one file decodes into: chunk records in a
+	// solid body, entries in an indexed directory. It used to be 2^32-1, the
+	// largest value a u32 holds, which bounded the field width and not the
+	// decode: a chunk record can be eleven bytes and need mark no section
+	// present, so a 1,161-byte file declared a million of them and decoded into
+	// 1.12 GiB
+	// of live columns, and the ceiling itself allowed forty-eight thousand
+	// times that before the 512 MiB body limit bound instead. 2^22 is where a
+	// column count stops being decodable at all rather than merely large: a
+	// solid file holds every column at once by design, so 4,194,304 of them is
+	// already about four gigabytes of live objects, and an indexed directory
+	// has been capped at the same number all along (maxDirEntries), so the two
+	// modes now state one world-size ceiling instead of two that differ by
+	// three orders of magnitude. It is 2048x2048 chunks, or 32,768 blocks
+	// square, against roughly ten thousand chunks for a real overworld.
+	//
+	// It is also the number a column already costs elsewhere: every column
+	// holding a single block consumes one of the 4,194,304 decoded storages of
+	// maxDecodedStorages, so a world with more content-bearing columns than
+	// this was already invalid. What this ceiling adds is the empty ones.
+	maxChunks  = 1 << 22
 	maxPalette = 1 << 20
 	maxBlobs   = 1 << 24
 	// maxPerChunk bounds entities, block entities and scheduled ticks per
@@ -270,11 +285,12 @@ const (
 	// extractor that walks layers has to walk all of them, and a lower cap of
 	// its own would silently drop everything above it.
 	MaxLayers = maxLayers
-	// maxDirEntries bounds an indexed directory. The directory is one frame
-	// and every entry costs at least a few bytes, so the ceiling that the
-	// design can actually reach is set by the directory decode limit, not by
-	// maxChunks: advertising more would be a promise the layout cannot keep.
-	maxDirEntries = 1 << 22
+	// maxDirEntries bounds an indexed directory: the same column ceiling as
+	// maxChunks, under the name the directory code reads it by. The two were
+	// separate numbers while a solid body's ceiling was the width of a u32;
+	// they are one ceiling now, and the alias stays only so a reader of
+	// finishDirectory sees which limit is being applied.
+	maxDirEntries = maxChunks
 	// maxStructureSize bounds one dimension of a structure in blocks. The
 	// decoder enforces it per component, so the writer must use the same
 	// value or it can emit files it cannot read back.

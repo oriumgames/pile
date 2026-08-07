@@ -48,10 +48,29 @@ func marshalNBT(m map[string]any) ([]byte, error) {
 	w := &writer{b: make([]byte, 0, 128)}
 	w.u8(tagCompound)
 	w.u16(0) // empty root name
-	if err := nbtCompound(w, m, 0); err != nil {
+	var n nbtBudget
+	if err := nbtCompound(w, m, 0, &n); err != nil {
 		return nil, err
 	}
 	return w.bytes(), nil
+}
+
+// nbtBudget counts the containers a value encodes into, so the writer refuses
+// what the reader refuses. §8 requires writers to reject content their own
+// readers would, and the container ceiling was the one place that was left to
+// the reader alone: the metadata blobs are re-validated after marshalling, but
+// a block entity's or an entity's NBT went to the wire unchecked, so a runtime
+// value carrying more than the ceiling produced a file this same release
+// cannot read back. The accounting matches nbtvalidate.go exactly — every
+// container nested inside another is charged one, the root is not.
+type nbtBudget struct{ n int }
+
+func (b *nbtBudget) charge(n int) error {
+	b.n += n
+	if b.n > maxNBTElements {
+		return fmt.Errorf("pile: nbt decodes into more than %d containers", maxNBTElements)
+	}
+	return nil
 }
 
 // unmarshalNBT decodes a little-endian NBT compound. The blob is structurally
@@ -138,7 +157,7 @@ func arrayTagType(v any) (byte, bool) {
 }
 
 // nbtPayload writes the payload of a value (no tag type, no name).
-func nbtPayload(w *writer, v any, depth int) error {
+func nbtPayload(w *writer, v any, depth int, n *nbtBudget) error {
 	// The check lives here rather than only in nbtCompound: a chain of nested
 	// lists never reaches a compound, so it slipped past the limit and
 	// produced a file this same release refuses to read.
@@ -193,7 +212,7 @@ func nbtPayload(w *writer, v any, depth int) error {
 			w.u64(uint64(e))
 		}
 	case map[string]any:
-		return nbtCompound(w, x, depth)
+		return nbtCompound(w, x, depth, n)
 	case []float32:
 		w.u8(emptyListType(len(x), tagFloat))
 		w.i32(int32(len(x)))
@@ -223,8 +242,13 @@ func nbtPayload(w *writer, v any, depth int) error {
 	case []map[string]any:
 		w.u8(emptyListType(len(x), tagCompound))
 		w.i32(int32(len(x)))
+		// Every element is a compound and therefore a map, which is what the
+		// reader charges for a list of compounds.
+		if err := n.charge(len(x)); err != nil {
+			return err
+		}
 		for _, e := range x {
-			if err := nbtCompound(w, e, depth+1); err != nil {
+			if err := nbtCompound(w, e, depth+1, n); err != nil {
 				return err
 			}
 		}
@@ -240,6 +264,13 @@ func nbtPayload(w *writer, v any, depth int) error {
 		}
 		w.u8(et)
 		w.i32(int32(len(x)))
+		// A list of compounds or of lists decodes into one container per
+		// element; a list of scalars decodes into one slice and costs nothing.
+		if et == tagCompound || et == tagList {
+			if err := n.charge(len(x)); err != nil {
+				return err
+			}
+		}
 		for _, e := range x {
 			t, err := nbtTagType(e)
 			if err != nil {
@@ -248,30 +279,30 @@ func nbtPayload(w *writer, v any, depth int) error {
 			if t != et {
 				return fmt.Errorf("pile: mixed element types in nbt list (%d vs %d)", t, et)
 			}
-			if err := nbtPayload(w, e, depth+1); err != nil {
+			if err := nbtPayload(w, e, depth+1, n); err != nil {
 				return err
 			}
 		}
 	default:
 		rv := reflect.ValueOf(v)
 		if rv.Kind() == reflect.Array {
-			n := rv.Len()
+			ln := rv.Len()
 			switch rv.Type().Elem().Kind() {
 			case reflect.Uint8:
-				w.i32(int32(n))
-				for i := range n {
+				w.i32(int32(ln))
+				for i := range ln {
 					w.u8(uint8(rv.Index(i).Uint()))
 				}
 				return nil
 			case reflect.Int32:
-				w.i32(int32(n))
-				for i := range n {
+				w.i32(int32(ln))
+				for i := range ln {
 					w.u32(uint32(rv.Index(i).Int()))
 				}
 				return nil
 			case reflect.Int64:
-				w.i32(int32(n))
-				for i := range n {
+				w.i32(int32(ln))
+				for i := range ln {
 					w.u64(uint64(rv.Index(i).Int()))
 				}
 				return nil
@@ -293,7 +324,7 @@ func emptyListType(n int, elem byte) byte {
 }
 
 // nbtCompound writes a compound payload with keys in sorted order.
-func nbtCompound(w *writer, m map[string]any, depth int) error {
+func nbtCompound(w *writer, m map[string]any, depth int, n *nbtBudget) error {
 	// The decoder refuses input nested deeper than maxNBTDepth, so refuse to
 	// write it: the value would be unreadable by this same release.
 	if depth > maxNBTDepth {
@@ -309,11 +340,19 @@ func nbtCompound(w *writer, m map[string]any, depth int) error {
 		if err != nil {
 			return fmt.Errorf("%w (key %q)", err, k)
 		}
+		// A compound or list field is a container of its own, charged the same
+		// as an element of a list of compounds. The root compound is not
+		// charged: it is the blob rather than something nested in it.
+		if t == tagCompound || t == tagList {
+			if err := n.charge(1); err != nil {
+				return err
+			}
+		}
 		w.u8(t)
 		if err := nbtString(w, k); err != nil {
 			return err
 		}
-		if err := nbtPayload(w, m[k], depth+1); err != nil {
+		if err := nbtPayload(w, m[k], depth+1, n); err != nil {
 			return err
 		}
 	}

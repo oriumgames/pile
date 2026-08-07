@@ -219,6 +219,7 @@ implementation detail. A handful of rules the walker does not model are marked
 | `neg_palette_duplicate_entry` | two block palette entries encode identically. A section could reference either, so the file is a second encoding of one world |
 | `neg_palette_property_order` | a state's property keys are not in strictly ascending bytewise order. Without the rule one state has many encodings, and a repeated key is worse: the later value silently wins |
 | `neg_override_zero_delta` | a version override past the first has a zero index delta. Override indices strictly ascend |
+| `neg_override_index_chain_wraps` | a version override whose index delta is 2⁶⁴ minus the previous index, so the running sum wraps and the chain descends onto index 0. The indices strictly ascend, and a bounds test alone cannot see this: the index it lands on is a legal one. Refusing a zero delta enforces the ascent only for as long as the sum cannot wrap, and a uvarint can carry the modular representative of a negative step |
 | `neg_override_zero_version` | an override's version is 0, which is the value that means "no override" |
 | `neg_override_same_version` | an override repeats the palette's own version, which says nothing and is a second encoding of an entry with no override |
 | `neg_biome_bare_name` | a biome name has no namespace. `plains` is invalid rather than a second spelling of `minecraft:plains` |
@@ -358,5 +359,18 @@ Stated plainly, so the appendix is not read as more complete than it is.
 - **The §8 ceilings**, apart from the layer count. A vector for a 512 MiB body
   or a 1 048 576-entry palette would be a vector nobody can check into a
   repository. They are covered by the limit tests instead.
+
+  Three of them are worth naming, because each is a validity rule a second
+  implementation has to get right and none of them can have a vector here. The
+  **NBT container budget** needs a blob past 1 048 576 containers, and a
+  container costs about five bytes however it is nested, so the smallest file
+  that exercises it is over five megabytes. The **column ceiling** needs
+  4 194 305 chunk records at eight bytes each, so about thirty-three megabytes;
+  a small file declaring more columns than it holds is refused either way, for
+  running out of records, so it would be a vector that passes against a reader
+  with no ceiling at all. The **total recovery work** limit needs 16 777 216
+  directory entries parsed, which is larger again and only in a mode whose
+  positive bytes are not pinned anyway. All three are covered by the limit and
+  hostile-input tests, each with a recorded negative control.
 - **Zstandard's window ceiling (§2.5).** Every positive vector is uncompressed,
   so no frame here asks for a window at all.

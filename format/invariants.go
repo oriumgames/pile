@@ -194,6 +194,13 @@ var invariants = []Invariant{
 		Note:  "An override equal to the palette's own version is redundant and grows a round trip that changed nothing.",
 	},
 	{
+		Name: "version override indices strictly ascend", Category: Ordering, Enforce: Decoded,
+		Rules: []string{"2a4c2ef2"},
+		Tests: []string{"TestHostileOverrideDeltaWraps", "TestConformanceVectorsNegative"},
+		Note: "The ascent was stated only as an annotation inside §3.1's layout fence, and the extractor strips fences, so no sentence existed for an entry to claim and the rule went unpinned while a reader enforced half of it. That half -- a later delta MUST be non-zero -- holds exactly as long as the running sum cannot wrap, and it can: the sum is a uint64 and a uvarint can carry the modular representative of a negative step, so a delta of 2^64-2 after index 5 lands on index 3. " +
+			"Three tests because there are three readers. The production decoder, the independent walker of the vector suite (which had the same wrap and now refuses it), and the zero-delta case, which is a different input and stays a separate check: a zero delta and a wrap are distinguishable, so both are enforcement rather than one check wearing two names.",
+	},
+	{
 		Name: "reference counts predate deduplication", Category: Ordering, Enforce: WriterOnly,
 		Rules: []string{},
 		Tests: []string{"TestPaletteCountsOccurrencesNotBlobs"},
@@ -468,10 +475,32 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "decoders bound the result, not only the input", Category: Bound, Enforce: Decoded,
-		Rules: []string{"74948bd9"},
+		Rules: []string{"70802cc1"},
 		Tests: []string{"TestBoundsDecodedStorages", "TestBoundsDecodedNBTContainers", "TestBoundsCheckpointChain"},
-		Note: "Several declared values cost far more to decode than to write: a blob reference is one byte and a live storage, a TAG_End inside a list of compounds is one byte and a whole map, a 44-byte footer names a frame that may decompress to 512 MiB. Bounding the count against the remaining bytes does not bound any of those. " +
-			"The storage and NBT ceilings both have a fixture that reaches them. The checkpoint-chain ceiling does not and cannot have one of the same kind: the walk terminates without it (a seen-set rules out cycles), so it caps work rather than deciding validity, and no input separates a file it refuses from one it accepts. TestBoundsCheckpointChain therefore only shows an ordinary chain is still walked, which is the half a wrong ceiling would break.",
+		Note: "Several declared values cost far more to decode than to write: a blob reference is one byte and a live storage, a TAG_End inside a list of compounds is one byte and a whole map, an eleven-byte chunk record is a whole column, a 44-byte footer names a frame that may decompress to 512 MiB. Bounding the count against the remaining bytes does not bound any of those. " +
+			"The storage and NBT ceilings both have a fixture that reaches them. The checkpoint-chain ceiling does not and cannot have one of the same kind: the walk terminates without it (a seen-set rules out cycles), so it caps work rather than deciding validity, and no input separates a file it refuses from one it accepts. TestBoundsCheckpointChain therefore only shows an ordinary chain is still walked, which is the half a wrong ceiling would break. The three sentences that spell out particular ceilings — NBT containers, columns, recovery work — are separate entries below.",
+	},
+	{
+		Name: "the NBT container budget charges nested compounds", Category: Bound, Enforce: Decoded,
+		Rules: []string{"6fbfdbc2"},
+		Tests: []string{"TestHostileNBTContainerBudget", "TestNBTWriterHoldsTheContainerBudget"},
+		Note: "The ceiling was stated in §8 from the start and the accounting only ever implemented half of it: a list's compound elements were charged and a compound's compound fields were not, so a blob of 2,097,152 sibling compounds — twice the ceiling, 14,680,068 bytes, inside the 16 MiB blob limit — was accepted and decoded into 461 MiB allocated and 265 MiB retained. " +
+			"Two tests because the rule has a writer half. The reader's metadata blobs are revalidated on write, so those were covered by accident, but a block entity's or an entity's NBT went to the wire straight from the marshaller; the marshaller now keeps the same count, charged in the same places, so the writer cannot emit a blob its own reader refuses.",
+	},
+	{
+		Name: "the column ceiling bounds both modes", Category: Bound, Enforce: Decoded,
+		Rules: []string{"2e70d107"},
+		Tests: []string{"TestHostileDecodedColumnCeiling", "TestRejectsOverLimitCounts"},
+		Note: "§8 bounded decoded storages, NBT containers and the recovery chain and left columns at the width of the count field. That is not a bound: an eleven-byte chunk record need declare no section present, so a legal 1,161-byte file decoded into 1,048,576 columns and 1.04 GiB retained, and 2^32-1 permitted forty-eight thousand times as much before the 512 MiB body ceiling bound instead. " +
+			"The two modes now share one number, which is the number an indexed directory already had. Its writer half needs no separate test: the encoder's own check is against the same constant, so the two cannot disagree.",
+	},
+	{
+		Name: "recovery is bounded by total work", Category: Bound, Enforce: Decoded,
+		Rules: []string{"56fab33d"},
+		Tests: []string{"TestRecoveryWorkIsBounded", "TestHostileCheckpointReplay"},
+		Note: "The chain limit and the directory limit bound two factors of one product and the product is what costs: 1, 4 and 16 forged footers over a directory at the entry ceiling measured 4.1 s, 14.9 s and 53.2 s from a file of about 9.5 KB, extrapolating to roughly fourteen minutes at the 256-candidate limit. Forging a candidate is free, since a footer's hash is xxHash64 over bytes its author controls. " +
+			"Memoising by directory reference was considered and rejected: it collapses the case where every footer names one directory and an attacker pays about 200 bytes per distinct frame to evade it, so it buys a number rather than a bound. " +
+			"The budget is spent across candidates, which is what makes it a bound on the product; the enforcement test lowers it, because reaching the shipped value means parsing sixteen million entries. The value itself is pinned by TestRejectsOverLimitCounts.",
 	},
 	{
 		Name: "positions lie inside the declared span", Category: Bound, Enforce: Decoded,

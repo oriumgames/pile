@@ -943,12 +943,12 @@ func TestUnresolvedStatesHoldsTheLock(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestHostileCheckpointReplay records what a file of a few kilobytes can make
-// recovery do. Every footer candidate whose directory parses is loaded in full
-// and has every record it names verified, and the candidate list runs to
-// maxCheckpointChain, so the work is the product of two limits §8 states
-// separately. This test does not assert a bound — bounding it would refuse
-// files that open today, which is a format change — it asserts the shape stays
-// linear in the candidate count and that the open terminates.
+// recovery do below the total-work bound. Every footer candidate whose
+// directory parses is loaded in full and has every record it names verified,
+// and the candidate list runs to maxCheckpointChain, so the cost is the product
+// of two limits §8 used to state separately. What this test holds is the shape:
+// linear in the candidate count, and the open terminates. The product itself is
+// bounded by TestRecoveryWorkIsBounded.
 func TestHostileCheckpointReplay(t *testing.T) {
 	reg := testRegistry(t)
 	const entries = 1 << 14
@@ -974,6 +974,123 @@ func TestHostileCheckpointReplay(t *testing.T) {
 		if ceiling := uint64(footers) * 32 << 20; got > ceiling {
 			t.Fatalf("opening %d bytes allocated %d, over %d", len(file), got, ceiling)
 		}
+	}
+}
+
+// TestRecoveryWorkIsBounded enforces the §8 total-work limit. §8 used to bound
+// the candidate chain at 256 and a directory at 4,194,304 entries and leave
+// their product — a billion entries, measured at roughly fourteen minutes and
+// 186 GB of churn from a file of about 20 KB — unbounded. Forging candidates is
+// free, since the footer hash is xxHash64 over bytes the attacker wrote.
+//
+// The budget is spent across candidates rather than per candidate, which is the
+// whole point: bounding either factor alone leaves the product where it was.
+//
+// The production budget is 2^24 entries and cannot be reached in a test without
+// parsing sixteen million of them, so the file below is opened at a lowered
+// budget by the same path OpenIndexed takes. The shipped value is pinned by
+// TestRejectsOverLimitCounts, and the second half of this test shows that at
+// the shipped value the same file is refused for its records rather than for
+// its cost — a world this size never meets the limit at all.
+func TestRecoveryWorkIsBounded(t *testing.T) {
+	reg := testRegistry(t)
+	const entries = 1 << 14
+	const footers = 8
+	p := filepath.Join(t.TempDir(), "replay.pile")
+	if err := os.WriteFile(p, hostileReplayFile(entries, footers), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Three candidates' worth, so the fourth is the one that cannot be paid
+	// for. Every candidate here names the same directory, which is the case
+	// memoising by directory reference would have collapsed; the budget does
+	// not care, because an attacker pays about 200 bytes for a distinct frame
+	// and memoising would then buy a number rather than a bound.
+	err := hostileOpenWithBudget(p, reg, 3*entries+1)
+	if err == nil {
+		t.Fatal("a file whose every record fails its hash was opened")
+	}
+	if !errors.Is(err, errRecoveryBudget) {
+		t.Fatalf("recovery ran past its work limit: %v", err)
+	}
+	// The control: one more entry of budget than four candidates need, and the
+	// open reaches the end of the chain and fails on the records instead.
+	err = hostileOpenWithBudget(p, reg, footers*entries)
+	if err == nil {
+		t.Fatal("a file whose every record fails its hash was opened")
+	}
+	if !errors.Is(err, ErrChecksum) {
+		t.Fatalf("a chain that fits its budget was cut short anyway: %v", err)
+	}
+	// And at the shipped budget: 256 candidates over a 65,536-entry directory
+	// is exactly 2^24, so no world of 65,536 chunks or fewer can be refused by
+	// this limit, and this one is a quarter of that.
+	if _, err := OpenIndexed(p, reg, true); !errors.Is(err, ErrChecksum) {
+		t.Fatalf("the shipped budget bound a %d-entry world over %d candidates: %v", entries, footers, err)
+	}
+}
+
+// hostileOpenWithBudget is OpenIndexed with the recovery budget lowered. It
+// mirrors openIndexedOn rather than calling it, because the budget has to be
+// set between construction and load.
+func hostileOpenWithBudget(path string, reg world.BlockRegistry, budget int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	w, err := newIndexedWorld(f, path, reg, Options{Compression: CompressionDefault}, true)
+	if err != nil {
+		return err
+	}
+	w.recoveryBudget = budget
+	return w.load()
+}
+
+// ---------------------------------------------------------------------------
+// Decoded columns
+// ---------------------------------------------------------------------------
+
+// TestHostileDecodedColumnCeiling enforces §8's ceiling on the columns a file
+// decodes into. §8 bounded decoded storages, NBT containers and the recovery
+// chain and left columns to the width of the count field, 2^32-1, which bounds
+// nothing: a chunk record can be eleven bytes and declare no section present,
+// so a legal 1,161-byte file decoded into 1,048,576 columns and 1.04 GiB
+// retained, and the ceiling permitted forty-eight thousand times that before
+// the 512 MiB body limit bound instead.
+//
+// The ceiling is now 4,194,304 in both modes. It is checked before any of the
+// record bytes are read, so a file naming more than it costs nothing to refuse.
+func TestHostileDecodedColumnCeiling(t *testing.T) {
+	reg := testRegistry(t)
+	body := func(n uint64) []byte {
+		w := &writer{}
+		hostileMetaPrefix(w)
+		hostileEmptyPalettes(w)
+		w.uvarint(0) // blob table
+		w.uvarint(n)
+		w.raw(make([]byte, 64)) // long enough that truncation is not the answer
+		return hostileSeal(KindWorld, w.bytes(), true)
+	}
+	over := body(maxChunks + 1)
+	var err error
+	got := hostileAlloc(func() { _, err = ReadWorld(over, reg) })
+	if err == nil {
+		t.Fatalf("a solid body declaring %d columns was accepted", maxChunks+1)
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("rejected for the wrong reason: %v", err)
+	}
+	t.Logf("%d-byte file declaring %d columns: refused, %d bytes allocated", len(over), maxChunks+1, got)
+	if got > 1<<20 {
+		t.Fatalf("refusing %d columns allocated %d bytes; the count is being spent before it is checked", maxChunks+1, got)
+	}
+	// The control: one fewer column is under the ceiling, so the same file is
+	// refused for running out of records instead. Without it this test would
+	// pass just as well against a reader that refused every chunk count.
+	if _, err := ReadWorld(body(maxChunks), reg); err == nil {
+		t.Fatal("a truncated body was accepted")
+	} else if strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("a column count at the ceiling was refused for exceeding it: %v", err)
 	}
 }
 
@@ -1111,72 +1228,141 @@ func hostileIndexedDirFile(entries int, intact bool, footers int) []byte {
 // NBT
 // ---------------------------------------------------------------------------
 
-// TestHostileNBTContainerBudget pins what the container budget of §8 does and
-// does not cover. A list of compounds is charged per element, which is the
-// amplification the budget was written for. A compound that is a field of
-// another compound is not charged, so a blob can decode into more containers
-// than the stated ceiling. That is recorded in `SECURITY.md` as an
-// under-enforced validity rule rather than fixed here: making the reader
-// enforce it would refuse files this version accepts, which is a format change.
+// TestHostileNBTContainerBudget enforces the §8 container budget, which charges
+// every container nested inside another: a list's compound or list elements,
+// and a compound's compound or list fields. It used to charge only the first,
+// so a blob of sibling compounds decoded into as many containers as it liked —
+// 2,097,152 of them, twice the ceiling, from 14,680,068 bytes inside the 16 MiB
+// blob limit, at 461 MiB allocated and 265 MiB retained. The ceiling was stated
+// and the accounting did not implement it.
+//
+// The root compound is not charged: it is the blob rather than something nested
+// in it. A top-level list therefore costs one container of its own plus one per
+// element, which is why the list at the ceiling below is built one element
+// short of it.
 func TestHostileNBTContainerBudget(t *testing.T) {
-	atLimit := hostileNBTListOfCompounds(maxNBTElements)
+	// A list is itself a container, so a list of n compounds is n+1.
+	atLimit := hostileNBTListOfCompounds(maxNBTElements - 1)
 	if err := validateNBT(atLimit); err != nil {
-		t.Fatalf("a list of exactly %d compounds was refused: %v", maxNBTElements, err)
+		t.Fatalf("a blob of exactly %d containers was refused: %v", maxNBTElements, err)
 	}
-	overLimit := hostileNBTListOfCompounds(maxNBTElements + 1)
+	overLimit := hostileNBTListOfCompounds(maxNBTElements)
 	if err := validateNBT(overLimit); err == nil {
-		t.Fatalf("a list of %d compounds was accepted", maxNBTElements+1)
+		t.Fatalf("a blob of %d containers was accepted", maxNBTElements+1)
 	}
-	// The gap. If this ever starts failing, the budget has been extended to
-	// compound fields and SECURITY.md's "what remains" is out of date.
-	overByNesting := hostileNBTSiblingCompounds(2 * maxNBTElements)
-	if err := validateNBT(overByNesting); err != nil {
-		t.Fatalf("the sibling-compound case now fails (%v); SECURITY.md says it does not", err)
+	// Sibling compounds, which used to be free. One per field of the root.
+	if err := validateNBT(hostileNBTSiblingCompounds(maxNBTElements)); err != nil {
+		t.Fatalf("a blob of exactly %d sibling compounds was refused: %v", maxNBTElements, err)
+	}
+	err := validateNBT(hostileNBTSiblingCompounds(maxNBTElements + 1))
+	if err == nil {
+		t.Fatalf("a blob of %d sibling compounds was accepted", maxNBTElements+1)
+	}
+	if !strings.Contains(err.Error(), "values") {
+		t.Fatalf("rejected for the wrong reason: %v", err)
+	}
+	// The measured case: twice the ceiling, inside the blob limit.
+	over := hostileNBTSiblingCompounds(2 * maxNBTElements)
+	if len(over) > maxBlobLen {
+		t.Fatalf("the sibling-compound case is %d bytes, past the %d-byte blob limit, so it is not a legal blob", len(over), maxBlobLen)
+	}
+	if err := validateNBT(over); err == nil {
+		t.Fatalf("a %d-byte blob of %d sibling compounds was accepted", len(over), 2*maxNBTElements)
 	}
 }
 
-// TestHostileOverrideDeltaWraps pins the one integer computation in the decode
-// paths that wraps before its bounds check, so that whoever changes it knows
-// what they are changing.
+// TestNBTWriterHoldsTheContainerBudget is the other half of the rule. §8
+// requires a writer to refuse content its own reader would, and the container
+// ceiling was the one place that was left to the reader alone: the metadata
+// blobs are revalidated after marshalling, but a block entity's or an entity's
+// NBT went to the wire unchecked. Without this the tightening above would
+// refuse a file this library can write.
+func TestNBTWriterHoldsTheContainerBudget(t *testing.T) {
+	// One list field of the root, holding n compounds: n+1 containers.
+	build := func(n int) map[string]any {
+		l := make([]map[string]any, n)
+		for i := range l {
+			l[i] = map[string]any{}
+		}
+		return map[string]any{"a": l}
+	}
+	b, err := marshalNBT(build(maxNBTElements - 1))
+	if err != nil {
+		t.Fatalf("a value of exactly %d containers was refused: %v", maxNBTElements, err)
+	}
+	if err := validateNBT(b); err != nil {
+		t.Fatalf("the writer emitted a blob its own reader refuses: %v", err)
+	}
+	if _, err := marshalNBT(build(maxNBTElements)); err == nil {
+		t.Fatalf("the writer emitted a value of %d containers, which its reader refuses", maxNBTElements+1)
+	}
+	// And the shape the reader used not to charge: sibling compounds.
+	sib := make(map[string]any, maxNBTElements+1)
+	for i := range maxNBTElements + 1 {
+		sib[fmt.Sprintf("%06d", i)] = map[string]any{}
+	}
+	if _, err := marshalNBT(sib); err == nil {
+		t.Fatalf("the writer emitted %d sibling compounds, which its reader refuses", maxNBTElements+1)
+	}
+}
+
+// TestHostileOverrideDeltaWraps enforces §3.1's ascent rule against the one
+// integer computation in the decode paths that wraps before its bounds check.
 //
 // §3.1's version-override table carries index deltas as uvarints and the
 // decoder accumulates them in a uint64: `idx := prev + delta`. The bounds test
-// that follows catches an index past the palette, so nothing here is
+// that follows catches an index past the palette, so nothing here was ever
 // memory-unsafe, but the sum is modular and a uvarint can express the modular
 // representative of a negative step. A delta of 2^64-2 after index 5 lands on
-// index 3, which is a descent, and §3.1 says the indices strictly ascend. The
-// decoder only enforces that through "a later delta MUST be non-zero", which
-// is sufficient exactly as long as the sum cannot wrap.
+// index 3, which is a descent where §3.1 says the indices strictly ascend, and
+// 3 is in range so the bounds test says nothing. The decoder used to enforce
+// the ascent only through "a later delta MUST be non-zero", which is sufficient
+// exactly as long as the sum cannot wrap.
+//
+// This is a second encoding of one palette, which is the thing the canonical
+// form exists to prevent. It went unpinned for as long as it did because the
+// ascent was a layout-table annotation rather than a MUST sentence, so
+// TestEveryRuleIsClaimed had nothing to claim; it is a normative sentence now.
 //
 // The other two delta chains in the format — a record's chunk position and a
 // directory entry's frame offset — accumulate in an int64 and range-check each
 // step, and there the modular representative of a wrap lands next to the
 // bottom of int64, nowhere near a legal value. This one is unsigned, which is
 // the whole of the difference.
-//
-// It is recorded and not fixed: refusing it would reject a file this reader
-// accepts today, which `SECURITY.md` reports as a format change for someone
-// else to decide. If this test starts failing, that decision has been taken.
 func TestHostileOverrideDeltaWraps(t *testing.T) {
 	reg := testRegistry(t)
-	w := &writer{}
-	hostileMetaPrefix(w)
-	const entries = 6
-	w.uvarint(entries)
-	for i := range entries {
-		w.str(fmt.Sprintf("minecraft:x%d", i))
-		w.uvarint(0) // no properties
+	build := func(delta uint64) []byte {
+		w := &writer{}
+		hostileMetaPrefix(w)
+		const entries = 8
+		w.uvarint(entries)
+		for i := range entries {
+			w.str(fmt.Sprintf("minecraft:x%d", i))
+			w.uvarint(0) // no properties
+		}
+		w.uvarint(2) // two overrides
+		w.uvarint(5) // the first names index 5
+		w.u32(1)     // at some other version
+		w.uvarint(delta)
+		w.u32(2)
+		w.uvarint(0) // biome palette
+		w.uvarint(0) // blob table
+		w.uvarint(0) // chunk records
+		return hostileSeal(KindWorld, w.bytes(), false)
 	}
-	w.uvarint(2)              // two overrides
-	w.uvarint(5)              // the first names index 5
-	w.u32(1)                  // at some other version
-	w.uvarint(^uint64(0) - 1) // 2^64-2, so 5 + delta == 3 (mod 2^64)
-	w.u32(2)
-	w.uvarint(0) // biome palette
-	w.uvarint(0) // blob table
-	w.uvarint(0) // chunk records
-	if _, err := ReadWorld(hostileSeal(KindWorld, w.bytes(), false), reg); err != nil {
-		t.Fatalf("the wrapping override chain is now refused (%v); SECURITY.md says it is accepted, and refusing it is a format change", err)
+	// 2^64-2, so 5 + delta == 3 (mod 2^64): a descent onto a legal index.
+	_, err := ReadWorld(build(^uint64(0)-1), reg)
+	if err == nil {
+		t.Fatal("a version-override chain whose running index wraps was accepted; it is a second encoding of one palette")
+	}
+	if !strings.Contains(err.Error(), "wraps") {
+		t.Fatalf("rejected for the wrong reason: %v", err)
+	}
+	// The negative control for the control: an ascending chain over the same
+	// bytes still opens, so the check above is refusing the wrap and not the
+	// override table.
+	if _, err := ReadWorld(build(1), reg); err != nil {
+		t.Fatalf("an ascending override chain was refused: %v", err)
 	}
 }
 

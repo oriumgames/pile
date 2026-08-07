@@ -269,6 +269,16 @@ override[overrideN]:             indices strictly ascending
                                   second encoding of an entry with none
 ```
 
+The override indices MUST strictly ascend, and decoders MUST reject a table
+whose running index does not increase, including one whose accumulated sum
+wraps. The wrap is the case worth stating separately: a uvarint can express the
+modular representative of a negative step, so a delta of 2⁶⁴−2 after an
+override at index 5 lands on index 3, which is a legal index and therefore
+invisible to a bounds test. A reader that accepts it has accepted a second
+encoding of one palette, which is the thing the canonical form exists to
+prevent. Refusing a zero delta is necessary and not sufficient: it enforces the
+ascent only for as long as the sum cannot wrap.
+
 Only preserved unresolved states (§9) can carry one: everything else is
 resolved against the live registry and is therefore at the palette's own
 version. Decoders MUST upgrade each entry from its own version when it has an
@@ -440,7 +450,7 @@ meta block       §4.1–4.2
 block palette    §3.1
 biome palette    §3.2
 blob table       §3.4
-chunkN           uvarint          (≤ 4 294 967 295, §8)
+chunkN           uvarint          (≤ 4 194 304, §8)
 record[chunkN]   §4.3, sorted by Morton key of (x, z)
 ```
 
@@ -1007,13 +1017,13 @@ remain, not from these ceilings.
 | item | limit |
 |------|-------|
 | NBT nesting depth | 64 |
-| NBT containers per blob (compounds and nested lists) | 1 048 576 |
+| NBT containers per blob (every compound or list nested inside another) | 1 048 576 |
 | section storages decoded per file | 4 194 304 |
 | checkpoint chain links followed during recovery | 256 |
+| directory entries parsed during one recovery, summed over every candidate tried | 16 777 216 |
 | string length | 65 535 |
 | blob length | 16 MiB |
-| chunk records in a solid body | 4 294 967 295 (the largest value a u32 holds) |
-| entries in an indexed directory | 4 194 304 |
+| columns decoded per file: chunk records in a solid body, entries in an indexed directory | 4 194 304 |
 | decompressed size of a solid body | 512 MiB |
 | decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
 | decompressed size of an indexed directory frame | 512 MiB |
@@ -1054,13 +1064,55 @@ derived from untrusted counts must be validated before allocation.
 Bounding a count against the bytes that remain is necessary and not sufficient,
 because several of the values a file declares cost far more to decode than to
 write. One blob reference is a single byte and becomes a live section storage;
-one byte of `TAG_End` inside a list of compounds becomes a whole map; a
+one byte of `TAG_End` inside a list of compounds becomes a whole map; an
+eleven-byte chunk record becomes a whole column; a
 44-byte footer names a directory frame that may decompress to 512 MiB. Decoders
-MUST therefore bound the **result** as well as the input, and the three
+MUST therefore bound the **result** as well as the input, and the decoded
 ceilings above exist for exactly that. A conforming reader rejects a file that
-would decode into more section storages, more NBT containers, or a longer
-recovery chain than they allow, even though every individual field is within
-its own limit.
+would decode into more section storages, more NBT containers, more columns, a
+longer recovery chain or more total recovery work than they allow, even though
+every individual field is within its own limit.
+
+Three of those need saying more precisely, because each of them was stated once
+and left unimplemented.
+
+**The NBT container budget charges every container nested inside another.**
+Decoders MUST charge a compound or a list that is an element of a list, and a
+compound or a list that is a field of a compound, and MUST NOT charge the
+blob's own root compound, which is the blob rather than something inside it. A
+compound nested in a compound costs six bytes on the wire — a tag, a two-byte
+name length, a name that cannot repeat a sibling's, and `TAG_End` — and becomes
+a map exactly as a list element does. Charging only the list case left the
+ceiling above stated and unenforced, at twice over: two million sibling
+compounds fit inside the 16 MiB blob limit.
+
+**The column ceiling is one number for both modes.** Decoders MUST refuse a
+solid body declaring more chunk records than the ceiling above, and an indexed
+directory declaring more entries, and the two are deliberately the same value:
+a column costs the same to hold whichever named it. A solid file holds every
+column at once by design, so 4 194 304 of them is already about four gigabytes
+of live objects — this is a ceiling at the point where a world stops being
+decodable rather than one chosen to be comfortable. For scale, a real overworld
+of ten thousand chunks is four hundred times below it, and every column holding
+a single block already consumes one of the 4 194 304 decoded section storages,
+so the only thing this ceiling newly refuses is a world with more than four
+million *empty* columns. The number it replaces, 2³²−1, was the width of the
+count field and not a bound on anything: an eleven-byte chunk record is legal,
+so it permitted forty-eight thousand times as much decoded state as the 512 MiB
+body ceiling would ever have to deliver.
+
+**Recovery is bounded by its total work and not by its factors.** A reader
+MUST stop recovery, and refuse the file, once the directory entries it has
+parsed during one open reach the ceiling above, counted across every checkpoint
+candidate it tries rather than per candidate. The chain limit and the directory
+limit bound two factors of one product, and it is the product that costs: 256
+candidates over a directory at its ceiling is a billion entries, measured at
+roughly fourteen minutes from a file of about 20 KB, and forging candidates is
+free because a footer's hash is xxHash64 over bytes their author controls.
+The value above is four directories at the entry ceiling, which is more than a
+torn write needs — a damaged checkpoint's directory frame usually fails its own
+hash and costs nothing to skip — and it is also 256 times 65 536, so no world
+of 65 536 columns or fewer can ever be refused by it.
 
 Positions are part of this: a record's declared span is validated, so every
 block-entity and scheduled-update position it carries MUST lie inside that

@@ -664,6 +664,13 @@ func vecWalkStatePalette(r *vecReader, path string, paletteVersion int32) ([]vec
 		if i > 0 && d == 0 {
 			return nil, fmt.Errorf("%s: zero delta, indices strictly ascend", op)
 		}
+		// A uvarint can carry the modular representative of a negative step, so
+		// the running index has to be checked for a wrap before it is checked
+		// against the palette: 2^64-2 after index 5 lands on index 3, which is
+		// in range and is a descent.
+		if idx+d < idx {
+			return nil, fmt.Errorf("%s: delta %d wraps the index chain past index %d", op, d, idx)
+		}
 		idx += d
 		if idx >= uint64(len(out)) {
 			return nil, fmt.Errorf("%s: index %d is past the palette", op, idx)

@@ -36,8 +36,10 @@ again if the file moves.
 
 ## Summary
 
-The table holds 64 entries: 54 `Decoded`, 10 `WriterOnly`. (It held 63 before
-this pass; one entry was split, see "Enforce labels" below.)
+The table holds 69 entries: 59 `Decoded`, 10 `WriterOnly`. (It held 63 before
+the harness pass; one entry was split, see "Enforce labels" below, and four
+more were added by the validity tightenings recorded in `SECURITY.md` under
+"Format changes: made".)
 
 `STATUS.md` estimated "roughly 13 entries still have vacuous tests". The real
 count, at the level of individual production checks rather than whole entries,
@@ -347,6 +349,25 @@ says nothing about the other.
 | stats fields are optional but typed | `encode.go:518` a missing key made an error | `TestStatsMissingKeyAccepted` — "a stats compound missing keys was rejected" |
 | decoders bound the result | `decode.go:439` storage budget | `TestBoundsDecodedStorages` |
 | decoders bound the result | `nbtvalidate.go:31` NBT element budget | `TestBoundsDecodedNBTContainers` |
+
+The four validity tightenings made before the freeze have their own controls,
+one per production check rather than one per entry, for the same reason the rest
+of this document counts checks. `SECURITY.md`'s "Negative controls" table holds
+the results; they are listed here so the two documents do not diverge.
+
+| entry | check disabled | test that failed |
+|---|---|---|
+| the NBT container budget charges nested compounds | `nbtvalidate.go` the compound field's charge | `TestHostileNBTContainerBudget` |
+| the NBT container budget charges nested compounds | `nbt.go` `nbtCompound`'s writer-side charge | `TestNBTWriterHoldsTheContainerBudget` |
+| version override indices strictly ascend | `palette.go` the `idx < prev` wrap test | `TestHostileOverrideDeltaWraps` |
+| version override indices strictly ascend | `vectorwalk_test.go` the independent walker's own wrap test | `TestConformanceVectorsNegative/override_index_chain_wraps` |
+| the column ceiling bounds both modes | `decode.go` `r.count(maxChunks, "chunk")` | `TestHostileDecodedColumnCeiling` |
+| recovery is bounded by total work | `indexed.go` `finishDirectory`'s budget charge | `TestRecoveryWorkIsBounded` |
+
+The column ceiling's writer half has no control of its own, deliberately: the
+encoder's check is against the same constant the decoder's is, so there is no
+edit that disables one without the other. Saying so is the point — a control
+that could only be faked would be worse than none.
 
 ---
 

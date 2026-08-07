@@ -491,6 +491,26 @@ func negCases() []negCase {
 			},
 		},
 		{
+			name: "override_index_chain_wraps", base: "world_preserved",
+			rule:    "§3.1: the override indices strictly ascend, and a delta whose running sum wraps descends onto an index a bounds test cannot see is wrong",
+			wantErr: "wraps",
+			mutate: func(t *testing.T, l *vecLayout, b []byte) []byte {
+				// The base vector's first override is at index 0, which nothing
+				// can step back from, so move it to the last entry first. Both
+				// indices stay legal; what is illegal is the descent between
+				// them. The second delta is the modular representative of
+				// -(n-1), so the running sum wraps and lands back on index 0.
+				n := uint64(len(l.blockPalette))
+				if n < 2 {
+					t.Fatalf("the base vector's block palette holds %d entries; a wrap needs two indices", n)
+				}
+				return vecApply(b,
+					vecSet(t, l, "blockPalette.override[0].indexDelta", vecUvarint(n-1)...),
+					vecSet(t, l, "blockPalette.override[1].indexDelta", vecUvarint(-(n-1))...),
+				)
+			},
+		},
+		{
 			name: "override_zero_version", base: "world_preserved", rule: "§3.1: an override's version must be non-zero",
 			wantErr: "version",
 			mutate: func(t *testing.T, l *vecLayout, b []byte) []byte {

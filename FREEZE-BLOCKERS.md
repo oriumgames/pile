@@ -98,7 +98,12 @@ than it sounds, for the reasons the triage gave and which still hold:
 
 1. **Only sentences containing MUST are pinned.** Layout-table range
    annotations were spot-checked by hand against the constants this round and
-   agreed, but nothing checks them and nothing will.
+   agreed, but nothing checks them and nothing will. A later pass found the
+   first real instance of the cost: §3.1's *indices strictly ascending* was an
+   annotation inside a layout fence, and the extractor strips fences, so no
+   invariant had to claim it and the decoder enforced only half of it for as
+   long as it existed. It is a normative sentence now. The class is still open,
+   and it is the reason this item stays on the list rather than being ticked.
 2. **The harness still cannot catch a vacuous claim.** `TestEveryRuleIsClaimed`
    proves a sentence is claimed and `TestEveryInvariantNamesALiveTest` proves
    the named test compiles. Neither is evidence the test reaches the rule. The
