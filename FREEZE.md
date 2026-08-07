@@ -50,14 +50,32 @@ Nothing below is optional. Each line names its exit criterion.
 
 ### Correctness
 
-- [ ] Every entry in `format/invariants.go` that claims `Enforce: Decoded` has
+- [x] Every entry in `format/invariants.go` that claims `Enforce: Decoded` has
       a reader that actually rejects violations. *Exit: disabling the
       production check turns the named test red, for every entry.*
-- [ ] Every entry claiming `Enforce: WriterOnly` is genuinely uncheckable by a
+      Recorded in `HARNESS.md`, one row per check rather than per entry,
+      because several entries have two readers or a reader and a writer and a
+      fixture for one says nothing about the other. Seventeen checks across
+      eleven entries turned out to be reached by no named test; twelve were
+      fixed and five are explained there. One entry, `decoders never panic`,
+      cannot meet this criterion as written: its enforcers are the fuzz
+      targets, and a plain `go test` runs only their seed corpora, which are by
+      construction the inputs already known to be safe. Its real exit criterion
+      is the extended fuzzing session under Security below.
+- [x] Every entry claiming `Enforce: WriterOnly` is genuinely uncheckable by a
       reader. *Exit: a written reason per entry saying what evidence is
       missing from the file.*
+      All ten entries state theirs in their `Note`. Two are honest exceptions
+      to "genuinely uncheckable": out-of-box cell padding (discussed below) and
+      the solid block palette's order, which a reader could plausibly
+      reconstruct and which §3.1 forbids it from checking. `HARNESS.md` says so
+      under "Rules a reader could check and must not". Neither may be turned
+      into a reader check: both would reject files this version wrote.
 - [ ] No test in the suite passes with its subject reverted. *Exit: a
       recorded negative-control result per canonicality test.*
+      Partly done: every test the invariant table names now has one, in
+      `HARNESS.md`. The rest of the suite — the mover, preservation, provider
+      and golden tests — has not been controlled.
 - [x] The structure decoder enforces the rules the world decoder does:
       duplicate block-entity positions and their order, unreferenced
       blob-table entries, blob id first-use order, all-air section and
@@ -72,9 +90,12 @@ Nothing below is optional. Each line names its exit criterion.
       it as `WriterOnly` for that reason and it is verified by re-encoding;
       this line used to name it as a decoder precondition and the two
       documents disagreed.
-- [ ] The specification's normative rules are all claimed
+- [x] The specification's normative rules are all claimed
       (`TestEveryRuleIsClaimed`) and all claims name live tests
-      (`TestEveryInvariantNamesALiveTest`).
+      (`TestEveryInvariantNamesALiveTest`). Both green. Note what this does and
+      does not buy: it proves a sentence is claimed and that the named test
+      compiles, and nothing more. Whether a named test reaches the rule is the
+      first precondition above, and it is what `HARNESS.md` is for.
 
 ### Security
 

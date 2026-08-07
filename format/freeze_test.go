@@ -37,27 +37,97 @@ func TestRejectsNonMinimalVarints(t *testing.T) {
 	}
 }
 
+// TestRejectsNonCanonicalBlob drives every rule decodeOneBlob applies to a
+// section blob's shape: the palette count, the strict ascent of its
+// references, and the width relation of §3.3.
+//
+// Every fixture names all the entries it declares, and every assertion names
+// the message it expects. Both matter, and neither used to be true here: the
+// old fixtures left an entry unnamed, so §3.3's used-entry rule refused them
+// before the rule under test ran, and the assertions only asked whether an
+// error happened. The test therefore stayed green with the ascent check and
+// the width checks both deleted.
 func TestRejectsNonCanonicalBlob(t *testing.T) {
-	// Descending references are not canonical.
-	w := &writer{}
-	w.uvarint(2)
-	w.uvarint(5)
-	w.uvarint(3)
-	w.u8(widthU8)
-	w.raw(make([]byte, 4096))
-	if _, err := decodeOneBlob(&reader{b: w.bytes()}); err == nil {
-		t.Error("descending palette references accepted")
+	// fill spreads indices over pn entries so no entry goes unnamed, whatever
+	// the rule under test does.
+	fill := func(w *writer, width uint8, pn int) {
+		switch width {
+		case widthU8:
+			idx := make([]byte, 4096)
+			for i := range idx {
+				idx[i] = uint8(min(i, pn-1))
+			}
+			w.raw(idx)
+		case widthU16:
+			idx := make([]byte, 8192)
+			for i := range 4096 {
+				v := min(i, pn-1)
+				idx[i*2], idx[i*2+1] = uint8(v), uint8(v>>8)
+			}
+			w.raw(idx)
+		}
 	}
-
-	// A two-entry palette must use u8 indices, not u16.
-	w = &writer{}
-	w.uvarint(2)
-	w.uvarint(0)
-	w.uvarint(1)
-	w.u8(widthU16)
-	w.raw(make([]byte, 8192))
-	if _, err := decodeOneBlob(&reader{b: w.bytes()}); err == nil {
-		t.Error("non-minimal index width accepted")
+	blob := func(refs []uint64, width uint8) []byte {
+		w := &writer{}
+		w.uvarint(uint64(len(refs)))
+		for _, r := range refs {
+			w.uvarint(r)
+		}
+		w.u8(width)
+		fill(w, width, len(refs))
+		return w.bytes()
+	}
+	wide := make([]uint64, 257)
+	for i := range wide {
+		wide[i] = uint64(i)
+	}
+	for _, c := range []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		// §3.3: the reference list ascends strictly, so neither a descending
+		// pair nor a repeated one is a second encoding of a section.
+		{"descending references", blob([]uint64{5, 3}, widthU8), "not strictly ascending"},
+		{"repeated reference", blob([]uint64{3, 3}, widthU8), "not strictly ascending"},
+		// An empty local palette selects nothing at all.
+		{"empty palette", blob(nil, widthUniform), "empty section palette"},
+		// §3.3: width is 0 if and only if paletteN is 1, both directions.
+		{"uniform width, two entries", blob([]uint64{0, 1}, widthUniform), "uniform blob with 2 palette entries"},
+		{"byte indices, one entry", blob([]uint64{0}, widthU8), "must use the uniform width"},
+		// §3.3: the narrowest sufficient width is the only valid one. The
+		// single-entry case reaches the same condition, which is why widthU16
+		// carries no separate test for it.
+		{"u16 indices, two entries", blob([]uint64{0, 1}, widthU16), "non-minimal index width for 2"},
+		{"u16 indices, one entry", blob([]uint64{0}, widthU16), "non-minimal index width for 1"},
+		// A byte index cannot name entry 256, so the u8 upper bound and §3.3's
+		// used-entry rule refuse the same inputs. The bound runs first; the
+		// assertion is on it, so deleting it is visible here.
+		{"byte indices, 257 entries", blob(wide, widthU8), "u8 indices with 257 palette entries"},
+		{"undefined width code", blob([]uint64{0, 1}, 3), "unknown index width 3"},
+	} {
+		_, err := decodeOneBlob(&reader{b: c.in})
+		if err == nil {
+			t.Errorf("%s: accepted", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: refused by %v, want a refusal naming %q", c.name, err, c.want)
+		}
+	}
+	// The canonical spellings of the same shapes are accepted, so none of the
+	// above is being refused by something every blob trips over.
+	for _, c := range []struct {
+		name string
+		in   []byte
+	}{
+		{"uniform, one entry", blob([]uint64{7}, widthUniform)},
+		{"byte indices, two entries", blob([]uint64{3, 5}, widthU8)},
+		{"u16 indices, 257 entries", blob(wide, widthU16)},
+	} {
+		if _, err := decodeOneBlob(&reader{b: c.in}); err != nil {
+			t.Errorf("%s: a canonical blob was rejected: %v", c.name, err)
+		}
 	}
 }
 
@@ -515,7 +585,7 @@ func TestRejectsBorderSchema(t *testing.T) {
 // must encode identically.
 func TestCollectionTiesUseWrittenBytes(t *testing.T) {
 	reg := testRegistry(t)
-	build := func(x1, x2 int32, u1, u2 int64) []byte {
+	build := func(x1, x2 int32, ents []chunk.Entity) []byte {
 		ch := chunk.New(reg, cube.Range{-64, 319})
 		stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
 		ch.SetBlock(0, -64, 0, 0, stone)
@@ -530,12 +600,7 @@ func TestCollectionTiesUseWrittenBytes(t *testing.T) {
 				{Pos: cube.Pos{2, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "x": x1}},
 				{Pos: cube.Pos{1, -60, 1}, Data: map[string]any{"id": "minecraft:chest", "x": x2}},
 			},
-			// Same ID, same effective content: only the overwritten UniqueID
-			// differs.
-			Entities: []chunk.Entity{
-				{ID: 5, Data: map[string]any{"identifier": "minecraft:cow", "UniqueID": u1}},
-				{ID: 5, Data: map[string]any{"identifier": "minecraft:cow", "UniqueID": u2}},
-			},
+			Entities: ents,
 		}}}}
 		var buf bytes.Buffer
 		if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err != nil {
@@ -543,8 +608,25 @@ func TestCollectionTiesUseWrittenBytes(t *testing.T) {
 		}
 		return buf.Bytes()
 	}
-	if a, b := build(1, 2, 11, 22), build(2, 1, 22, 11); !bytes.Equal(a, b) {
+	// One ID, two different bodies. Entity IDs are not required to be unique --
+	// only block entities and scheduled updates are -- so this is the
+	// collection whose NBT tie-break has legal input to decide. Two entries
+	// carrying identical NBT was the old shape here, and it left the tie-break
+	// with nothing to order: the test passed with the comparison deleted.
+	cow := func(u int64) chunk.Entity {
+		return chunk.Entity{ID: 5, Data: map[string]any{"identifier": "minecraft:cow", "UniqueID": u}}
+	}
+	pig := func(u int64) chunk.Entity {
+		return chunk.Entity{ID: 5, Data: map[string]any{"identifier": "minecraft:pig", "UniqueID": u}}
+	}
+	a := build(1, 2, []chunk.Entity{cow(11), pig(22)})
+	if b := build(2, 1, []chunk.Entity{cow(22), pig(11)}); !bytes.Equal(a, b) {
 		t.Fatalf("discarded NBT fields decided the record order: %d vs %d bytes", len(a), len(b))
+	}
+	// And the caller's slice order must not decide it, which the pair above
+	// cannot show: both hand over the entities in the same order.
+	if b := build(1, 2, []chunk.Entity{pig(22), cow(11)}); !bytes.Equal(a, b) {
+		t.Fatalf("two entities sharing an ID kept the caller's order: %d vs %d bytes", len(a), len(b))
 	}
 }
 
@@ -962,6 +1044,23 @@ func TestBiomeNamesAreNamespaced(t *testing.T) {
 	if !strings.Contains(err.Error(), "namespaced") {
 		t.Errorf("rejected by %v, not by the namespace rule", err)
 	}
+
+	// The writer half. A bare name reaches the palette builder from a caller
+	// that supplies its own biome registry, and the builder has to refuse it:
+	// nothing above drives that, so without this the writer's check could be
+	// deleted and the suite stayed green.
+	b := newBiomePaletteBuilder()
+	b.addName("ocean")
+	if _, _, err := b.finalize(); err == nil {
+		t.Fatal("the writer emitted a bare biome name")
+	} else if !strings.Contains(err.Error(), "namespaced") {
+		t.Errorf("the writer refused by %v, not by the namespace rule", err)
+	}
+	b = newBiomePaletteBuilder()
+	b.addName("minecraft:ocean")
+	if _, _, err := b.finalize(); err != nil {
+		t.Errorf("the writer refused a namespaced name: %v", err)
+	}
 }
 
 // Round 13 rules.
@@ -1024,6 +1123,35 @@ func TestStructureInternalAirLayerSurvives(t *testing.T) {
 	}
 	if rid := cell.Block(1, 2, 3, 1); rid != water {
 		t.Fatalf("water left layer 1 (found %d there)", rid)
+	}
+
+	// And the flip side, for cells rather than sections: a trailing all-air
+	// layer says nothing, so it must not reach the file. Only the golden
+	// structure caught this before, which reports "the wire format changed"
+	// rather than which rule went.
+	stone, _ := reg.StateToRuntimeID("minecraft:stone", map[string]any{})
+	cellFile := func(pad bool) []byte {
+		s, err := NewStructureData([3]int32{16, 16, 16})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := chunk.NewSubChunk(air)
+		c.SetBlock(0, 0, 0, 0, stone)
+		if pad {
+			// Setting air on an unallocated layer is a no-op, so layers 1..2
+			// are brought into existence and then cleared.
+			c.SetBlock(0, 0, 0, 2, stone)
+			c.SetBlock(0, 0, 0, 2, air)
+		}
+		s.Cells[0] = c
+		var b bytes.Buffer
+		if err := WriteStructure(&b, s, reg, Options{Compression: CompressionNone}); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	if a, b := cellFile(false), cellFile(true); !bytes.Equal(a, b) {
+		t.Fatalf("spare trailing air layers reached a structure cell: %d vs %d bytes", len(a), len(b))
 	}
 }
 
@@ -1442,6 +1570,61 @@ func TestIndexedRejectsDictionaryWhenUncompressed(t *testing.T) {
 	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
 		t.Fatal(err)
 	}
+	// A dictionary this reader can actually load, written raw because the file
+	// is uncompressed. Pointing the reference at arbitrary bytes instead left
+	// the rule with no input: the frame checksum or the dictionary decoder
+	// refused the file first, so the test passed with the rule deleted.
+	samples := make([][]byte, 64)
+	for i := range samples {
+		var s []byte
+		for len(s) < 2048 {
+			s = append(s, "minecraft:stone\x00minecraft:dirt\x00minecraft:air\x00"...)
+			s = append(s, byte(i), byte(i>>8), byte(len(s)))
+		}
+		samples[i] = s
+	}
+	d, err := buildDictionary(samples, CompressionDefault)
+	if err != nil {
+		t.Skipf("this build cannot train a dictionary: %v", err)
+	}
+	if err := w.installDict(d); err != nil {
+		t.Skipf("this build cannot load a trained dictionary: %v", err)
+	}
+	if err := w.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		if !strings.Contains(err.Error(), "references a dictionary") {
+			t.Errorf("refused by %v, not by the rule under test", err)
+		}
+		return
+	}
+	recovered := v.Recovered()
+	v.Close()
+	if !recovered {
+		t.Fatal("an uncompressed indexed file referencing a dictionary was accepted")
+	}
+}
+
+// TestRejectsMalformedDictionaryReference is the neighbouring case: a
+// dictionary reference whose frame does not hash to what it claims. It is kept
+// apart from the rule above because it is a different check reached at a
+// different point, and folding them together is what made that one
+// unfalsifiable.
+func TestRejectsMalformedDictionaryReference(t *testing.T) {
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Store(buildTestColumn(t, reg, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1455,7 +1638,7 @@ func TestIndexedRejectsDictionaryWhenUncompressed(t *testing.T) {
 	recovered := v.Recovered()
 	v.Close()
 	if !recovered {
-		t.Fatal("an uncompressed indexed file referencing a dictionary was accepted")
+		t.Fatal("a dictionary reference naming an unreadable frame was accepted")
 	}
 }
 
@@ -1464,7 +1647,7 @@ func TestIndexedRejectsDictionaryWhenUncompressed(t *testing.T) {
 // makes the claim rather than merely having a damaged header.
 func patchDirectoryFlags(t *testing.T, path string, set uint32) bool {
 	t.Helper()
-	return patchDirectory(t, path, func(dir []byte) bool {
+	return patchDirectory(t, path, func(_, dir []byte) bool {
 		flags := binary.LittleEndian.Uint32(dir[2:6])
 		binary.LittleEndian.PutUint32(dir[2:6], flags|set)
 		return true
@@ -1472,10 +1655,13 @@ func patchDirectoryFlags(t *testing.T, path string, set uint32) bool {
 }
 
 // patchDirectoryDict points the directory's dictionary reference at a frame,
-// keeping every varint one byte wide so no offset moves.
+// keeping every varint one byte wide so no offset moves. The reference carries
+// the frame's true hash: a wrong one is refused by the frame checksum, which
+// runs before the rule this is built to reach, and left that rule with no
+// input at all.
 func patchDirectoryDict(t *testing.T, path string) bool {
 	t.Helper()
-	return patchDirectory(t, path, func(dir []byte) bool {
+	return patchDirectory(t, path, func(file, dir []byte) bool {
 		// prologue: kind, mode, flags, blockVersion = 10 bytes, then the meta
 		// reference. Both references are absent in a freshly written file, so
 		// each is two zero varints and an eight-byte hash.
@@ -1486,11 +1672,13 @@ func patchDirectoryDict(t *testing.T, path string) bool {
 		}
 		dir[dict] = headerSize // offset
 		dir[dict+1] = 1        // length
+		binary.LittleEndian.PutUint64(dir[dict+2:dict+10],
+			xxhash.Sum64(file[headerSize:headerSize+1]))
 		return true
 	})
 }
 
-func patchDirectory(t *testing.T, path string, edit func(dir []byte) bool) bool {
+func patchDirectory(t *testing.T, path string, edit func(file, dir []byte) bool) bool {
 	t.Helper()
 	file, err := os.ReadFile(path)
 	if err != nil {
@@ -1503,7 +1691,7 @@ func patchDirectory(t *testing.T, path string, edit func(dir []byte) bool) bool 
 		return false
 	}
 	dir := file[off : off+length]
-	if !edit(dir) {
+	if !edit(file, dir) {
 		return false
 	}
 	binary.LittleEndian.PutUint64(footer[0:8], checkpointHash(file[:headerSize], dir, footer[8:]))
@@ -3316,7 +3504,7 @@ func indexedWithPatchedPrologue(t *testing.T, reg world.BlockRegistry, edit func
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !patchDirectory(t, path, func(dir []byte) bool { edit(dir); return true }) {
+	if !patchDirectory(t, path, func(_, dir []byte) bool { edit(dir); return true }) {
 		t.Fatal("could not reach the directory")
 	}
 	v, err := OpenIndexed(path, reg, true)
@@ -3489,16 +3677,25 @@ func TestRejectsCumulativePaletteOverflow(t *testing.T) {
 	// other half of the same guard: a segment list whose frames cannot fit the
 	// file is refused before any of them is read, which is the bound that
 	// stops a tiny file from claiming an enormous palette.
+	//
+	// The offsets ascend, or §5.3's segment-order rule refuses the list first
+	// and this watches that check instead: the fixture used to name one offset
+	// twice, so it stayed green with the byte bound deleted. The assertion
+	// names the bound for the same reason.
 	w := &IndexedWorld{end: 8}
 	bw := &writer{}
 	bw.uvarint(2)
-	for range 2 {
-		bw.uvarint(headerSize)
+	for i := range 2 {
+		bw.uvarint(headerSize + uint64(i))
 		bw.uvarint(64)
 		bw.u64(0)
 	}
-	if _, err := w.parseSegRefs(&reader{b: bw.bytes()}, "segment", func(frameRef, string) error { return nil }); err == nil {
+	_, err := w.parseSegRefs(&reader{b: bw.bytes()}, "segment", func(frameRef, string) error { return nil })
+	if err == nil {
 		t.Fatal("segments totalling more than the file were accepted")
+	}
+	if !strings.Contains(err.Error(), "frames total") {
+		t.Errorf("refused by %v, not by the frame-total bound", err)
 	}
 }
 
@@ -3799,9 +3996,26 @@ func TestRejectsOversizedZstdWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok := small.EncodeAll(payload, nil)
-	small.Close()
+	defer small.Close()
 	if _, err := sharedDecoder().decodeAll(ok, nil); err != nil {
 		t.Fatalf("a frame within the window ceiling was refused: %v", err)
+	}
+
+	// The other half of the rule, and the one nothing reached: the window
+	// bounds the memory a decode needs, the decoded-size ceiling bounds what
+	// comes out. A frame can sit far inside the window and still decompress
+	// past the ceiling, which is the shape a small file uses to demand a large
+	// buffer. Zeroes, so the frame that carries this is a few hundred bytes.
+	zeros := make([]byte, maxDecodedFrame+1)
+	frame = small.EncodeAll(zeros, nil)
+	if len(frame) > 1<<16 {
+		t.Fatalf("the over-ceiling fixture is %d bytes, which is not the shape being tested", len(frame))
+	}
+	if _, err := sharedFrameDecoder().decodeAll(frame, nil); err == nil {
+		t.Fatalf("a frame decoding to %d bytes passed the %d byte ceiling", len(zeros), maxDecodedFrame)
+	}
+	if _, err := sharedFrameDecoder().decodeAll(small.EncodeAll(zeros[:maxDecodedFrame], nil), nil); err != nil {
+		t.Fatalf("a frame decoding to exactly the ceiling was refused: %v", err)
 	}
 }
 
@@ -4053,6 +4267,31 @@ func TestStructureRejectsBlockEntityOutsideBox(t *testing.T) {
 		pos[axis] = 2
 		if _, err := ReadStructure(file(pos), reg); err == nil {
 			t.Errorf("a block entity outside the box on axis %d was accepted", axis)
+		}
+	}
+
+	// The writer half. §4.8 puts the rule on writers too, and a writer that
+	// emits one produces a file the loop above refuses to read back. Only the
+	// root package covered this, which the invariant table cannot name: it
+	// resolves test names against this directory alone.
+	write := func(pos [3]int32) error {
+		s, err := NewStructureData([3]int32{2, 2, 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.BlockEntities = []StructureBlockEntity{{Pos: pos, Data: map[string]any{"id": "minecraft:chest"}}}
+		return WriteStructure(io.Discard, s, reg, Options{Compression: CompressionNone})
+	}
+	if err := write([3]int32{1, 1, 1}); err != nil {
+		t.Fatalf("the writer refused a block entity in the far corner: %v", err)
+	}
+	for axis := range 3 {
+		for _, v := range []int32{-1, 2} {
+			pos := [3]int32{1, 1, 1}
+			pos[axis] = v
+			if err := write(pos); err == nil {
+				t.Errorf("the writer accepted a block entity at %v, outside the box", pos)
+			}
 		}
 	}
 }
@@ -4321,6 +4560,50 @@ func TestRejectsOutOfSpanPositions(t *testing.T) {
 	for _, y := range []int64{-1, 16, 32768, -32769, 1 << 40} {
 		if err := apply(y); err == nil {
 			t.Errorf("a block entity at Y %d, outside the span 0..15, was accepted", y)
+		}
+	}
+
+	// Scheduled updates carry an unbounded Y of their own and are checked in a
+	// separate loop, so a block-entity fixture says nothing about them. This
+	// half was missing and the tick check could be deleted unnoticed.
+	tickRec := func(y int64) []byte {
+		w := &writer{}
+		w.svarint(0) // minSection: span is 0..15
+		w.uvarint(1)
+		w.u8(0)
+		w.u8(0)
+		w.uvarint(0) // block entities
+		w.uvarint(0) // entities
+		w.svarint(0) // column tick
+		w.uvarint(1) // one scheduled update
+		w.u8(0x11)
+		w.svarint(y)
+		w.uvarint(0) // block reference 0
+		w.svarint(7) // firing tick
+		w.blob(nil)
+		return w.bytes()
+	}
+	applyTick := func(y int64) error {
+		rr, err := parseRecordBody(&reader{b: tickRec(y)}, tableBlobSource(nil, nil, nil), false, 0, 0)
+		if err != nil {
+			return err
+		}
+		// One palette entry, so reference 0 is in range and the Y is what
+		// decides the verdict.
+		_, err = applyRecord(&rr, testRegistry(t), []uint32{0}, nil, 0, 0, 0, false, -1, nil, nil, nil, nil)
+		return err
+	}
+	if err := applyTick(5); err != nil {
+		t.Fatalf("an in-span scheduled update was rejected: %v", err)
+	}
+	for _, y := range []int64{-1, 16, 32768, -32769, 1 << 40} {
+		err := applyTick(y)
+		if err == nil {
+			t.Errorf("a scheduled update at Y %d, outside the span 0..15, was accepted", y)
+			continue
+		}
+		if !strings.Contains(err.Error(), "outside the chunk's span") {
+			t.Errorf("a scheduled update at Y %d was refused by %v, not by the span", y, err)
 		}
 	}
 }

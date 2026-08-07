@@ -238,6 +238,12 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 			// blob may not have.
 			return decBlob{}, corruptf("single-entry palette must use the uniform width")
 		}
+		// A byte index cannot name an entry past 255, so a wider palette always
+		// leaves one unnamed and §3.3's used-entry rule below refuses it anyway:
+		// there is no input this condition alone rejects. It is kept as a cheap
+		// pre-bound, not as enforcement -- it refuses before the 4096-byte scan
+		// and the pn-sized bitmap that rule needs -- and it is the one that names
+		// the width relation in its message.
 		if pn > 256 {
 			return decBlob{}, corruptf("u8 indices with %d palette entries", pn)
 		}
@@ -245,9 +251,11 @@ func decodeOneBlob(r *reader) (decBlob, error) {
 			return decBlob{}, err
 		}
 	case widthU16:
-		if pn == 1 {
-			return decBlob{}, corruptf("single-entry palette must use the uniform width")
-		}
+		// pn == 1 is not tested separately here as it is for widthU8: it is
+		// covered by the same condition that refuses every other palette too
+		// small for 16-bit indices, so a check for it could not fail. The
+		// widthU8 arm needs its own because a single-entry palette passes its
+		// upper bound.
 		if pn <= 256 {
 			return decBlob{}, corruptf("non-minimal index width for %d palette entries", pn)
 		}

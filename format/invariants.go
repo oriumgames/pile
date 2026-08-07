@@ -172,7 +172,8 @@ var invariants = []Invariant{
 		Name: "the palette order is defined on encoded bytes", Category: Ordering, Enforce: WriterOnly,
 		Rules: []string{"ad7fe57e", "3bc3297f"},
 		Tests: []string{"TestPaletteOrderFollowsEncodedBytes"},
-		Note:  "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob.",
+		Note: "The tie-break is the entry's own bytes, so no implementation has to agree on a string form first. This is the rule that decides every palette index and therefore every section blob. " +
+			"Missing evidence: the reference count each entry was sorted on. It is not a field anywhere in the format, and any permutation of a palette is consistent with some assignment of counts, so nothing in a file distinguishes a sorted palette from a shuffled one. §3.1 goes further and forbids readers from trying, which matters because a reader could plausibly reconstruct the block counts by walking every stored local palette; doing so would make files this version writes depend on a reconstruction the specification never defined, and it is the one place here where 'a reader could' is not the same as 'a reader may'. Verified by re-encoding.",
 	},
 	{
 		Name: "state properties are ordered and unique", Category: Ordering, Enforce: Decoded,
@@ -196,13 +197,14 @@ var invariants = []Invariant{
 		Name: "reference counts predate deduplication", Category: Ordering, Enforce: WriterOnly,
 		Rules: []string{},
 		Tests: []string{"TestPaletteCountsOccurrencesNotBlobs"},
-		Note:  "Counting distinct blobs instead reorders the palette exactly when deduplication succeeds.",
+		Note: "Counting distinct blobs instead reorders the palette exactly when deduplication succeeds. " +
+			"Missing evidence: the counts themselves, as for the palette order above. Both spellings of the count produce a palette that is a legal permutation of the other, and a file records neither the counts nor which of the two rules produced its order. Verified by re-encoding.",
 	},
 	{
 		Name: "section blobs are canonical", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7", "9c7d6645", "34f2544c"},
-		Tests: []string{"TestRejectsNonCanonicalBlob", "TestRejectsOutOfRangePaletteIndex", "TestRejectsUnusedLocalPaletteEntry"},
-		Note:  "The blob decoder checks the palette, the width and that every entry is named by some index; whether an index is in range is checked only where the section is applied, and each width has its own loop, so the halves need separate fixtures. The used-entry half is load-bearing for other rules: uniformity is read off the local palette's length, so an unused entry is how a present all-air section, a trailing air layer or a uniform-default biome section gets past the rules that require it to be absent.",
+		Tests: []string{"TestRejectsNonCanonicalBlob", "TestRejectsOutOfRangePaletteIndex", "TestRejectsUnusedLocalPaletteEntry", "TestRejectsNonMinimalUniformWidth"},
+		Note:  "The blob decoder checks the palette, the width and that every entry is named by some index; whether an index is in range is checked only where the section is applied, and each width has its own loop, so the halves need separate fixtures. The used-entry half is load-bearing for other rules: uniformity is read off the local palette's length, so an unused entry is how a present all-air section, a trailing air layer or a uniform-default biome section gets past the rules that require it to be absent. It is also why every fixture here has to name each entry it declares: a blob that leaves one unnamed is refused by the used-entry rule before the rule under test runs, which is how the ascent and width checks were once claimed by fixtures that never reached them.",
 	},
 	{
 		Name: "identical blobs share one table entry", Category: Normalisation, Enforce: Decoded,
@@ -216,7 +218,8 @@ var invariants = []Invariant{
 		Name: "biome counts predate elision", Category: Ordering, Enforce: WriterOnly,
 		Rules: []string{"27ea7bc1"},
 		Tests: []string{"TestBiomeCountsPrecedeElision"},
-		Note:  "Elision depends on the palette order, which depends on the counts: counting before elision is what stops that being circular.",
+		Note: "Elision depends on the palette order, which depends on the counts: counting before elision is what stops that being circular. " +
+			"Missing evidence: the elided sections. They are what the count was taken over and they are, by the rule's own definition, absent from the file, so a reader has strictly less material than the writer had and cannot recompute the number it sorted on. This is the strongest writer-only case in the table: the evidence is not merely unrecorded, it is the thing the format leaves out. Verified by re-encoding.",
 	},
 	{
 		Name: "the section span is addressable", Category: Bound, Enforce: Decoded,
@@ -291,7 +294,8 @@ var invariants = []Invariant{
 		Name: "collections are totally ordered", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"920faee4"},
 		Tests: []string{"TestCollectionTiesUseWrittenBytes", "TestTiedTicksAndStructureCollections", "TestReaderEnforcesCollectionOrder", "TestDecodersAgreeOnValidity"},
-		Note:  "Ties break on the bytes that get written, not on the caller's value.",
+		Note: "Ties break on the bytes that get written, not on the caller's value. " +
+			"Only two of the five orders §4.8 lists have a tie-break with legal input: entities, whose IDs are not required to be unique, and scheduled updates, which tie on position and firing tick and break on the palette reference. The NBT tie-breaks §4.8 names for world and structure block entities cannot be reached at all, because both writers refuse two entries at one position and both readers refuse the file, so a tie is exactly the input neither will produce. They are kept because the specification states them, not because anything can exercise them.",
 	},
 
 	// -- Indexed mode (§5) -----------------------------------------------
@@ -325,8 +329,8 @@ var invariants = []Invariant{
 	{
 		Name: "a dictionary needs compression", Category: Presence, Enforce: Decoded,
 		Rules: []string{"fd0cd567"},
-		Tests: []string{"TestRejectsDirectoryStorageMismatch"},
-		Note:  "Defence in depth rather than an independently reachable rule: a real file cannot carry a compressed dictionary while claiming to be uncompressed without its directory frame tripping the storage-form rule first, which is what this test drives.",
+		Tests: []string{"TestIndexedRejectsDictionaryWhenUncompressed"},
+		Note:  "Independently reachable, which this entry used to deny. The fixture is an uncompressed world that installs a real trained dictionary: the frame is then stored raw, so the reference resolves and hashes, and the rule is the only thing left to refuse it. The earlier fixture pointed the reference at one arbitrary byte, which the frame checksum rejected before this rule ran, so it passed with the rule deleted. TestRejectsMalformedDictionaryReference keeps that case, which is a different check at a different point.",
 	},
 	{
 		Name: "frames end where their content ends", Category: Presence, Enforce: Decoded,
@@ -372,12 +376,14 @@ var invariants = []Invariant{
 		Name: "writers refuse what their readers reject", Category: Bound, Enforce: WriterOnly,
 		Rules: []string{"126cf2d4"},
 		Tests: []string{"TestSetMetaChecksAggregateFrame", "TestRejectedStoreRollsBackEveryPath"},
-		Note:  "Aggregate ceilings, not only per-field ones: a body of legal blobs can still pass the body limit.",
+		Note: "Aggregate ceilings, not only per-field ones: a body of legal blobs can still pass the body limit. " +
+			"Missing evidence: everything. The rule is about content a writer declined to emit, so the files it governs are the ones that do not exist. A file that does exist either satisfies the reader's rules or does not, and that verdict says nothing about whether its writer would have refused it. The only way to check this rule is to offer a writer input its reader rejects and require the write to fail, which is what both tests do.",
 	},
 	{
 		Name: "decoders never panic", Category: Integrity, Enforce: Decoded,
 		Rules: []string{"43ff86c5"},
 		Tests: []string{"FuzzReadWorld", "FuzzReadStructure", "FuzzOpenIndexed", "FuzzNBTStability"},
+		Note:  "The only entry whose control is not a fixture. A plain `go test` runs the seed corpora, which are the inputs already known to be safe, so disabling a bound leaves them green; what shows the property is real is that the same edits panic the targeted tests instead -- deleting the structure cell ceiling makes TestRejectsStructureCellOverflow panic in make. The evidence FREEZE.md asks for here is a long fuzzing session, not a red test, and that precondition is tracked separately.",
 	},
 	// -- Specification review (round 23) ---------------------------------
 	{
@@ -387,21 +393,30 @@ var invariants = []Invariant{
 		Note:  "xxHash64 takes a seed and nothing else in the format implies which. An implementation that guesses differently agrees with this one on nothing.",
 	},
 	{
-		Name: "the biome palette order is defined", Category: Ordering, Enforce: Decoded,
-		Rules: []string{"33a5a48c", "230b214c"},
-		Tests: []string{"TestBiomePaletteOrder", "TestRejectsDuplicatePaletteEntries"},
+		Name: "the biome palette order is defined", Category: Ordering, Enforce: WriterOnly,
+		Rules: []string{"33a5a48c"},
+		Tests: []string{"TestBiomePaletteOrder"},
+		Note:  "The sentence says writer-only in its own text and this entry said decoded, because it also claimed the uniqueness rule below, which is a reader's. What a reader would need is the reference counts the order is built from, and a biome file does not carry them: §4.7 counts a section before deciding to elide it, so the sections that decided the order are exactly the ones absent from the bytes. Verified by re-encoding.",
+	},
+	{
+		Name: "biome palette entries are unique", Category: Normalisation, Enforce: Decoded,
+		Rules: []string{"230b214c"},
+		Tests: []string{"TestRejectsDuplicatePaletteEntries"},
+		Note:  "Held apart from the order above because the two have different enforcers: a repeated name is on the wire and a reader refuses it, while the order it sits in is not checkable at all.",
 	},
 	{
 		Name: "dropped layers do not count", Category: Ordering, Enforce: WriterOnly,
 		Rules: []string{"cd420726", "f61eb7d5"},
 		Tests: []string{"TestDroppedAirLayersDoNotCount", "TestPaletteCountsOccurrencesNotBlobs"},
-		Note:  "A layer that never reaches the file contributes nothing to the palette order.",
+		Note: "A layer that never reaches the file contributes nothing to the palette order. " +
+			"Missing evidence: the dropped layers. §4.3 requires trailing all-air layers to be absent, so a reader sees a record that never mentions them and cannot tell one that dropped them before counting from one that counted them and dropped them after. The two produce palettes in different orders and both are legal-looking files. Verified by re-encoding.",
 	},
 	{
 		Name: "blob ids follow the field order", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"078b2b7d"},
 		Tests: []string{"TestDedup", "TestReaderEnforcesBlobFirstUseOrder", "TestDecodersAgreeOnValidity"},
-		Note:  "The whole dedup table's identity depends on the assignment sequence, which is otherwise only deducible from the record layout.",
+		Note: "The whole dedup table's identity depends on the assignment sequence, which is otherwise only deducible from the record layout. " +
+			"Only the reader half has a control. The writer half cannot have one: an id is assigned and written by the same expression (blobTable.add inside the record's blob sink), so there is no edit that makes a writer assign a different id without also emitting that id, and any such writer produces a file its own reader refuses.",
 	},
 	{
 		Name: "structure cells are computed in 64 bits", Category: Bound, Enforce: Decoded,
@@ -413,7 +428,8 @@ var invariants = []Invariant{
 		Name: "zstd frames are bounded", Category: Bound, Enforce: Decoded,
 		Rules: []string{"8745186e", "7b6bfb2d"},
 		Tests: []string{"TestRejectsOversizedZstdWindow"},
-		Note:  "The decoded-size ceilings bound the output, not the memory needed to produce it. §2.5 used to carry a second rule here, that a frame declare its content size, which nothing enforced; it was struck rather than enforced because the reference encoder omits the field below a few hundred bytes and most frames an indexed file holds are smaller than that.",
+		Note: "The window ceiling bounds the memory a decode needs; the decoded-size ceilings bound what comes out, and a frame can sit far inside the window and still decompress past them, which is how a few hundred bytes demand a large buffer. Both halves have a fixture -- the second did not, so the decoded-size ceiling could be raised to a terabyte and the suite stayed green. " +
+			"§2.5 used to carry a second rule here, that a frame declare its content size, which nothing enforced; it was struck rather than enforced because the reference encoder omits the field below a few hundred bytes and most frames an indexed file holds are smaller than that.",
 	},
 	{
 		Name: "stats fields are optional but typed", Category: Presence, Enforce: Decoded,
@@ -424,7 +440,8 @@ var invariants = []Invariant{
 		Name: "enforcement is stated for every rule", Category: Presence, Enforce: WriterOnly,
 		Rules: []string{"0f2361c9"},
 		Tests: []string{"TestEveryInvariantNamesALiveTest"},
-		Note:  "The harness itself: every entry in this table must say whether readers reject violations, so a rule nobody can check on read cannot look like one that is checked.",
+		Note: "The harness itself: every entry in this table must say whether readers reject violations, so a rule nobody can check on read cannot look like one that is checked. " +
+			"Missing evidence: there is no file to look at. The rule constrains this table and the specification, not any sequence of bytes, so 'a reader cannot check it' is true in the strong sense that there is nothing for a reader to check. The enforcer is the harness, which fails when an entry leaves the field empty.",
 	},
 	{
 		Name: "collection keys are unique", Category: Presence, Enforce: Decoded,
@@ -447,7 +464,8 @@ var invariants = []Invariant{
 		Name: "decoders bound the result, not only the input", Category: Bound, Enforce: Decoded,
 		Rules: []string{"74948bd9"},
 		Tests: []string{"TestBoundsDecodedStorages", "TestBoundsDecodedNBTContainers", "TestBoundsCheckpointChain"},
-		Note:  "Several declared values cost far more to decode than to write: a blob reference is one byte and a live storage, a TAG_End inside a list of compounds is one byte and a whole map, a 44-byte footer names a frame that may decompress to 512 MiB. Bounding the count against the remaining bytes does not bound any of those.",
+		Note: "Several declared values cost far more to decode than to write: a blob reference is one byte and a live storage, a TAG_End inside a list of compounds is one byte and a whole map, a 44-byte footer names a frame that may decompress to 512 MiB. Bounding the count against the remaining bytes does not bound any of those. " +
+			"The storage and NBT ceilings both have a fixture that reaches them. The checkpoint-chain ceiling does not and cannot have one of the same kind: the walk terminates without it (a seen-set rules out cycles), so it caps work rather than deciding validity, and no input separates a file it refuses from one it accepts. TestBoundsCheckpointChain therefore only shows an ordinary chain is still walked, which is the half a wrong ceiling would break.",
 	},
 	{
 		Name: "positions lie inside the declared span", Category: Bound, Enforce: Decoded,

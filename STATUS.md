@@ -85,9 +85,22 @@ world instead of being spent on whichever records the walk reaches first.
 
 ## Open
 
-**Harness** — roughly 13 entries still have vacuous tests. This is the only
-category still gating a freeze, because a table that lies about what protects
-the format is worse than no table.
+**Harness** — done, and `HARNESS.md` is the record. Every `Decoded` entry now
+has a control that turns a named test red, every `WriterOnly` entry states what
+evidence is missing, and the exceptions to both are written down where the
+claim is made rather than left for the next reader to discover.
+
+The estimate above was thirteen entries. The real number was seventeen checks
+across eleven entries, and the reason the entry count read low is worth
+keeping: most of those entries were not wholly vacuous. They had two or three
+readers, one of which was controlled, and the partial cover made the entry look
+finished. Counting entries hides that; counting checks does not. Twelve were
+fixed. Five cannot be controlled and say so.
+
+The recurring shape, again, was a fixture malformed in a second way: the
+section-blob tests built palettes with an entry no index named, so §3.3 refused
+them before the ascent and width rules ran, and the assertions only asked
+whether an error came back. Assert on which error.
 
 **Security** — about eleven lower-severity items remain, none of them a
 process-killer.
@@ -118,6 +131,13 @@ something that cannot fail.
 
 ## Sequence from here
 
-Harness, then vectors, then freeze. Security's remainder and the API surface
-review can follow the tag, since neither can invalidate a file that has already
-been written.
+Vectors, then freeze. Security's remainder and the API surface review can
+follow the tag, since neither can invalidate a file that has already been
+written.
+
+One thing the harness pass turned up that the vectors should carry: a reader
+could plausibly reconstruct the solid block palette's reference counts and
+check its order, and §3.1 says readers MUST NOT. That is a deliberate closed
+door, not an omission, and a second implementation will find the same
+temptation. `HARNESS.md` says so under "Rules a reader could check and must
+not".
