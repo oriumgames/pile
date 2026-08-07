@@ -60,6 +60,78 @@ func TestRejectsNonCanonicalBlob(t *testing.T) {
 	}
 }
 
+// TestRejectsOutOfRangePaletteIndex: an index selects a local palette entry,
+// so one at or past paletteN names nothing. The blob decoder validates the
+// palette and the width but never looks at the index bytes, so this rule is
+// enforced where the section is applied and nothing else reaches it.
+func TestRejectsOutOfRangePaletteIndex(t *testing.T) {
+	reg := testRegistry(t)
+	// The u8 half, driven through a whole file, because that is the only way
+	// to show an out-of-range index survives every earlier check.
+	body := func(idx byte) []byte {
+		w := &writer{}
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.blob(nil)
+		w.uvarint(2) // block palette: stone, dirt, so no layer is all air
+		w.str("minecraft:stone")
+		w.uvarint(0)
+		w.str("minecraft:dirt")
+		w.uvarint(0)
+		w.uvarint(0) // no version overrides
+		w.uvarint(0) // no biome palette
+		w.uvarint(1) // one blob: a two-entry local palette, u8 indices
+		w.uvarint(2)
+		w.uvarint(0)
+		w.uvarint(1)
+		w.u8(widthU8)
+		cells := make([]byte, 4096)
+		cells[4095] = idx
+		w.raw(cells)
+		w.uvarint(1) // one record
+		w.svarint(0)
+		w.svarint(0)
+		rec := &writer{}
+		rec.svarint(0)
+		rec.uvarint(1) // one section
+		rec.u8(0x01)   // present
+		rec.uvarint(1) // one layer
+		rec.uvarint(0) // blob 0
+		rec.u8(0)      // no biome sections
+		rec.uvarint(0) // block entities
+		rec.uvarint(0) // entities
+		rec.svarint(0) // column tick
+		rec.uvarint(0) // scheduled ticks
+		rec.blob(nil)
+		w.raw(rec.bytes())
+		return w.bytes()
+	}
+	if _, err := ReadWorld(solidFile(body(1)), reg); err != nil {
+		t.Fatalf("the last index naming the last palette entry was rejected: %v", err)
+	}
+	if _, err := ReadWorld(solidFile(body(2)), reg); err == nil {
+		t.Fatal("a u8 index past the end of the local palette was accepted")
+	}
+
+	// The u16 half has its own loop and its own bound. A file reaching it
+	// needs a 257-entry global palette, which says nothing more than this
+	// does, so it is driven at the index decoder directly.
+	wide := decBlob{refs: make([]uint32, 257), width: widthU16, idx: make([]byte, 8192)}
+	for i := range wide.refs {
+		wide.refs[i] = uint32(i)
+	}
+	var out [4096]uint16
+	wide.idx[8190], wide.idx[8191] = 0x00, 0x01 // 256, the last entry
+	if err := blobIndices(wide, len(wide.refs), &out); err != nil {
+		t.Fatalf("a u16 index naming the last palette entry was rejected: %v", err)
+	}
+	wide.idx[8190], wide.idx[8191] = 0x01, 0x01 // 257, one past the end
+	if err := blobIndices(wide, len(wide.refs), &out); err == nil {
+		t.Fatal("a u16 index past the end of the local palette was accepted")
+	}
+}
+
 func TestRejectsReservedFlags(t *testing.T) {
 	reg := testRegistry(t)
 	var buf bytes.Buffer
@@ -3390,6 +3462,45 @@ func TestRejectsStoreLightWithoutLight(t *testing.T) {
 	if h.flags&FlagStoreLight == 0 {
 		t.Fatal("StoreLight was clear over a world carrying light")
 	}
+
+	// The reader half. A writer that never emits the combination says nothing
+	// about what a reader accepts, and this rule is about files, not writers:
+	// the flag set over records that carry no light nibble is exactly the
+	// second encoding the rule forbids, and only a reader can refuse it.
+	const flags = FlagUncompressed | FlagStoreLight
+	dark := oneRecordBody(recordBody(recordFields{haveLight: true, lightPresence: 0}))
+	if _, err := ReadWorld(solidFileFlags(dark, flags), reg); err == nil {
+		t.Fatal("StoreLight over records carrying no light was accepted")
+	}
+	// The same file with one light entry present is accepted, so the rejection
+	// above is the flag-versus-content rule and not the record layout.
+	arrays := make([]byte, 2*lightArrayLen)
+	bright := oneRecordBody(recordBody(recordFields{
+		haveLight: true, lightPresence: 1, lightFlags: 3, lightBody: arrays,
+	}))
+	if _, err := ReadWorld(solidFileFlags(bright, flags), reg); err != nil {
+		t.Fatalf("StoreLight over a record carrying light was rejected: %v", err)
+	}
+}
+
+// oneRecordBody wraps a record body in the smallest solid world body that can
+// carry it: four empty metadata blobs, empty palettes and blob table, and one
+// record at chunk (0,0).
+func oneRecordBody(rec []byte) []byte {
+	w := &writer{}
+	w.blob(nil)  // settings
+	w.blob(nil)  // user data
+	w.blob(nil)  // markers
+	w.blob(nil)  // border
+	w.uvarint(0) // block palette
+	w.uvarint(0) // version overrides
+	w.uvarint(0) // biome palette
+	w.uvarint(0) // blob table
+	w.uvarint(1) // one record
+	w.svarint(0) // dx
+	w.svarint(0) // dz
+	w.raw(rec)
+	return w.bytes()
 }
 
 // TestRejectsDuplicateCollectionEntries: the collection orders are total only

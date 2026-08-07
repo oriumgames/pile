@@ -195,7 +195,8 @@ var invariants = []Invariant{
 	{
 		Name: "section blobs are canonical", Category: Ordering, Enforce: Decoded,
 		Rules: []string{"5ab4d3d6", "5240768e", "e72263a7", "9c7d6645", "34f2544c"},
-		Tests: []string{"TestRejectsNonCanonicalBlob"},
+		Tests: []string{"TestRejectsNonCanonicalBlob", "TestRejectsOutOfRangePaletteIndex"},
+		Note:  "The blob decoder checks the palette and the width; the index bytes are checked only where the section is applied, and each width has its own loop, so the two halves need separate fixtures.",
 	},
 	{
 		Name: "identical blobs share one table entry", Category: Normalisation, Enforce: Decoded,
