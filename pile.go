@@ -15,8 +15,33 @@ import (
 	"github.com/oriumgames/pile/format"
 )
 
-// ErrReadOnly is returned by Save on a read-only provider.
+// ErrReadOnly is returned by the mutating operations that can report an error
+// at all — Save, SetBorder, SetChunkUserData, Snapshot, DeleteSnapshot and
+// Rollback — when the provider was opened with ReadOnly. The mutators with no
+// error to return (StoreColumn, SaveSettings, SetUserData, SetMarker) are
+// silent no-ops instead, as ReadOnly's own documentation says; IsReadOnly is
+// how a caller tells the two situations apart before it relies on a write.
 var ErrReadOnly = errors.New("pile: provider is read-only")
+
+// The errors a caller branches on, re-exported so that branching on them does
+// not mean importing the codec and dragonfly's leveldb package alongside this
+// one. They are the same values, so errors.Is against either name works.
+var (
+	// ErrNotFound reports that no column is stored at a position. LoadColumn
+	// returns it, under the name world.Provider's contract requires: it is
+	// dragonfly's leveldb.ErrNotFound, and every provider signals a missing
+	// chunk with it whatever it is backed by.
+	ErrNotFound = leveldb.ErrNotFound
+	// ErrCorrupt reports that a file is not a valid pile file. Every decode
+	// failure wraps it except ErrDecodeBudget, which is the point of the two
+	// being separate.
+	ErrCorrupt = format.ErrCorrupt
+	// ErrDecodeBudget reports that a decode was stopped by the ceiling set
+	// with MaxDecodedBytes. It deliberately does not wrap ErrCorrupt: the file
+	// is larger than this provider was told to decode, not broken, and a
+	// caller that quarantines corrupt worlds must not quarantine this one.
+	ErrDecodeBudget = format.ErrDecodeBudget
+)
 
 // Provider implements world.Provider backed by pile files, one per dimension
 // (overworld.pile, nether.pile, end.pile). The whole world is held in memory;
@@ -194,6 +219,12 @@ func (p *Provider) Dir() string { return p.dir }
 func (p *Provider) IsReadOnly() bool { return p.conf.readOnly }
 
 // Settings returns the world settings.
+//
+// The pointer is the provider's own, not a copy: world.Provider's contract has
+// dragonfly take it at startup, mutate it as the world runs and hand it back to
+// SaveSettings at shutdown. A caller that changes settings outside that cycle
+// must still call SaveSettings, because nothing observes a write through this
+// pointer and the world would not be marked dirty.
 func (p *Provider) Settings() *world.Settings {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -212,8 +243,8 @@ func (p *Provider) SaveSettings(s *world.Settings) {
 }
 
 // LoadColumn returns a copy of the stored column at pos, falling back to the
-// base provider for instances. If none exists, the error matches
-// leveldb.ErrNotFound as the world.Provider contract requires.
+// base provider for instances. If none exists, the error matches ErrNotFound
+// (dragonfly's leveldb.ErrNotFound) as the world.Provider contract requires.
 func (p *Provider) LoadColumn(pos world.ChunkPos, dim world.Dimension) (*chunk.Column, error) {
 	if err := checkDim(dim); err != nil {
 		return nil, err

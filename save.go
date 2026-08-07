@@ -32,6 +32,12 @@ func (p *Provider) Save() error {
 
 // SaveAsync schedules a background save. Multiple calls coalesce; the last
 // scheduled save always observes the latest state. No-op when read-only.
+//
+// It reports nothing, because there is nobody to report to. A background save
+// that fails is remembered and returned by the next Save or Close, so the
+// failure is not lost — but only the most recent one is kept, and a process
+// that only ever calls SaveAsync never observes any of them. Anything that
+// must know a save succeeded has to call Save.
 func (p *Provider) SaveAsync() {
 	// This guard has no input of its own and no test can give it one: every
 	// method that could set a dirty flag refuses a read-only provider first,

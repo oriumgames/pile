@@ -280,9 +280,13 @@ func checkpointHash(header, payload, footerTail []byte) uint64 {
 	return h.Sum64()
 }
 
-// CheckpointHash exposes the file authentication hash so tooling (and tests
-// that rewrite files) can recompute it: it covers the header, the stored
-// payload and the footer's control words.
+// CheckpointHash computes §2.4's file authentication hash over a file's parts:
+// the 16-byte header, the stored (still compressed) payload, and the footer
+// from byte 8 onward — its control words and magic, everything but the hash
+// field itself. It is exported because anything that rewrites a file in place
+// has to recompute it, and because a second implementation checking itself
+// against the conformance vectors needs the preimage stated in code as well as
+// in prose. The preimage is frozen with the rest of the format.
 func CheckpointHash(header, payload, footerTail []byte) uint64 {
 	return checkpointHash(header, payload, footerTail)
 }

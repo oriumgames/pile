@@ -250,7 +250,13 @@ func BenchmarkProviderOpenAppend(b *testing.B) {
 }
 
 // BenchmarkProviderSaveAppend measures an append-mode save: a checkpoint over
-// an already-appended world, which should not scale with the world size.
+// an already-appended world.
+//
+// Its allocation count is what does not scale — 25 at a hundred columns and 40
+// at ten thousand. Its bytes do, because a checkpoint rewrites the directory,
+// at about 66 B per column; the comment here used to claim the whole operation
+// was flat in the world size, which the recorded baseline does not support.
+// PERFORMANCE.md, "Save latency".
 func BenchmarkProviderSaveAppend(b *testing.B) {
 	reg := testRegistry(b)
 	for _, n := range []int{100, 10000} {
