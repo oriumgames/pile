@@ -1125,51 +1125,47 @@ validity to change: every blob it would newly refuse is one no reader ever
 accepted. `TestLongNBTStringsRoundTrip` holds the boundary that works, so the
 day the limit moves in either direction a test says so; control `P14`.
 
-## What a caller still cannot bound
+## The per-chunk collections: closed
 
-**This is the most important line in this document for somebody loading files
-other people send them.**
+This section recorded the gap that mattered most for somebody loading files
+other people send them, and it is closed. It is kept because the shape is worth
+knowing and because the numbers are the evidence.
 
-`MaxDecodedBytes` charges decoded columns at 1,024 bytes and decoded section
-storages at 128. It charges **nothing** for entities, block entities or
+`MaxDecodedBytes` charged decoded columns at 1,024 bytes and decoded section
+storages at 128, and charged **nothing** for entities, block entities or
 scheduled updates. §8 bounds those per chunk — 1,048,576 each — and the column
-ceiling multiplies them rather than bounding them, so the product is not bounded
-by anything a caller can set.
-
-Measured, through `pile.Open`, on the machine this pass ran on:
+ceiling multiplies them rather than bounding them, so the product was not
+bounded by anything a caller could set. Measured, through `pile.Open`:
 
 | file | ceiling set | charged | result |
 |---|---|---|---|
 | 2 columns × 1,048,576 entities, **4,764 bytes** | `MaxDecodedBytes(64 KiB)` | 2,048 of 65,536 | accepted; **773,708,104 bytes retained**, 11,806× the ceiling |
 | 4 columns × 1,048,576 entities, **9,409 bytes** | `MaxDecodedBytes(64 MiB)` | 4,096 of 67,108,864 | accepted; **1,547,408,096 bytes retained**, ~7 s |
 
-The only ceiling that refuses the second file is one below 4,096 bytes — a world
-of three columns — so **there is no setting that both admits a real world and
-refuses this one**. Within the rules the shape scales to the 512 MiB body
-ceiling: an entity is five bytes on the wire at minimum, so about 10⁸ entities
-and tens of gigabytes are reachable from a file that fits in a network packet
-once zstd has done its work.
+The only ceiling that refused the second file was one below 4,096 bytes — a
+world of three columns — so there was no setting that both admitted a real world
+and refused this one.
 
-`TestEntityFloodEscapesTheDecodeCeiling` asserts this, as a characterisation
-rather than as a guard: it requires the file to be *accepted* and requires the
-decode to cost far more than the ceiling permitted. When somebody charges the
-per-chunk collections it will go red, and its failure message says so.
+All three collections are now charged at `entryBytes` (256) against the same
+budget, on the declared count and before any of it is read, so a count the
+caller cannot afford costs nothing rather than the whole collection.
+`TestEntityFloodIsCharged` is the old characterisation test inverted: same
+fixture, same 64 KiB ceiling, now a refusal with `ErrDecodeBudget` — and a
+second half requiring the same file to open at a ceiling that admits it,
+because a refusal is easy to get by making the ceiling bind on everything,
+which would be a worse bug than the one it fixes.
 
-**What closing it would take.** `storageBudget` in `format/decode.go` already
-has the shape: it charges columns and storages at two constants, and adding
-`chargeEntities`, `chargeBlockEntities` and `chargeTicks` at the three
-`r.count(maxPerChunk, …)` sites is the same edit three more times. Two things
-make it more than a patch, which is why it is reported rather than done:
+**The one design consequence.** The default ceiling used to be derived from what
+§8 permits, and once the collections are charged that derivation lands near two
+hundred gigabytes — a default computed from it would bound nothing. So the
+default is a stated number now, 5 GiB, and it is a policy rather than a
+restatement of §8: it can refuse a conforming file, and a caller holding one
+raises the option. That trade is recorded in `FREEZE.md` under the column
+ceiling, which is where it started.
 
-1. It is in `format`, which this pass does not edit.
-2. The **default** ceiling must stay unreachable by a conforming file, or the
-   change stops being a policy dial and becomes a validity rule — the thing
-   `SECURITY.md` item E was careful not to do. §8 does not bound the product of
-   columns and per-chunk collections, so the default would have to be raised to
-   cover the worst case the format permits (roughly 4,194,304 × 1,048,576 ×
-   whatever an entity is charged), and the useful part of the change is entirely
-   in what a *caller* then sets. That is a decision for whoever owns §8, not a
-   refactor.
+§8 now carries the general form of this, because the shape is easy to repeat:
+the counts are bounded, the bound is per chunk, and the per-file consequence is
+somebody else's arithmetic.
 
 Until then, the honest advice is the one in the recipe below: a caller that
 opens foreign worlds must treat a decode as something that can cost tens of
@@ -1268,8 +1264,6 @@ Proved, not assumed:
 
 ### What it does not hold
 
-- **The per-chunk collections.** See "What a caller still cannot bound" above.
-  This is the gap, and no setting closes it.
 - **Wall-clock time.** Nothing bounds how long a decode takes. The 9,409-byte
   file above takes about seven seconds. Do not decode foreign files on a
   request path, and do not decode them unbounded in parallel.

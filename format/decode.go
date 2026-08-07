@@ -472,6 +472,23 @@ func (b *storageBudget) charge(n int) error {
 	return b.chargeBytes(int64(n) * storageBytes)
 }
 
+// chargeEntries charges n entries of a per-chunk collection: block entities,
+// entities or scheduled ticks.
+//
+// §8 bounds each of these at maxPerChunk *per chunk* and the column ceiling
+// multiplies them rather than bounding them, so before this existed the
+// caller's ceiling bounded nothing about them at all: a 4,764-byte file
+// holding two columns of a million entities each was charged 2,048 bytes
+// against a 64 KiB ceiling and retained 774 MB -- eleven thousand times the
+// number the caller asked for. No setting refused it; the only ceiling that
+// did was one below 4 KiB, which is a three-column world.
+func (b *storageBudget) chargeEntries(n int) error {
+	if b == nil {
+		return nil
+	}
+	return b.chargeBytes(int64(n) * entryBytes)
+}
+
 // chargeColumns charges n whole decoded columns: a solid chunk record, an
 // indexed directory entry, or an indexed record being decoded on demand.
 func (b *storageBudget) chargeColumns(n int) error {
@@ -610,6 +627,11 @@ func parseRecordBodyBudgeted(r *reader, src blobSource, haveLight bool, x, z int
 	if err != nil {
 		return rr, err
 	}
+	// Charged on the declared count, before any of it is read, so a count the
+	// caller cannot afford costs nothing rather than the whole collection.
+	if err := budget.chargeEntries(beN); err != nil {
+		return rr, err
+	}
 	for range beN {
 		packed, err := r.u8()
 		if err != nil {
@@ -630,6 +652,9 @@ func parseRecordBodyBudgeted(r *reader, src blobSource, haveLight bool, x, z int
 	if err != nil {
 		return rr, err
 	}
+	if err := budget.chargeEntries(entN); err != nil {
+		return rr, err
+	}
 	for range entN {
 		blob, err := r.blob()
 		if err != nil {
@@ -644,6 +669,9 @@ func parseRecordBodyBudgeted(r *reader, src blobSource, haveLight bool, x, z int
 
 	stN, err := r.count(maxPerChunk, "scheduled tick")
 	if err != nil {
+		return rr, err
+	}
+	if err := budget.chargeEntries(stN); err != nil {
 		return rr, err
 	}
 	for range stN {

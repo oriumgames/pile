@@ -1196,6 +1196,17 @@ trusting it. This paragraph exists because without it the limit reads as a
 validity rule, and a second implementation that took it for one would refuse a
 conforming file and report the file as the reason.
 
+An implementation that offers such a ceiling should charge **everything a file
+decodes into** against it, and in particular the per-chunk collections: this
+section bounds block entities, entities and scheduled updates at 1 048 576
+*each, per chunk*, and the column ceiling multiplies those rather than bounding
+them. A ceiling that charges columns and section storages but not the
+collections inside them is not a ceiling: a file of two columns, 4 764 bytes on
+disk, decodes into two million entities and hundreds of megabytes while being
+charged for two columns. This is written down because it was got wrong here
+first, and the shape is easy to repeat -- the counts are bounded, the bound is
+per chunk, and the per-file consequence is somebody else's arithmetic.
+
 Positions are part of this: a record's declared span is validated, so every
 block-entity and scheduled-update position it carries MUST lie inside that
 span. A reader that accepts one outside it hands its caller a coordinate the

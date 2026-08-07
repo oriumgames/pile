@@ -1345,7 +1345,7 @@ was not testing anything.
 | # | production line disabled | test | result with it disabled |
 |---|--------------------------|------|-------------------------|
 | P1 | `options.go`, `readOpts` returns `nil` | `TestOpenHoldsTheCeilingOnAHostileColumnFlood` | **RED** — a 4,096-column file opened under a 256 KiB ceiling |
-| P2 | the fixture: `const cols, per = 2, 1<<20` → `2, 1` | `TestEntityFloodEscapesTheDecodeCeiling` | **RED** — "the fixture retained only 11,288 bytes; it no longer demonstrates the amplification". This is the control on a *characterisation* test: what it must not do is stop reaching the case |
+| P2 | `chargeEntries` at the entity count removed | `TestEntityFloodIsCharged` | **RED** — "a two-million-entity file was accepted under a 64 KiB ceiling". Was a control on a *characterisation* test (the fixture shrunk, so it stopped reaching the case); the gap it recorded is closed and the test is inverted, so the control is now on the charge itself |
 | P3 | `pile.go`, `loadFromDisk`'s `return fmt.Errorf("pile: read %s…")` → `continue` | `TestOpenRefusesAHostileDimensionAndNamesIt` | **RED** — a world with a truncated overworld opened, serving a dimension that is not there |
 | P4 | the same for the indexed branch's `open %s` | `TestOpenRefusesAnUnreadableDimensionFile` | **RED** — an unreadable dimension file opened as an empty world |
 | P5 | `pile.go`, `adaptColumnRange(col, …)` in `LoadColumn` | `TestProviderAdaptsAColumnWithAForeignVerticalRange` | **RED** — `LoadColumn` served a column with range `[0 15]` into a dimension of `[-64 319]` |
@@ -1416,11 +1416,13 @@ with as much care as the ones that worked.
 
 ## 10.4 What these tests do not reach
 
-- **`TestEntityFloodEscapesTheDecodeCeiling` asserts a gap rather than a
-  guard.** It requires a file that the caller's ceiling *cannot* refuse to be
-  accepted, and requires the decode to cost far more than the ceiling allowed.
-  When somebody charges the per-chunk collections it will go red, which is the
-  intended way to find it; the message says so.
+- **`TestEntityFloodIsCharged` used to assert a gap rather than a guard.** It
+  required the file to be *accepted* and the decode to cost far more than the
+  ceiling permitted, so that closing the gap would turn it red — which is what
+  happened, and its failure message named the document to update. It is now an
+  enforcement test in both directions: refused at a ceiling that cannot afford
+  it, accepted at one that can.
+
 - **`TestLongNBTStringsRoundTrip` holds a boundary whose other side is a
   defect.** The fix is in `format/nbt.go` and is out of this pass's scope;
   `SECURITY.md`, "Found here, fixable only in format". Note which half of it

@@ -395,6 +395,18 @@ const (
 	// maxDecodedStorages puts a stored layer at "about a hundred bytes of live
 	// objects".
 	storageBytes = 128
+	// entryBytes is what one entry of a per-chunk collection costs: a block
+	// entity, an entity or a scheduled tick. Each is a decoded NBT map or a
+	// struct with a position, and the measured shape is a few hundred bytes;
+	// this is deliberately at the low end, because the ceiling it feeds is a
+	// policy dial and an over-charge would refuse ordinary worlds.
+	//
+	// It exists because these three were charged nothing at all. §8 bounds each
+	// at maxPerChunk *per chunk*, and the column ceiling multiplies them rather
+	// than bounding them, so a 4,764-byte file of two columns holding a million
+	// entities each was charged 2,048 bytes against a 64 KiB ceiling and
+	// retained 774 MB.
+	entryBytes = 256
 	// decodedBytesCeiling is the most a decode can cost under this model while
 	// still obeying §8, and so the value a caller's ceiling is clamped to. A
 	// caller may raise its budget to this and no further: a reader that accepts
@@ -407,7 +419,16 @@ const (
 	// IndexedWorld.recordBudget), so without the headroom a directory at the
 	// entry ceiling would leave a remainder one column short of what §8 still
 	// permits a single record to reach.
-	decodedBytesCeiling = int64(maxChunks)*columnBytes + int64(maxDecodedStorages)*storageBytes + columnBytes
+	// maxEntriesCharged is the per-chunk collection total the ceilings are
+	// computed against. §8 permits maxPerChunk of each of the three per chunk,
+	// which multiplied by the column ceiling is a number no machine could ever
+	// reach and would make both ceilings meaningless. What bounds them in
+	// practice is the body: an entry costs at least a byte on the wire, so a
+	// 512 MiB decompressed body cannot carry more than that many of them.
+	maxEntriesCharged = maxDecodedBody
+
+	decodedBytesCeiling = int64(maxChunks)*columnBytes + int64(maxDecodedStorages)*storageBytes +
+		int64(maxEntriesCharged)*entryBytes + columnBytes
 
 	// defaultDecodedBytes is the budget a caller gets by passing no option. It
 	// is deliberately far below decodedBytesCeiling, and that is a departure
@@ -428,5 +449,13 @@ const (
 	// corruption error. That is the trade: an operator with a four-million-
 	// column world has to say so once, and everyone else keeps a default that
 	// a hostile file cannot inflate.
-	defaultDecodedBytes = int64(1<<22)*columnBytes + int64(maxDecodedStorages)*storageBytes + columnBytes
+	// It is a plain number rather than a formula. It used to be derived from
+	// the ceiling, and once per-chunk collections were charged the derivation
+	// stopped meaning anything: §8 lets a body carry a few hundred million
+	// entries, so any expression of "what §8 permits" lands near two hundred
+	// gigabytes and a default computed from it would bound nothing. What a
+	// default should express is what an ordinary world costs, and that is a
+	// judgement, so it is written as one: 5 GiB is a little above the old
+	// derived value, which a four-million-column world fits inside.
+	defaultDecodedBytes = int64(5) << 30
 )

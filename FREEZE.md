@@ -554,7 +554,7 @@ several of them now would be a format change.
   **`MaxDecodedBytes` bounds nothing about the entities, block entities and
   scheduled updates a column carries**, so a 4,764-byte file decodes into 774 MB
   under any ceiling a real world can survive (`SECURITY.md`, "What a caller
-  still cannot bound"); and **`format.MarshalNBT` emits a blob its own
+  closed since; see SECURITY.md, "The per-chunk collections: closed"); and **`format.MarshalNBT` emits a blob its own
   `UnmarshalNBT` refuses** for any string of 32,768 bytes or more, which through
   a block entity's NBT is a save that reports success and a world that never
   opens again. The second is a writer-side fix in `format/nbt.go`, needs no byte

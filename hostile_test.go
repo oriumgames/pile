@@ -117,22 +117,25 @@ func TestOpenHoldsTheCeilingOnAHostileColumnFlood(t *testing.T) {
 	}
 }
 
-// TestEntityFloodEscapesTheDecodeCeiling records a gap, not a guard.
+// TestEntityFloodIsCharged holds the ceiling over per-chunk collections.
 //
-// MaxDecodedBytes charges decoded columns at 1,024 bytes and decoded section
-// storages at 128, and charges nothing at all for entities, block entities or
-// scheduled updates. §8 bounds those per chunk (1,048,576 each) and the column
-// ceiling multiplies rather than bounds them, so a file of four columns — 9,409
-// bytes on disk — decodes into 4,194,304 live entities and about 1.5 GiB, and
-// the only ceiling that refuses it is one below 4,096 bytes, which is a world
-// of three columns.
+// This was a characterisation test named TestEntityFloodEscapesTheDecodeCeiling
+// and it recorded a gap: MaxDecodedBytes charged decoded columns and section
+// storages and charged *nothing* for entities, block entities or scheduled
+// updates. §8 bounds those per chunk and the column ceiling multiplies rather
+// than bounds them, so a 4,764-byte file of two columns holding a million
+// entities each was charged 2,048 bytes against a 64 KiB ceiling and retained
+// 774 MB -- eleven thousand times what the caller asked for. No setting refused
+// it; the only ceiling that did was one below 4 KiB, a three-column world.
 //
-// The test therefore asserts what is true today: the file is accepted under a
-// ceiling the caller cannot usefully lower, and the decode costs orders of
-// magnitude more than the ceiling permitted. When somebody charges the
-// per-chunk collections, this test goes red, and that is the intended way to
-// find it. SECURITY.md, "What a caller still cannot bound".
-func TestEntityFloodEscapesTheDecodeCeiling(t *testing.T) {
+// The old test asserted the file was accepted and told whoever closed the gap
+// to come here. This is that inversion: the same fixture, the same ceiling, and
+// now a refusal.
+//
+// Both halves are checked. A refusal is easy to get by making the ceiling bind
+// on everything, which would be a worse bug than the one it fixes, so the
+// second half requires the same file to open when the caller asks for enough.
+func TestEntityFloodIsCharged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a multi-million entity world")
 	}
@@ -145,22 +148,28 @@ func TestEntityFloodEscapesTheDecodeCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A ceiling that admits a 64-column world: 64 KiB. The file names two
-	// columns, so it is charged 2,048 bytes of a 65,536-byte budget.
+	// A ceiling that admits a 64-column world. Before the collections were
+	// charged, this file was charged 2,048 bytes of it and accepted.
 	const ceiling = 64 << 10
-	runtime.GC()
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	p, err := Open(dir, ReadOnly(), MaxDecodedBytes(ceiling))
-	if err != nil {
-		t.Fatalf("the ceiling now binds on the entity flood — the gap this test records is closed, "+
-			"and SECURITY.md's \"What a caller still cannot bound\" needs updating: %v", err)
+	_, err = Open(dir, ReadOnly(), MaxDecodedBytes(ceiling))
+	if err == nil {
+		t.Fatal("a two-million-entity file was accepted under a 64 KiB ceiling")
 	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	if !errors.Is(err, format.ErrDecodeBudget) {
+		t.Fatalf("refused, but not for the budget: %v", err)
+	}
+	// A budget refusal is not a claim the file is invalid, and a caller that
+	// quarantines on ErrCorrupt must not quarantine on this.
+	if errors.Is(err, format.ErrCorrupt) {
+		t.Error("a budget refusal reported the file as corrupt")
+	}
+	t.Logf("%d bytes on disk refused at a %d-byte ceiling: %v", fi.Size(), int64(ceiling), err)
 
+	// The other half: the same file, a caller willing to pay for it.
+	p, err := Open(dir, ReadOnly(), MaxDecodedBytes(4<<30))
+	if err != nil {
+		t.Fatalf("the same file was refused at a 4 GiB ceiling: %v", err)
+	}
 	n := 0
 	for _, c := range p.Columns(world.Overworld) {
 		n += len(c.Entities)
@@ -168,13 +177,6 @@ func TestEntityFloodEscapesTheDecodeCeiling(t *testing.T) {
 	if n != cols*per {
 		t.Fatalf("got %d entities, want %d", n, cols*per)
 	}
-	if retained < 64<<20 {
-		// If this is ever small, the fixture stopped reaching the case and the
-		// test proves nothing.
-		t.Fatalf("the fixture retained only %d bytes; it no longer demonstrates the amplification", retained)
-	}
-	t.Logf("%d bytes on disk, ceiling %d, %d entities, %d bytes retained (%.0fx the ceiling)",
-		fi.Size(), int64(ceiling), n, retained, float64(retained)/float64(ceiling))
 	_ = p.Close()
 }
 
