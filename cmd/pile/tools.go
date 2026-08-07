@@ -15,6 +15,10 @@ import (
 
 // canonicalColumnBytes encodes a single column as a canonical solid world,
 // giving byte-comparable content identity.
+// dimensions is the set the commands that walk a whole world iterate. It
+// matches pile's own list; a custom dimension has no file of its own.
+var dimensions = []world.Dimension{world.Overworld, world.Nether, world.End}
+
 func canonicalColumnBytes(c format.Column, reg world.BlockRegistry) ([]byte, error) {
 	var buf bytes.Buffer
 	err := format.WriteWorld(&buf, &format.WorldData{Columns: []format.Column{c}}, reg, format.Options{})
