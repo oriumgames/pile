@@ -16,7 +16,6 @@ import (
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/klauspost/compress/dict"
-	"github.com/klauspost/compress/zstd"
 )
 
 // Dictionary training thresholds: below these, a shared dictionary is not
@@ -82,11 +81,12 @@ type IndexedWorld struct {
 	// the next footer for recovery sanity checks.
 	prevFooterOff int64
 
-	// Shared-dictionary state (built at Compact; nil = no dictionary).
-	dict    []byte
-	dictRef frameRef
-	dictEnc *zstd.Encoder
-	dictDec *zstd.Decoder
+	// Shared-dictionary state (built at Compact; nil = no dictionary). The
+	// codecs are process-wide and keyed by the dictionary, so this handle
+	// borrows them rather than owning them and must not close them.
+	dict      []byte
+	dictRef   frameRef
+	dictCodec *dictCodec
 
 	// Directory: live record frames by chunk position.
 	dir       map[[2]int32]dirEntry
@@ -294,29 +294,11 @@ func newIndexedWorld(f *os.File, path string, reg world.BlockRegistry, opts Opti
 // now on are compressed against it, and frames referencing it decode through
 // a dictionary-aware decoder.
 func (w *IndexedWorld) setDict(dict []byte) error {
-	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstdLevel(w.opts.Compression)),
-		zstd.WithEncoderConcurrency(1),
-		zstd.WithEncoderDict(dict))
+	c, err := sharedDictCodec(dict, w.opts.Compression)
 	if err != nil {
-		return fmt.Errorf("pile: create dict encoder: %w", err)
+		return err
 	}
-	dec, err := zstd.NewReader(nil,
-		zstd.WithDecoderConcurrency(1),
-		zstd.WithDecoderMaxWindow(maxZstdWindow),
-		zstd.WithDecoderMaxMemory(maxDecodedFrame),
-		zstd.WithDecoderDicts(dict))
-	if err != nil {
-		enc.Close()
-		return fmt.Errorf("pile: create dict decoder: %w", err)
-	}
-	if w.dictEnc != nil {
-		w.dictEnc.Close()
-	}
-	if w.dictDec != nil {
-		w.dictDec.Close()
-	}
-	w.dict, w.dictEnc, w.dictDec = dict, enc, dec
+	w.dict, w.dictCodec = dict, c
 	return nil
 }
 
@@ -325,7 +307,7 @@ func (w *IndexedWorld) setDict(dict []byte) error {
 func (w *IndexedWorld) installDict(d []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	ref, _, err := w.appendFrame(d) // dictEnc is nil here: plain compression
+	ref, _, err := w.appendFrame(d) // no dictionary yet: plain compression
 	if err != nil {
 		return err
 	}
@@ -447,7 +429,7 @@ func prologueHeaderImage(stored []byte) ([]byte, bool) {
 	if img, ok := parse(stored); ok {
 		return img, true
 	}
-	body, err := sharedFrameDecoder().DecodeAll(stored, nil)
+	body, err := sharedFrameDecoder().decodeAll(stored, nil)
 	if err != nil {
 		return nil, false
 	}
@@ -500,13 +482,10 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.footerPending = false
 	w.recovered = false
 	w.settings, w.userData, w.markers, w.border = nil, nil, nil, nil
-	if w.dictEnc != nil {
-		w.dictEnc.Close()
-	}
-	if w.dictDec != nil {
-		w.dictDec.Close()
-	}
-	w.dict, w.dictRef, w.dictEnc, w.dictDec = nil, frameRef{}, nil, nil
+	// The codecs are shared process-wide and keyed by the dictionary, so this
+	// handle only drops its reference: closing them would break every other
+	// handle that borrowed the same dictionary.
+	w.dict, w.dictRef, w.dictCodec = nil, frameRef{}, nil
 }
 
 // maxCheckpointChain bounds how far recovery walks back. Each link costs a
@@ -1164,10 +1143,10 @@ func (w *IndexedWorld) readFrame(ref frameRef) ([]byte, error) {
 		return buf, nil
 	}
 	dec := sharedFrameDecoder()
-	if w.dictDec != nil {
-		dec = w.dictDec
+	if w.dictCodec != nil {
+		dec = w.dictCodec.dec
 	}
-	out, err := dec.DecodeAll(buf, nil)
+	out, err := dec.decodeAll(buf, nil)
 	if err != nil {
 		return nil, corruptf("decompress frame: %v", err)
 	}
@@ -1193,10 +1172,10 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (fram
 	}
 	stored := body
 	if w.compressed {
-		if w.dictEnc != nil && !plain {
-			stored = w.dictEnc.EncodeAll(body, make([]byte, 0, len(body)/2))
+		if w.dictCodec != nil && !plain {
+			stored = w.dictCodec.enc.encodeAll(body, make([]byte, 0, len(body)/2))
 		} else {
-			stored = sharedEncoder(w.opts.Compression, false).EncodeAll(body, make([]byte, 0, len(body)/2))
+			stored = sharedEncoder(w.opts.Compression, false).encodeAll(body, make([]byte, 0, len(body)/2))
 		}
 	}
 	if uint64(len(stored)) > maxFrameLen {
@@ -1542,10 +1521,10 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 	}
 	if w.compressed {
 		dec := sharedFrameDecoder()
-		if w.dictDec != nil {
-			dec = w.dictDec
+		if w.dictCodec != nil {
+			dec = w.dictCodec.dec
 		}
-		body, err = dec.DecodeAll(stored, nil)
+		body, err = dec.decodeAll(stored, nil)
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, nil, false, corruptf("decompress record (%d,%d): %v", x, z, err)
 		}
@@ -2057,12 +2036,8 @@ func (w *IndexedWorld) closeFile() error {
 }
 
 func (w *IndexedWorld) closeFileLocked() error {
-	if w.dictEnc != nil {
-		w.dictEnc.Close()
-	}
-	if w.dictDec != nil {
-		w.dictDec.Close()
-	}
+	// Nothing to release: the dictionary codecs belong to the process, not to
+	// this handle.
 	return w.f.Close()
 }
 
@@ -2080,7 +2055,7 @@ func decodeDirBody(buf []byte, compressed bool) ([]byte, bool) {
 		}
 		return buf, true
 	}
-	out, err := sharedDirectoryDecoder().DecodeAll(buf, nil)
+	out, err := sharedDirectoryDecoder().decodeAll(buf, nil)
 	if err != nil {
 		return nil, false
 	}

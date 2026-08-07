@@ -118,7 +118,7 @@ func decompressBody(h header, stored []byte) ([]byte, error) {
 		}
 		return stored, nil
 	}
-	body, err := sharedDecoder().DecodeAll(stored, nil)
+	body, err := sharedDecoder().decodeAll(stored, nil)
 	if err != nil {
 		return nil, corruptf("decompress body: %v", err)
 	}

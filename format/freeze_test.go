@@ -3790,7 +3790,7 @@ func TestRejectsOversizedZstdWindow(t *testing.T) {
 	}
 	frame := enc.EncodeAll(payload, nil)
 	enc.Close()
-	if _, err := sharedDecoder().DecodeAll(frame, nil); err == nil {
+	if _, err := sharedDecoder().decodeAll(frame, nil); err == nil {
 		t.Fatal("a frame demanding a window past the ceiling was decoded")
 	}
 	// A frame within the ceiling still decodes.
@@ -3800,7 +3800,7 @@ func TestRejectsOversizedZstdWindow(t *testing.T) {
 	}
 	ok := small.EncodeAll(payload, nil)
 	small.Close()
-	if _, err := sharedDecoder().DecodeAll(ok, nil); err != nil {
+	if _, err := sharedDecoder().decodeAll(ok, nil); err != nil {
 		t.Fatalf("a frame within the window ceiling was refused: %v", err)
 	}
 }

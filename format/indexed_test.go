@@ -706,3 +706,62 @@ func TestSetMetaRefusesReadOnlyAndClosed(t *testing.T) {
 		t.Error("a refused SetMeta changed what Meta reports")
 	}
 }
+
+// TestDictCodecShared: the codecs for a shared dictionary belong to the
+// dictionary, not to the handle that installed it. Building a private encoder
+// and decoder per open file cost around 11 MiB for every handle that wrote a
+// frame, so a world with several dimensions open paid for the same dictionary
+// several times over.
+func TestDictCodecShared(t *testing.T) {
+	reg := testRegistry(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overworld.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range int32(40) {
+		if err := w.Store(buildTestColumn(t, reg, i, i%5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if !w.HasDict() {
+		t.Fatal("compaction did not train a dictionary")
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPath := filepath.Join(dir, "nether.pile")
+	if err := os.WriteFile(copyPath, src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := OpenIndexed(copyPath, reg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if a.dictCodec == nil || a.dictCodec != b.dictCodec {
+		t.Fatalf("two handles on the same dictionary hold different codecs: %p vs %p", a.dictCodec, b.dictCodec)
+	}
+	// Both still read through it.
+	for _, h := range []*IndexedWorld{a, b} {
+		got, err := h.Column(3, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compareColumns(t, buildTestColumn(t, reg, 3, 3), got)
+	}
+}
