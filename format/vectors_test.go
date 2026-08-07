@@ -399,8 +399,8 @@ func buildWorldPreserved(t *testing.T, reg world.BlockRegistry) []byte {
 			{Name: "vector:other", Properties: map[string]any{"n": int32(3)}, Version: 17959425},
 		},
 		Unknown: []UnknownBlock{
-			{Section: -4, Layer: 0, Index: uint16(1)<<8 | uint16(1)<<4 | 0, State: 0},
-			{Section: -4, Layer: 0, Index: uint16(2)<<8 | uint16(2)<<4 | 0, State: 1},
+			{Section: -4, Layer: 0, Index: uint16(1)<<8 | uint16(1)<<4, State: 0},
+			{Section: -4, Layer: 0, Index: uint16(2)<<8 | uint16(2)<<4, State: 1},
 		},
 		UnknownTicks: []UnknownTick{{Pos: [3]int32{0, -64, 0}, At: 99, State: 1}},
 		// A biome name the registry does not resolve travels the same way.

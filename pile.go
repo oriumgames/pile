@@ -654,14 +654,12 @@ func (p *Provider) Columns(dim world.Dimension) iter.Seq2[world.ChunkPos, *chunk
 		if p.base == nil {
 			return
 		}
-		for pos, col := range p.base.Columns(dim) {
+		p.base.Columns(dim)(func(pos world.ChunkPos, col *chunk.Column) bool {
 			if _, shadowed := own[[2]int32{pos[0], pos[1]}]; shadowed {
-				continue
+				return true
 			}
-			if !yield(pos, col) {
-				return
-			}
-		}
+			return yield(pos, col)
+		})
 		p.noteIterErr(p.base.IterError())
 	}
 }

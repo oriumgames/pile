@@ -387,7 +387,7 @@ func TestExtractKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
 	df.Columns[0].UnknownStates = []format.BlockState{{Name: "audit:unknown", Version: 1}}
 	df.Columns[0].Unknown = []format.UnknownBlock{{
 		Section: 0, Layer: 0,
-		Index: uint16(6)<<8 | uint16(6)<<4 | 0, State: 0,
+		Index: uint16(6)<<8 | uint16(6)<<4, State: 0,
 	}}
 	if err := wf.Write(dir, reg); err != nil {
 		t.Fatal(err)

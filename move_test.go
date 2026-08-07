@@ -680,7 +680,7 @@ func TestMoveKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
 	df.Columns[0].UnknownStates = []format.BlockState{{Name: "audit:unknown", Version: 1}}
 	df.Columns[0].Unknown = []format.UnknownBlock{{
 		Section: -4, Layer: 0,
-		Index: uint16(3)<<8 | uint16(3)<<4, State: 0, // (x<<8)|(z<<4)|y, y = 0
+		Index: uint16(3)<<8 | uint16(3)<<4, State: 0,
 	}}
 	if err := wf.Write(dir, reg); err != nil {
 		t.Fatal(err)

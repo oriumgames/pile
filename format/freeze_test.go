@@ -2147,7 +2147,7 @@ func TestUnknownStateInEmptySection(t *testing.T) {
 		UnknownStates: []BlockState{{Name: "audit:lonely", Version: 1}},
 		Unknown: []UnknownBlock{{
 			Section: -4, Layer: 0,
-			Index: uint16(3)<<8 | uint16(3)<<4, State: 0, // (x<<8)|(z<<4)|y, y = 0
+			Index: uint16(3)<<8 | uint16(3)<<4, State: 0,
 		}},
 	}}}
 	file := encode(t, d, reg, CompressionNone)

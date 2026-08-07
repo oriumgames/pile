@@ -310,7 +310,7 @@ func goldenUnknownWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 	}
 	c.Unknown = []UnknownBlock{{
 		Section: -4, Layer: 0,
-		Index: uint16(1)<<8 | uint16(1)<<4 | 0, State: 0,
+		Index: uint16(1)<<8 | uint16(1)<<4, State: 0,
 	}}
 	c.UnknownTicks = []UnknownTick{{
 		Pos: [3]int32{0, -60, 0}, At: 99, State: 1,
@@ -354,8 +354,8 @@ func goldenPropsWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 		}, Version: 18040335},
 	}
 	c.Unknown = []UnknownBlock{
-		{Section: -4, Layer: 0, Index: uint16(1)<<8 | uint16(1)<<4 | 0, State: 0},
-		{Section: -4, Layer: 0, Index: uint16(2)<<8 | uint16(2)<<4 | 0, State: 1},
+		{Section: -4, Layer: 0, Index: uint16(1)<<8 | uint16(1)<<4, State: 0},
+		{Section: -4, Layer: 0, Index: uint16(2)<<8 | uint16(2)<<4, State: 1},
 	}
 	return d
 }
