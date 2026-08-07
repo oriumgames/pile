@@ -203,7 +203,8 @@ objects and stops being openable for reasons no ceiling can help with. It does
 **not** refuse the 1,161-byte file that decodes into 1.12 GiB; refusing that one
 means a limit below 1024x1024 chunks, which a real server can reach.
 
-**Conformance vectors** — done. `format/vectors.md` is the appendix, 17 positive
+**Conformance vectors** — done. `format/vectors.md` is the appendix, 18 positive
+(16 byte-pinned, 2 indexed and pinned only by what they mean)
 and 59 negative vectors in `format/testdata/vectors/`, verified on every run
 with no flags. Each positive vector is also parsed by a second reader written
 from the specification, and each negative one must be refused by both with an

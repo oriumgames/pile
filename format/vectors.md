@@ -16,25 +16,31 @@ If you are writing a reader in another language, the shortest useful path is:
 1. decode `world_minimal.pile` — 118 bytes, annotated byte for byte below;
 2. decode the rest of the positive vectors and check your `ContentHash` against
    the table;
-3. re-encode each one and check you get the same bytes back;
+3. re-encode each one and check you get the same bytes back — for the two
+   indexed vectors, which have no canonical byte form, check instead what "The
+   indexed vectors" below says you must conclude from them;
 4. run the negative vectors through your reader and check every one is refused.
 
 Section numbers below refer to `format/format.md`.
 
 ## What is and is not pinned
 
-Every positive vector is written **uncompressed** (flag `Uncompressed`, bit 4).
-That is deliberate. §4.8 says the compressed bytes are not part of the format's
-identity: Zstandard admits many valid encodings of one body, so a vector holding
-compressed bytes would pin the compressor rather than the format. There is
-therefore no compressed vector here. A reader still has to handle compressed
+Every positive vector whose bytes are pinned is written **uncompressed** (flag
+`Uncompressed`, bit 4). That is deliberate. §4.8 says the compressed bytes are
+not part of the format's identity: Zstandard admits many valid encodings of one
+body, so a vector holding compressed bytes would pin the compressor rather than
+the format. No vector here pins compressed bytes. A reader still has to handle compressed
 bodies; the golden suite in `format/testdata/` carries compressed fixtures for
 that, but they are stability fixtures for this implementation, not conformance
 vectors.
 
-The one indexed vector is an exception in the other direction. Indexed files are
-history-dependent by design (§5), so their bytes carry no cross-implementation
-meaning; what is pinned about `indexed_torn.pile` is the content it recovers to.
+The two indexed vectors are an exception in the other direction. Indexed files
+are history-dependent by design (§5), so their bytes carry no
+cross-implementation meaning; what is pinned about `indexed_torn.pile` and
+`indexed_full.pile` is what a reader must conclude from them, never how they are
+laid out. `indexed_full.pile` is also the one vector here written *compressed*
+and the one this repository does not regenerate — see "The indexed vectors"
+below for both reasons.
 
 ## File identity
 
@@ -159,10 +165,72 @@ looks like, which is a different thing from a column that was never stored.
 | `structure_edge_padding.pile` | 12 431 | `f55d6c695c07baab` | a 17×3×18 structure: the box is not a multiple of 16, so its four cells have padding outside it. Padding is air in every layer (§6) |
 | `structure_full.pile` | 12 684 | `5e1f1c878ca0ef99` | a negative origin, an internal all-air cell layer, block entities, entities and user data; settings, markers and border empty and the biome palette at zero entries, as §6 requires |
 | `indexed_torn.pile` | 400 | `c62c88c4f7de5206` | an indexed file (§5) whose newest footer is destroyed. Opening it must fall back through `prevFooter` to the previous checkpoint; the content that survives is the one column stored before it |
+| `indexed_full.pile` | 24 081 | `732fef0b94bdf2fe` | an indexed file with a history: a meta frame, a trained dictionary frame, two block palette segments, a checkpoint chain reaching generation 3, superseded records the directory does not name, and a compaction in the middle of it. Its bytes are **not** claimed; see below |
 
 The three dimension vectors are byte-identical apart from the header's flags
 word at offsets 8-11 and the checkpoint hash at offset 74, which covers it. A
 test asserts exactly that, so you can diff them to locate the field.
+
+### The indexed vectors
+
+Every other positive vector says three things: these bytes are what the writer
+produces, they decode to this, and re-encoding them gives the bytes back. For an
+indexed file the first and third cannot be said. §5 makes the bytes
+history-dependent — the same content stored in a different order is a different
+file — so a byte-pinned indexed vector would assert facts about the order this
+implementation happens to append in rather than about the format, and a second
+implementation that laid its frames out differently would fail it while being
+entirely correct.
+
+That objection is about **byte identity** and it does not reach further. Dropping
+that one clause leaves a claim that is still worth making and still checkable:
+*here is an indexed file, and here is what it means.* A second implementation's
+reader can be checked against it exactly as it can against `world_minimal`; what
+it cannot do is produce it. The indexed vectors are therefore **reader
+vectors**, and everything asserted about them is order-free.
+
+For `indexed_full.pile`, in full — this is the whole of what a conforming reader
+must conclude, and nothing else about the file is claimed:
+
+| | |
+|---|---|
+| it opens, at its newest checkpoint | not by §5.6 fallback: a reader that recovers here is reading an older generation and must not call that success |
+| generation | 3 |
+| dimension | nether (§5.5: from the directory prologue, which compaction carried forward) |
+| columns | exactly 22, at (0,0)–(4,3) plus (0,4) and (1,4) |
+| metadata | a §7 settings compound (`name` "indexed vector", `time` 6000, `difficulty` 1), 23 bytes of world user data, one marker "hub", and a border of ±128 — carried in a **meta frame**, which is why `ReadMeta` on an indexed file tells a caller nothing about them |
+| a dictionary | the directory names a dictionary frame and the record frames were written against it. A reader that ignores it decodes nothing at all |
+| palette segments | more than one. Segments are cumulative and a reader must concatenate them in directory order; a file with one segment cannot tell a correct reader from an incorrect one |
+| dead frames | the file contains records the newest directory does not name. A reader that located content by scanning frames rather than by reading the directory would find superseded ones and could not say which wins |
+| unresolved states | none |
+| a hand-checkable fact | the block at structure-local (0, 0, 0) of column (0,0) is `minecraft:bedrock` |
+| content identity | `732fef0b94bdf2fe`, computed by opening the file, re-encoding everything it yields as an uncompressed solid file, and taking `ContentHash` of that |
+
+The last row is the load-bearing one: two implementations that agree on it agree
+about what the file means, whatever their readers did to get there.
+
+**Not claimed, deliberately:** the file's bytes, its length, any frame's offset
+or length, the order frames appear in, the order records were stored in, how
+many palette segments there are beyond "more than one", the exact garbage ratio,
+and the dictionary's contents. A future writer that appends in a different
+order, batches segments differently or trains a different dictionary leaves
+every assertion above intact, which is the test of whether the claim was about
+the format or about this implementation.
+
+Two consequences of that for this repository, both deliberate:
+
+- **`indexed_full.pile` is compressed**, alone among the positive vectors. It has
+  to be: dictionary training only runs on a compressed file, and the dictionary
+  frame is the §5 frame kind nothing else here reaches. The compressed bytes are
+  still not part of the format's identity — they are simply not being claimed,
+  as nothing else about this file's layout is.
+- **It is not regenerated by the test suite.** The other vectors are rewritten
+  by `-update` and byte-compared on every run; this one is written once and read
+  thereafter. Regenerating it would move bytes that nothing asserts, which is a
+  change with no meaning. `-mkindexedvector` exists so a format revision can
+  produce a v3 file, and it is not the freeze lock's `-update`: nothing it
+  writes can bless a wire format change, because no byte comparison anywhere
+  depends on this file.
 
 `structure_edge_padding.pile` also carries the one §6 rule a reader cannot
 check. Padding lies outside the declared box by definition, so a file carrying
@@ -347,15 +415,23 @@ Stated plainly, so the appendix is not read as more complete than it is.
 - **Cell padding in structures (§6)**, for the same reason: it lies outside the
   declared box, so a file carrying it decodes identically to one that cleared
   it. It is covered by an encode-twice comparison instead of by a vector.
-- **Most of indexed mode (§5).** No *positive* vector pins an indexed file's
-  bytes beyond `indexed_torn`, and none should: an indexed file's bytes are
-  history-dependent, so a byte-pinned positive vector would assert facts about
+- **An indexed file's *bytes*.** No vector pins them and none should: they are
+  history-dependent, so a byte-pinned indexed vector would assert facts about
   the order this implementation happens to write in rather than about the
-  format. That objection does not reach the negative vectors above, which say
-  only that a file must be refused and name the rule refusing it, so §5.3, §5.4
-  and §5.5 are now exercised. What is still uncovered is the meta frame, the
-  dictionary frame, compaction, and every §5 rule that decides what a *valid*
-  indexed file looks like rather than which ones are invalid.
+  format.
+
+  What that objection does *not* reach is what an indexed file means, and the
+  two indexed vectors make that weaker claim instead — see "The indexed
+  vectors" above. Between them the meta frame, the dictionary frame,
+  multi-segment palettes, the generation chain, superseded records and §5.6
+  recovery are now exercised positively, and §5.3, §5.4 and §5.5 negatively.
+
+  What remains genuinely uncovered is the **writer** side of §5. These are
+  reader vectors: a second implementation can check that it reads an indexed
+  file correctly, and nothing here tells it whether the indexed files it
+  *writes* are ones this implementation would accept. There is no vector that
+  could, because the rule being checked would have to be "any of the many
+  layouts §5 permits", and a vector states one file.
 - **The §8 ceilings**, apart from the layer count. A vector for a 512 MiB body
   or a 1 048 576-entry palette would be a vector nobody can check into a
   repository. They are covered by the limit tests instead.

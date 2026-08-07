@@ -252,6 +252,17 @@ Nothing below is optional. Each line names its exit criterion.
       rules are covered — §5.3, §5.4 and §5.5 each have a negative vector, since
       "this file must be refused, for this rule" says nothing about the order a
       writer happened to append in.*
+      **Revisited after the freeze**, and the count is now 18. That objection is
+      about *byte* identity and does not reach what an indexed file means, so
+      `indexed_full.pile` was added under the weaker claim: a checked-in file
+      whose bytes nothing asserts, with its `ContentHash`, its column set, its
+      meta frame, its dictionary frame, its plural palette segments and its dead
+      frames pinned instead. It is a **reader** vector — a second implementation
+      can check that it reads an indexed file correctly, and nothing tells it
+      whether the ones it writes would be accepted — and it is the one vector
+      this repository does not regenerate, because regenerating bytes nothing
+      asserts is a change with no meaning. `format/vectors.md`, "The indexed
+      vectors". It adds no byte-locked fixture and so does not touch the lock.
 - [x] The vectors are generated from the implementation and checked into
       `format/testdata`, and a test verifies them. *Exit:
       `format/testdata/vectors/` plus `TestConformanceVectors` and
@@ -403,9 +414,26 @@ accepts, and that shows up as a moved fixture, which is locked.
 These do not block a freeze because they cannot change the bytes, but they are
 open and should be tracked:
 
-- Performance: benchmarks exist but nothing gates them, and there are no
-  recorded baselines.
-- The Go API surface has never been reviewed as a surface.
+- ~~Performance: benchmarks exist but nothing gates them, and there are no
+  recorded baselines.~~ **Closed.** `PERFORMANCE.md` records the baselines and
+  the mechanism: `scripts/bench.sh` pins the run parameters, per-sample output
+  is checked into `testdata/benchmarks.txt` and `format/testdata/benchmarks.txt`
+  for `benchstat`, and two cheap tests hold what a test can hold —
+  `TestBenchmarkBaselinesRecorded` (every benchmark has a recorded baseline, so
+  the record cannot rot silently) and `TestIndexedStoreDoesNotScaleWithPalette`
+  (an allocation *ratio*, which is exact and machine-independent). There is
+  deliberately no wall-clock threshold: on the machine these were recorded on the
+  same benchmark varied by 5.7x between samples, and a noisy gate ends muted
+  rather than fixed. What remains open is stated there: the three memory fixes
+  with the largest numbers behind them are *retention* figures, which `B/op`
+  cannot express, and nothing watches them.
+- ~~The Go API surface has never been reviewed as a surface.~~ **Reviewed**;
+  `API.md`. Eight items were changed (three re-exported error sentinels and five
+  doc comments that promised more or less than the code delivered); ten more are
+  recommended and were not done because each breaks a caller, and the API freeze
+  is where they belong. Nothing found can invalidate a file. One item — the
+  `Options.Compression` zero value being `CompressionNone` — cannot be fixed
+  without a version bump and is flagged there.
 
 Memory used to be on this list: the indexed-mode contract is "directory,
 palettes, and one record at a time", and several paths held more. They no
@@ -495,8 +523,12 @@ several of them now would be a format change.
   closed it — while its point 1 (only `MUST` sentences are pinned, so layout
   annotations are not) is still live and is how §3.1's ascent rule went
   half-enforced for as long as it did.
-- **No performance baselines, and the Go API has never been reviewed as a
-  surface.** Both are post-tag work; neither can invalidate a file.
+- **The API freeze has not happened.** The surface has now been reviewed
+  (`API.md`) and the ten breaking recommendations are written down and not
+  taken. Performance baselines exist (`PERFORMANCE.md`), with the caveat that
+  their wall-clock column was recorded on a contended machine and needs
+  re-recording before it means anything; the allocation figures are exact.
+  Neither can invalidate a file.
 - **One golden is deliberately not byte-locked**: `golden_indexed_compact.pile`,
   because dictionary training is not reproducible. Its structure is checked by
   `TestGoldenFormatReadable`.

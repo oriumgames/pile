@@ -146,10 +146,13 @@ decision recorded in §2.1 — not an omission.
 - **Indexed-mode byte layout over time.** Indexed files (`pile.AppendMode()`)
   are history-dependent by design: the same content stored in a different order
   is a different file. Their identity is `ContentHash` too.
-- **The Go API.** Frozen separately and later; it has not yet been reviewed as
-  a surface. Expect it to move.
+- **The Go API.** Frozen separately and later. It has now been reviewed as a
+  surface ([API.md](API.md)); the changes that would break a caller are
+  recommended there and deliberately not made, so expect it to move at the API
+  freeze.
 - **Performance and memory.** Optimisation is permitted at any time, provided
-  the bytes do not move.
+  the bytes do not move. Recorded baselines are in
+  [PERFORMANCE.md](PERFORMANCE.md).
 
 **`ContentHash` identifies the body, not the file.** The dimension lives in the
 header, and decoding does not fold it into the body, so two files holding the
@@ -172,10 +175,12 @@ can represent. `pile.MaxDecodedBytes(n)` — `format.MaxDecodedBytes` on the cod
 **Writing a second implementation.** The binary specification is
 [format/format.md](format/format.md); where it and this implementation disagree,
 the implementation wins and the specification has a bug. The conformance
-appendix is [format/vectors.md](format/vectors.md): 17 positive vectors with
+appendix is [format/vectors.md](format/vectors.md): 18 positive vectors with
 their expected `ContentHash` and 59 negative ones, each naming the rule a
 conforming reader must refuse it for, with the files themselves in
-`format/testdata/vectors/`. It also records what no vector can express. Codec
+`format/testdata/vectors/`. Sixteen of the positives pin bytes; the two indexed
+ones pin only what a reader must conclude, because §5 makes an indexed file's
+bytes history-dependent. It also records what no vector can express. Codec
 package docs: [format/readme.md](format/readme.md).
 
 ## Notes

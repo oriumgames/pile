@@ -107,7 +107,10 @@ func (s *Structure) Save(path string) error {
 	return syncDir(filepath.Dir(path))
 }
 
-// Data exposes the underlying structure data.
+// Data exposes the underlying structure data. It is the Structure's own, not a
+// copy: mutating it mutates the Structure, and the encoder requires Cells to
+// stay exactly CellDims(Size) long, so a caller that resizes one without the
+// other has built a value that will not save.
 func (s *Structure) Data() *format.StructureData { return s.data }
 
 // Dimensions returns the structure's size, implementing world.Structure.

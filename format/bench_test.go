@@ -272,7 +272,7 @@ func BenchmarkIndexedStoreLargePalette(b *testing.B) {
 
 // paletteFillColumn builds a column referencing every runtime ID the registry
 // knows, so storing it grows the global palette to the registry's full size.
-func paletteFillColumn(b *testing.B, reg world.BlockRegistry) Column {
+func paletteFillColumn(b testing.TB, reg world.BlockRegistry) Column {
 	b.Helper()
 	ch := chunk.New(reg, overworldRange)
 	next := uint32(0)
