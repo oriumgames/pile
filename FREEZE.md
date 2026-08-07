@@ -537,10 +537,6 @@ several of them now would be a format change.
   `HARNESS.md` §9 has the thirteen controls. No file's readability moved and no
   fixture did; the five new writer refusals are API behaviour changes and are
   listed there.
-  **The `pile` provider surface and the CLI are still not audited**: the matrix
-  drives `format` directly. Neither can invalidate a file already written — a
-  writer refusing an input is an API change, not a format change — so neither
-  blocks the tag.
   `FREEZE-BLOCKERS.md` records the first; its closing note reconciles what has
   moved since it was written. Its point 1 — only `MUST` sentences are pinned,
   so layout annotations are not — is still live and is how §3.1's ascent rule
@@ -551,6 +547,20 @@ several of them now would be a format change.
   their wall-clock column was recorded on a contended machine and needs
   re-recording before it means anything; the allocation figures are exact.
   Neither can invalidate a file.
+- **The `pile` provider surface and the CLI have now been audited**, in
+  `hostile_test.go` and `cmd/pile/hostile_test.go`, with twenty-nine negative
+  controls in `HARNESS.md` §8. None of it moved a byte or changed which files a
+  reader accepts. Two things it found are worth carrying into a release note:
+  **`MaxDecodedBytes` bounds nothing about the entities, block entities and
+  scheduled updates a column carries**, so a 4,764-byte file decodes into 774 MB
+  under any ceiling a real world can survive (`SECURITY.md`, "What a caller
+  still cannot bound"); and **`format.MarshalNBT` emits a blob its own
+  `UnmarshalNBT` refuses** for any string of 32,768 bytes or more, which through
+  a block entity's NBT is a save that reports success and a world that never
+  opens again. The second is a writer-side fix in `format/nbt.go`, needs no byte
+  to move, and is unfixed.
+- **No performance baselines, and the Go API has never been reviewed as a
+  surface.** Both are post-tag work; neither can invalidate a file.
 - **One golden is deliberately not byte-locked**: `golden_indexed_compact.pile`,
   because dictionary training is not reproducible. Its structure is checked by
   `TestGoldenFormatReadable`.

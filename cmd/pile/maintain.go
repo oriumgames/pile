@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 
@@ -11,10 +12,15 @@ import (
 )
 
 func cmdCompact(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile compact <dir|file>")
+	fs := flag.NewFlagSet("compact", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile compact <dir|file> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -25,11 +31,22 @@ func cmdCompact(args []string) error {
 			return err
 		}
 		if mode != format.ModeIndexed {
+			// "already canonical" is a claim about the file, so the file has to
+			// be read before it is made. pile.FileMode checks the magic and
+			// nothing else, so twelve bytes of "PILE" followed by zeroes used to
+			// be reported as a canonical solid world.
+			data, err := os.ReadFile(f)
+			if err != nil {
+				return err
+			}
+			if _, err := format.ReadMeta(data, limit.readOpts()...); err != nil {
+				return fmt.Errorf("%s: %w", f, err)
+			}
 			fmt.Printf("%s: solid file, already canonical\n", f)
 			continue
 		}
 		before, _ := os.Stat(f)
-		w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, false, readOpts()...)
+		w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, false, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -48,16 +65,22 @@ func cmdCompact(args []string) error {
 }
 
 func cmdMode(args []string) error {
-	if len(args) != 2 || (args[1] != "solid" && args[1] != "indexed") {
-		return errors.New("usage: pile mode <dir|file> <solid|indexed>")
+	fs := flag.NewFlagSet("mode", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 2 || (fs.Arg(1) != "solid" && fs.Arg(1) != "indexed") {
+		return errors.New("usage: pile mode <dir|file> <solid|indexed> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
-	wantIndexed := args[1] == "indexed"
+	want := fs.Arg(1)
+	wantIndexed := want == "indexed"
 
 	for _, f := range files {
 		mode, err := pile.FileMode(f)
@@ -65,15 +88,15 @@ func cmdMode(args []string) error {
 			return err
 		}
 		if (mode == format.ModeIndexed) == wantIndexed {
-			fmt.Printf("%s: already %s\n", f, args[1])
+			fmt.Printf("%s: already %s\n", f, want)
 			continue
 		}
 		tmp := f + ".mode"
 		_ = os.Remove(tmp)
 		if wantIndexed {
-			err = solidToIndexed(f, tmp, reg)
+			err = solidToIndexed(f, tmp, reg, limit)
 		} else {
-			err = indexedToSolid(f, tmp, reg)
+			err = indexedToSolid(f, tmp, reg, limit)
 		}
 		if err != nil {
 			_ = os.Remove(tmp)
@@ -85,17 +108,17 @@ func cmdMode(args []string) error {
 		if err := os.Rename(tmp, f); err != nil {
 			return err
 		}
-		fmt.Printf("%s: converted to %s\n", f, args[1])
+		fmt.Printf("%s: converted to %s\n", f, want)
 	}
 	return nil
 }
 
-func solidToIndexed(src, dst string, reg world.BlockRegistry) error {
+func solidToIndexed(src, dst string, reg world.BlockRegistry, limit decodeLimit) error {
 	file, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	d, err := format.ReadWorld(file, reg, readOpts()...)
+	d, err := format.ReadWorld(file, reg, limit.readOpts()...)
 	if err != nil {
 		return err
 	}
@@ -120,8 +143,8 @@ func solidToIndexed(src, dst string, reg world.BlockRegistry) error {
 	return w.Close()
 }
 
-func indexedToSolid(src, dst string, reg world.BlockRegistry) error {
-	w, err := format.OpenIndexed(src, reg, true, readOpts()...)
+func indexedToSolid(src, dst string, reg world.BlockRegistry, limit decodeLimit) error {
+	w, err := format.OpenIndexed(src, reg, true, limit.readOpts()...)
 	if err != nil {
 		return err
 	}

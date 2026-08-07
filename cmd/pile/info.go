@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,10 +32,15 @@ func pileFiles(path string) ([]string, error) {
 }
 
 func cmdInspect(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile inspect <file.pile>")
+	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile inspect <file.pile> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -44,7 +50,7 @@ func cmdInspect(args []string) error {
 			return err
 		}
 		if mode == format.ModeIndexed {
-			if err := inspectIndexed(f); err != nil {
+			if err := inspectIndexed(f, limit); err != nil {
 				return err
 			}
 			continue
@@ -53,7 +59,7 @@ func cmdInspect(args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := format.ReadMeta(data, readOpts()...)
+		m, err := format.ReadMeta(data, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -70,9 +76,9 @@ func cmdInspect(args []string) error {
 	return nil
 }
 
-func inspectIndexed(f string) error {
+func inspectIndexed(f string, limit decodeLimit) error {
 	world.DefaultBlockRegistry.Finalize()
-	w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
+	w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, limit.readOpts()...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", f, err)
 	}
@@ -126,10 +132,15 @@ func printNBTBlob(name string, b []byte) {
 }
 
 func cmdVerify(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile verify <dir|file>")
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile verify <dir|file> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -140,7 +151,7 @@ func cmdVerify(args []string) error {
 			return err
 		}
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
+			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, limit.readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -160,7 +171,7 @@ func cmdVerify(args []string) error {
 		if err != nil {
 			return err
 		}
-		d, err := format.ReadWorld(data, world.DefaultBlockRegistry, readOpts()...)
+		d, err := format.ReadWorld(data, world.DefaultBlockRegistry, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -170,10 +181,15 @@ func cmdVerify(args []string) error {
 }
 
 func cmdStats(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile stats <dir|file>")
+	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile stats <dir|file> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -187,7 +203,7 @@ func cmdStats(args []string) error {
 		if mode, err := pile.FileMode(f); err != nil {
 			return err
 		} else if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, readOpts()...)
+			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, limit.readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -201,7 +217,7 @@ func cmdStats(args []string) error {
 				d.Columns = append(d.Columns, c)
 			}
 			_ = w.Close()
-		} else if d, err = format.ReadWorld(data, world.DefaultBlockRegistry, readOpts()...); err != nil {
+		} else if d, err = format.ReadWorld(data, world.DefaultBlockRegistry, limit.readOpts()...); err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
 		var ents, bes, ticks, sections int

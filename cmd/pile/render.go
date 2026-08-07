@@ -20,6 +20,7 @@ func cmdRender(args []string) error {
 	out := fs.String("o", "map.png", "output PNG file")
 	dimFlag := fs.String("dim", "overworld", "dimension to render")
 	bgFlag := fs.String("bg", "", "background color as #rrggbb (default: transparent)")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -40,7 +41,7 @@ func cmdRender(args []string) error {
 	}
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
-	wf, err := pile.LoadWorldFiles(fs.Arg(0), reg)
+	wf, err := pile.LoadWorldFiles(fs.Arg(0), reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -49,17 +50,25 @@ func cmdRender(args []string) error {
 		return fmt.Errorf("no chunks in %s", *dimFlag)
 	}
 
-	minCX, minCZ := df.Columns[0].X, df.Columns[0].Z
+	// The span is computed in int64 and the image size is derived from it only
+	// after the ceiling test. Subtracting the chunk coordinates as int32 wraps:
+	// a world holding one column at X=-2147483648 and one at X=0 has a true
+	// span of 2^31+1, which as an int32 difference is -2147483648, so the width
+	// came out at -34359738352, sailed past a test that only looks for values
+	// above 8192, and image.NewRGBA canonicalised the negative rectangle into a
+	// positive one and reserved 2.0 TiB for its pixels. The file that does it is
+	// 4,269 bytes and holds two chunks.
+	minCX, minCZ := int64(df.Columns[0].X), int64(df.Columns[0].Z)
 	maxCX, maxCZ := minCX, minCZ
 	for _, c := range df.Columns {
-		minCX, maxCX = min(minCX, c.X), max(maxCX, c.X)
-		minCZ, maxCZ = min(minCZ, c.Z), max(maxCZ, c.Z)
+		minCX, maxCX = min(minCX, int64(c.X)), max(maxCX, int64(c.X))
+		minCZ, maxCZ = min(minCZ, int64(c.Z)), max(maxCZ, int64(c.Z))
 	}
-	w := (int(maxCX-minCX) + 1) * 16
-	h := (int(maxCZ-minCZ) + 1) * 16
-	if w > 8192 || h > 8192 {
-		return fmt.Errorf("world too large to render (%dx%d blocks)", w, h)
+	spanX, spanZ := (maxCX-minCX+1)*16, (maxCZ-minCZ+1)*16
+	if spanX > 8192 || spanZ > 8192 {
+		return fmt.Errorf("world too large to render (%dx%d blocks)", spanX, spanZ)
 	}
+	w, h := int(spanX), int(spanZ)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	if bg != nil {
 		for i := 0; i < len(img.Pix); i += 4 {
@@ -71,8 +80,8 @@ func cmdRender(args []string) error {
 	for _, c := range df.Columns {
 		ch := c.Col.Chunk
 		r := ch.Range()
-		ox := (int(c.X) - int(minCX)) * 16
-		oz := (int(c.Z) - int(minCZ)) * 16
+		ox := int((int64(c.X) - minCX) * 16)
+		oz := int((int64(c.Z) - minCZ) * 16)
 		for x := range uint8(16) {
 			for z := range uint8(16) {
 				y := ch.HighestBlock(x, z)

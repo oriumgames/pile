@@ -53,10 +53,43 @@ func newMetaCache(cacheColumns int) *metaCache {
 	return lru.New[[2]int32](max(metaCacheColumns, cacheColumns), metaCacheBytes, chunkMetaSize)
 }
 
-// newColumnCache builds the decoded-column LRU, which is bounded by entry
-// count alone: its entries are whole columns and all of a size.
+// columnCacheBytes is the weight budget of the decoded-column LRU.
+//
+// The cache used to be bounded by entry count alone, on the reasoning that its
+// entries are whole columns and all of a size. That is true of columns a server
+// wrote and false of a file somebody sent you: a single legal column may carry
+// 1,048,576 entities (§8's per-chunk ceiling), which is about 400 MiB of live
+// maps, plus a 16 MiB user data blob and a sidecar with one entry per block
+// position. CacheColumns(64) over such a world pinned tens of gigabytes with
+// nothing to say about it, while the metadata cache beside it had had a byte
+// budget all along. 256 MiB is far above any real world's working set — a busy
+// column is on the order of a hundred kilobytes — and far below what one
+// hostile column costs, which is what a budget is for.
+const columnCacheBytes = 256 << 20
+
+// newColumnCache builds the decoded-column LRU, bounded by entry count and by
+// total weight.
 func newColumnCache(capacity int) *columnCache {
-	return lru.New[[2]int32, cacheEntry](capacity, 0, nil)
+	return lru.New[[2]int32](capacity, columnCacheBytes, cacheEntrySize)
+}
+
+// cacheEntrySize approximates a cached column's retained bytes.
+//
+// It charges the parts an input controls without bound — the per-chunk
+// collections, the user data blob and the preserved-state sidecar — and a fixed
+// allowance for the chunk itself, whose section count §8 already bounds. The
+// per-element figures are deliberately coarse: an entity is a slice element, a
+// map header and the NBT the map holds, and a budget is a policy dial rather
+// than an accounting of the heap.
+func cacheEntrySize(e cacheEntry) int {
+	n := chunkMetaSize(chunkMeta{ud: e.ud, side: e.side})
+	if e.col != nil {
+		n += 4096
+		n += len(e.col.Entities) * 128
+		n += len(e.col.BlockEntities) * 128
+		n += len(e.col.ScheduledBlocks) * 40
+	}
+	return n
 }
 
 // chunkMetaSize approximates an entry's retained bytes: the blobs it holds,

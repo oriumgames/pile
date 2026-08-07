@@ -83,16 +83,21 @@ func diffWorlds(a, b *pile.WorldFiles, reg world.BlockRegistry) ([]dimDiff, erro
 }
 
 func cmdDiff(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: pile diff <world-a> <world-b>")
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("usage: pile diff <world-a> <world-b> [--max-decoded n]")
 	}
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
-	a, err := pile.LoadWorldFiles(args[0], reg)
+	a, err := pile.LoadWorldFiles(fs.Arg(0), reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
-	b, err := pile.LoadWorldFiles(args[1], reg)
+	b, err := pile.LoadWorldFiles(fs.Arg(1), reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -138,6 +143,7 @@ func cmdPrune(args []string) error {
 	boundsFlag := fs.String("bounds", "", "keep only chunks intersecting block box x1,z1,x2,z2 (required)")
 	dryRun := fs.Bool("dry-run", false, "report without writing")
 	noBackup := fs.Bool("no-backup", false, "skip the snapshots/pre-prune backup")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -157,7 +163,7 @@ func cmdPrune(args []string) error {
 	dir := fs.Arg(0)
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
-	wf, err := pile.LoadWorldFiles(dir, reg)
+	wf, err := pile.LoadWorldFiles(dir, reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -196,10 +202,15 @@ func cmdPrune(args []string) error {
 }
 
 func cmdUpgrade(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile upgrade <dir|file>")
+	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile upgrade <dir|file> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -211,7 +222,7 @@ func cmdUpgrade(args []string) error {
 			return err
 		}
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, reg, false, readOpts()...)
+			w, err := format.OpenIndexed(f, reg, false, limit.readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}
@@ -231,11 +242,11 @@ func cmdUpgrade(args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := format.ReadMeta(data, readOpts()...)
+		m, err := format.ReadMeta(data, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		d, err := format.ReadWorld(data, reg, readOpts()...)
+		d, err := format.ReadWorld(data, reg, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
@@ -271,10 +282,15 @@ func cmdUpgrade(args []string) error {
 }
 
 func cmdCheck(args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: pile check <dir|file>")
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	limit := addDecodeLimit(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	files, err := pileFiles(args[0])
+	if fs.NArg() != 1 {
+		return errors.New("usage: pile check <dir|file> [--max-decoded n]")
+	}
+	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -288,7 +304,7 @@ func cmdCheck(args []string) error {
 		}
 		var unresolved []string
 		if mode == format.ModeIndexed {
-			w, err := format.OpenIndexed(f, reg, true, readOpts()...)
+			w, err := format.OpenIndexed(f, reg, true, limit.readOpts()...)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f, err)
 			}

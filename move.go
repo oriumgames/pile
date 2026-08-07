@@ -27,6 +27,10 @@ type MoveOptions struct {
 	Backup bool
 	// Registry used for block resolution; nil uses world.DefaultBlockRegistry.
 	Registry world.BlockRegistry
+	// MaxDecoded bounds the live decoded state the world's files may produce,
+	// in bytes, as MaxDecodedBytes does for a provider. 0 is the format's own
+	// ceiling.
+	MaxDecoded int64
 }
 
 // MoveReport describes what a move did (or, for a dry run, would do).
@@ -62,7 +66,7 @@ func MoveWorld(dir string, opt MoveOptions) (*MoveReport, error) {
 	reg.Finalize()
 	report := &MoveReport{Offset: opt.Offset, FastPath: isFastOffset(opt.Offset)}
 
-	wf, err := LoadWorldFiles(dir, reg)
+	wf, err := LoadWorldFiles(dir, reg, MaxDecodedBytes(opt.MaxDecoded))
 	if err != nil {
 		return nil, err
 	}

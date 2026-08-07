@@ -137,11 +137,23 @@ is recorded rather than fixed.
 ## 5. Temp-file naming, and concurrent processes
 
 Staging names are fixed and derived from the destination: `.tmp`, `.rollback`,
-`.compact`, `.upgrade`, `.mode`. They are predictable on purpose — a crashed
-run leaves exactly one file per destination, which the next run removes, rather
-than an unbounded litter of unique names nobody will ever clean up. Predictable
-is safe here because `O_EXCL` makes the name unusable as an attack surface (§1),
-which is the property that would otherwise argue for randomising it.
+`.rollbackold`, `.compact`, `.upgrade`, `.mode`. They are predictable on purpose
+— a crashed run leaves exactly one file per destination, which the next run
+removes, rather than an unbounded litter of unique names nobody will ever clean
+up. Predictable is safe here because `O_EXCL` makes the name unusable as an
+attack surface (§1), which is the property that would otherwise argue for
+randomising it.
+
+`.rollbackold` is the odd one and is not a staging file: it is the *existing*
+dimension file, moved aside by `os.Rename` while a rollback installs the
+snapshot's copy over it, and removed only once the restored world has been read
+back. `Rollback` used to delete the current files outright and read the result
+afterwards, so a snapshot directory holding something that is not a world
+destroyed the world — see `SECURITY.md`, "The provider surface and the CLI",
+finding 3. The window a crash can land in is the same one as before, and what it
+leaves behind is strictly better: the world's own bytes are still on disk under
+`.rollbackold` rather than gone. Nothing removes them automatically, on purpose;
+a `.rollbackold` beside a missing dimension file is the operator's cue.
 
 **What that does not buy is mutual exclusion between processes.** Because
 `createExclusive` removes a stale staging file before creating, two processes

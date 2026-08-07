@@ -13,35 +13,28 @@ A "world" argument is a directory holding `overworld.pile` (plus optional
 (temp file + rename); destructive commands make automatic backups unless told
 otherwise.
 
-## Files from other people
+## `--max-decoded`
 
-A pile file is compressed and heavily deduplicated, so a small file can
-legitimately decode into a very large one — a valid 1.2 KB world decodes into
-about a gigabyte of live objects in roughly a second, and that is within the
-format's rules rather than a bug in it. The format's own ceilings bound the
-worst case at about four gigabytes, which is not a useful bound if you are
-inspecting a file a stranger sent you.
+Every command that decodes chunk content takes `--max-decoded n`: the ceiling,
+in bytes, on the live decoded state one file may produce. It is
+`pile.MaxDecodedBytes` on the command line. The default, 0, is the format's own
+ceiling, which is set at what the format can *represent* — a legal file of about
+a kilobyte decodes into more than a gigabyte — rather than at what a workstation
+wants to spend.
 
-`--max-decoded` sets a lower ceiling, and goes **before** the command:
+**Set it whenever the file came from somebody else.** A file refused under it
+fails with `format.ErrDecodeBudget`, which is not a claim that the file is
+corrupt; the file is bigger than you asked for.
 
+```sh
+pile inspect suspect/overworld.pile             # header + metadata only, no chunks
+pile verify  suspect --max-decoded 67108864     # full decode, bounded at 64 MiB
 ```
-pile --max-decoded=256MiB verify downloaded-world/
-pile --max-decoded=64MiB inspect suspicious.pile
-```
 
-Sizes take `KiB`/`MiB`/`GiB` or `KB`/`MB`/`GB`; a bare number is bytes. The
-ceiling applies to every decode the command performs, including the ones
-inside the provider.
-
-There is no default ceiling, deliberately. The tool cannot tell which worlds
-are meant to be enormous, and refusing to open a legitimate large world by
-default would be a worse failure than the one a default prevents. A file
-refused under `--max-decoded` reports a decode-budget error and **not** a
-corruption error, so a ceiling set too low is distinguishable from a bad file.
-
-This is a resource bound, not an authenticity check. A pile file's integrity
-hashes detect corruption, not tampering; see "Compatibility" in the root
-readme.
+The ceiling charges decoded columns and section storages. It charges nothing for
+entities, block entities or scheduled updates, and a single legal column may
+hold a million of each — see `SECURITY.md`, "Loading a file somebody sent you",
+for what that means and what to do about it.
 
 ## Conversion
 

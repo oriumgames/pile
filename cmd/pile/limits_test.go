@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func TestParseSize(t *testing.T) {
 	ok := map[string]int64{
-		"1": 1, "1024": 1024,
+		"0": 0, "1": 1, "1024": 1024,
 		"1KiB": 1 << 10, "8MiB": 8 << 20, "2GiB": 2 << 30,
 		"1KB": 1000, "5MB": 5_000_000,
 		"64M": 64 << 20, "3G": 3 << 30,
@@ -31,70 +32,53 @@ func TestParseSize(t *testing.T) {
 			t.Errorf("parseSize(%q) = %d, want %d", in, got, want)
 		}
 	}
-	for _, in := range []string{"", "  ", "0", "-1", "MiB", "1.5MiB", "8EiB", "9223372036854775807GiB"} {
+	for _, in := range []string{"", "  ", "-1", "MiB", "1.5MiB", "8EiB", "9223372036854775807GiB"} {
 		if got, err := parseSize(in); err == nil {
 			t.Errorf("parseSize(%q) = %d, want an error", in, got)
 		}
 	}
 }
 
-func TestStripGlobalFlags(t *testing.T) {
-	t.Cleanup(func() { maxDecoded = 0 })
-
-	for _, form := range [][]string{
-		{"--max-decoded=32MiB", "verify", "w"},
-		{"--max-decoded", "32MiB", "verify", "w"},
-		{"-max-decoded=32MiB", "verify", "w"},
+// TestDecodeLimitFlagTakesSuffixes drives the flag the way a command does,
+// because parseSize passing says nothing about whether the flag reaches it.
+func TestDecodeLimitFlagTakesSuffixes(t *testing.T) {
+	parse := func(t *testing.T, args ...string) (decodeLimit, error) {
+		t.Helper()
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		fs.SetOutput(os.NewFile(0, os.DevNull))
+		l := addDecodeLimit(fs)
+		return l, fs.Parse(args)
+	}
+	for _, c := range []struct {
+		args []string
+		want int64
+	}{
+		{[]string{"--max-decoded=32MiB"}, 32 << 20},
+		{[]string{"--max-decoded", "32MiB"}, 32 << 20},
+		{[]string{"-max-decoded=64"}, 64},
+		{nil, 0},
 	} {
-		maxDecoded = 0
-		rest, err := stripGlobalFlags(form)
+		limit, err := parse(t, c.args...)
 		if err != nil {
-			t.Fatalf("%v: %v", form, err)
+			t.Fatalf("%v: %v", c.args, err)
 		}
-		if maxDecoded != 32<<20 {
-			t.Errorf("%v: maxDecoded = %d, want %d", form, maxDecoded, 32<<20)
-		}
-		if len(rest) != 2 || rest[0] != "verify" || rest[1] != "w" {
-			t.Errorf("%v: rest = %v, want [verify w]", form, rest)
+		if got := limit.value(); got != c.want {
+			t.Errorf("%v: value = %d, want %d", c.args, got, c.want)
 		}
 	}
-
-	// A command's own flags must survive untouched, including one that looks
-	// like a global flag but arrives after the command.
-	maxDecoded = 0
-	rest, err := stripGlobalFlags([]string{"render", "w", "--max-decoded=1MiB"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if maxDecoded != 0 {
-		t.Errorf("a flag after the command set the ceiling to %d", maxDecoded)
-	}
-	if len(rest) != 3 {
-		t.Errorf("rest = %v, want all three arguments", rest)
-	}
-
-	if _, err := stripGlobalFlags([]string{"--max-decoded"}); err == nil {
-		t.Error("a bare --max-decoded with no size was accepted")
-	}
-	if _, err := stripGlobalFlags([]string{"--max-decoded=banana", "verify"}); err == nil {
+	if _, err := parse(t, "--max-decoded=banana"); err == nil {
 		t.Error("--max-decoded=banana was accepted")
 	}
 }
 
-// TestReadOptsBoundsARealDecode is the one that matters: it proves the flag
-// reaches an actual decode rather than merely parsing. Without it the plumbing
-// could be wired to nothing and every other test here would still pass.
-func TestReadOptsBoundsARealDecode(t *testing.T) {
-	t.Cleanup(func() { maxDecoded = 0 })
+// TestDecodeLimitBoundsARealDecode is the control that matters: it proves the
+// flag reaches a decode rather than merely parsing into a variable. Without it
+// the plumbing could be wired to nothing and every other test here would still
+// pass.
+func TestDecodeLimitBoundsARealDecode(t *testing.T) {
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "w.pile")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ch := chunk.New(reg, cube.Range{-64, 319})
 	stone := reg.BlockRuntimeID(block.Stone{})
 	for bx := range uint8(16) {
@@ -105,6 +89,12 @@ func TestReadOptsBoundsARealDecode(t *testing.T) {
 	d := &format.WorldData{Columns: []format.Column{
 		{X: 0, Z: 0, Col: &chunk.Column{Chunk: ch}},
 	}}
+
+	path := filepath.Join(t.TempDir(), "w.pile")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := format.WriteWorld(f, d, reg, format.Options{Compression: format.CompressionNone}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,19 +104,27 @@ func TestReadOptsBoundsARealDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	maxDecoded = 0
-	if _, err := format.ReadWorld(data, reg, readOpts()...); err != nil {
-		t.Fatalf("default ceiling refused a file this test just wrote: %v", err)
+	limit := func(args ...string) decodeLimit {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		fs.SetOutput(os.NewFile(0, os.DevNull))
+		l := addDecodeLimit(fs)
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return l
 	}
 
-	maxDecoded = 1
-	_, err = format.ReadWorld(data, reg, readOpts()...)
+	if _, err := format.ReadWorld(data, reg, limit().readOpts()...); err != nil {
+		t.Fatalf("the default ceiling refused a file this test just wrote: %v", err)
+	}
+
+	_, err = format.ReadWorld(data, reg, limit("--max-decoded=1").readOpts()...)
 	if !errors.Is(err, format.ErrDecodeBudget) {
 		t.Fatalf("with a 1-byte ceiling: err = %v, want ErrDecodeBudget", err)
 	}
-	// A policy refusal must not claim the file is corrupt: an operator who
-	// set the ceiling too low needs to be able to tell that apart from a bad
-	// file, and so does any tooling that branches on it.
+	// A policy refusal must not claim the file is corrupt: an operator who set
+	// the ceiling too low needs to tell that apart from a bad file, and so does
+	// any tooling that branches on it.
 	if errors.Is(err, format.ErrCorrupt) {
 		t.Error("a budget refusal reported the file as corrupt")
 	}

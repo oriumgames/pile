@@ -16,3 +16,7 @@ func umask(t *testing.T) uint32 {
 	syscall.Umask(m)
 	return uint32(m)
 }
+
+// mkfifo creates a named pipe. os.Open on one blocks until a writer appears,
+// which is why the code that walks a snapshot directory has to skip it.
+func mkfifo(path string) error { return syscall.Mkfifo(path, 0o644) }

@@ -11,16 +11,11 @@ import (
 )
 
 func main() {
-	args, err := stripGlobalFlags(os.Args[1:])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "pile:", err)
-		os.Exit(2)
-	}
-	if len(args) == 0 {
+	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	os.Args = append(os.Args[:1], args...)
+	var err error
 	switch os.Args[1] {
 	case "convert":
 		err = cmdConvert(os.Args[2:])
@@ -114,11 +109,10 @@ commands:
   prune   <world> --bounds x1,z1,x2,z2
                         drop chunks outside a block box
 
-global flags (before the command):
-  --max-decoded <size>  refuse a file that would decode into more than size,
-                        e.g. --max-decoded=256MiB. Default: the format's own
-                        ceilings, which a small file can legitimately reach —
-                        a valid 1.2 KB file decodes into about a gigabyte. Set
-                        this when reading a file you did not write.
+every command that decodes chunk content also takes:
+  --max-decoded n       refuse a file whose decode would exceed n bytes of live
+                        state (0, the default: the format's own ceiling). Set it
+                        for files you did not write; see SECURITY.md, "Loading a
+                        file somebody sent you"
 `)
 }

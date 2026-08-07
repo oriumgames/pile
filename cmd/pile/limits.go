@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,72 +10,51 @@ import (
 	"github.com/oriumgames/pile/format"
 )
 
-// maxDecoded is the decode ceiling every command reads through, set by the
-// global --max-decoded flag. Zero means the format's own §8 ceilings.
+// decodeLimit is the --max-decoded flag: the ceiling on the live decoded state
+// one file may produce, in bytes.
 //
-// The default is deliberately zero, i.e. unchanged behaviour. A CLI is pointed
-// at a file its user named, and a built-in cap that refuses a legitimately
-// large world would be a worse failure than the one it prevents: the user
-// cannot tell a refusal-by-policy from a corrupt file without reading the
-// error carefully, and there is no way for the tool to guess which worlds are
-// meant to be enormous. What the flag buys is that `pile verify` on a file
-// someone sent you can be bounded, which was previously impossible at any
-// price. See readme.md, "Files from other people".
-var maxDecoded int64
+// Every command that decodes chunk content takes it, because every command's
+// argument can be a file somebody sent you and the format's own ceilings are
+// set at what it can represent rather than at what a workstation wants to
+// spend. A file refused under it fails with format.ErrDecodeBudget, which does
+// not wrap format.ErrCorrupt: the file is bigger than you asked for, not
+// broken.
+//
+// Zero, the default, is the format's ceiling. There is deliberately no
+// non-zero default: picking one would make the tool refuse worlds an operator
+// legitimately has, and would do it silently.
+type decodeLimit struct{ max *int64 }
 
-// readOpts returns the format-level read options every decode in this package
-// should pass. Threading one helper rather than a flag per command means a new
-// command cannot forget the ceiling by omission.
-func readOpts() []format.ReadOption {
-	if maxDecoded <= 0 {
-		return nil
-	}
-	return []format.ReadOption{format.MaxDecodedBytes(maxDecoded)}
+// addDecodeLimit registers --max-decoded on a flag set. The value takes a
+// size suffix because the number is otherwise unreadable: nobody types
+// 268435456 and sees a quarter of a gigabyte, and a ceiling nobody can read is
+// a ceiling nobody checks.
+func addDecodeLimit(fs *flag.FlagSet) decodeLimit {
+	d := decodeLimit{max: new(int64)}
+	fs.Var(sizeValue{d.max}, "max-decoded",
+		"refuse a file whose decode would exceed this much live state, e.g. 256MiB (0: the format's own ceiling)")
+	return d
 }
 
-// providerOpts returns extra plus the ceiling, for the commands that go
-// through pile.Open rather than the format package directly. It takes the
-// caller's own options rather than being appended to them so that every
-// pile.Open in this package reads as providerOpts(...) and one that forgot the
-// ceiling is visible at a glance.
-func providerOpts(extra ...pile.Option) []pile.Option {
-	if maxDecoded <= 0 {
-		return extra
+// sizeValue parses a byte count with an optional binary or decimal suffix.
+type sizeValue struct{ n *int64 }
+
+func (v sizeValue) String() string {
+	if v.n == nil || *v.n == 0 {
+		return "0"
 	}
-	return append(extra, pile.MaxDecodedBytes(maxDecoded))
+	return strconv.FormatInt(*v.n, 10)
 }
 
-// stripGlobalFlags consumes the global flags that may appear before the
-// subcommand and returns what is left. They are handled here rather than by
-// each command's own FlagSet because there are twenty commands and a ceiling
-// that only some of them honour is worse than none: a user who sets it expects
-// it to hold everywhere.
-func stripGlobalFlags(args []string) ([]string, error) {
-	for len(args) > 0 {
-		arg := args[0]
-		name, value, hasValue := strings.Cut(arg, "=")
-		switch name {
-		case "--max-decoded", "-max-decoded":
-			if !hasValue {
-				if len(args) < 2 {
-					return nil, fmt.Errorf("%s needs a size, e.g. %s=256MiB", name, name)
-				}
-				value, args = args[1], args[1:]
-			}
-			n, err := parseSize(value)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", name, err)
-			}
-			maxDecoded = n
-			args = args[1:]
-		default:
-			return args, nil
-		}
+func (v sizeValue) Set(s string) error {
+	n, err := parseSize(s)
+	if err != nil {
+		return err
 	}
-	return args, nil
+	*v.n = n
+	return nil
 }
 
-// parseSize reads a byte count with an optional binary or decimal suffix.
 func parseSize(s string) (int64, error) {
 	t := strings.TrimSpace(s)
 	if t == "" {
@@ -98,8 +78,8 @@ func parseSize(s string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%q is not a size", s)
 	}
-	if n <= 0 {
-		return 0, fmt.Errorf("%q is not a positive size", s)
+	if n < 0 {
+		return 0, fmt.Errorf("%q is negative", s)
 	}
 	if n > (1<<62)/mult {
 		return 0, fmt.Errorf("%q overflows", s)
@@ -112,4 +92,36 @@ func cutSuffixFold(s, suffix string) (string, bool) {
 		return s, false
 	}
 	return s[:len(s)-len(suffix)], true
+}
+
+// providerOpts returns the provider options the limit implies.
+func (d decodeLimit) providerOpts() []pile.Option {
+	if d.max == nil || *d.max <= 0 {
+		return nil
+	}
+	return []pile.Option{pile.MaxDecodedBytes(*d.max)}
+}
+
+// structureOpts returns the structure options the limit implies.
+func (d decodeLimit) structureOpts() []pile.StructureOption {
+	if d.max == nil || *d.max <= 0 {
+		return nil
+	}
+	return []pile.StructureOption{pile.StructureMaxDecodedBytes(*d.max)}
+}
+
+// readOpts returns the codec read options the limit implies.
+func (d decodeLimit) readOpts() []format.ReadOption {
+	if d.max == nil || *d.max <= 0 {
+		return nil
+	}
+	return []format.ReadOption{format.MaxDecodedBytes(*d.max)}
+}
+
+// value returns the raw ceiling, for callers that carry it in a struct field.
+func (d decodeLimit) value() int64 {
+	if d.max == nil {
+		return 0
+	}
+	return *d.max
 }

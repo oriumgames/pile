@@ -61,6 +61,7 @@ func dimContentHash(df *pile.DimFile, reg world.BlockRegistry) (uint64, error) {
 func cmdPatch(args []string) error {
 	fs := flag.NewFlagSet("patch", flag.ContinueOnError)
 	out := fs.String("o", "", "output patch file (required)")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,11 +70,11 @@ func cmdPatch(args []string) error {
 	}
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
-	oldW, err := pile.LoadWorldFiles(fs.Arg(0), reg)
+	oldW, err := pile.LoadWorldFiles(fs.Arg(0), reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
-	newW, err := pile.LoadWorldFiles(fs.Arg(1), reg)
+	newW, err := pile.LoadWorldFiles(fs.Arg(1), reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -144,6 +145,7 @@ func cmdApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	force := fs.Bool("force", false, "apply even if the target does not match the patch's base world")
 	noBackup := fs.Bool("no-backup", false, "skip the snapshots/pre-apply backup")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -166,7 +168,7 @@ func cmdApply(args []string) error {
 	}
 	r := bytes.NewReader(raw[6:])
 
-	wf, err := pile.LoadWorldFiles(dir, reg)
+	wf, err := pile.LoadWorldFiles(dir, reg, limit.providerOpts()...)
 	if err != nil {
 		return err
 	}
@@ -227,7 +229,7 @@ func cmdApply(args []string) error {
 		if _, err := readFull(r, worldBytes); err != nil {
 			return err
 		}
-		wd, err := format.ReadWorld(worldBytes, reg, readOpts()...)
+		wd, err := format.ReadWorld(worldBytes, reg, limit.readOpts()...)
 		if err != nil {
 			return fmt.Errorf("patch world data: %w", err)
 		}
