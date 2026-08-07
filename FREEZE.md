@@ -139,9 +139,22 @@ Nothing below is optional. Each line names its exit criterion.
       `SECURITY.md`.
 - [ ] Decoders never panic on any input. *Exit: the four fuzz targets run
       clean for an extended session, not the 10s smoke run.*
-- [ ] Crash durability is tested, not merely implemented. *Exit: an injectable
+- [x] Crash durability is tested, not merely implemented. *Exit: an injectable
       filesystem that fails or truncates at each write during a checkpoint,
       asserting the result is always either the old checkpoint or the new one.*
+      `format/faultfs_test.go` holds two crash models — a torn prefix that
+      kills the process after n bytes of a chosen write, and loss of any subset
+      of the writes in flight since the last successful fsync — and
+      `TestCheckpointTornWriteExhaustive` runs the first at **every byte
+      position of every write** a checkpoint issues, 9,073 of them over three
+      scenarios covering all five frame kinds, reopening and comparing the
+      whole world state each time. The claim holds: no position produced
+      anything but the old checkpoint or the new one. Every durability step has
+      a negative control, one of which was red when written — a checkpoint that
+      failed part way had already cleared the dirty flag of whatever it managed
+      to write, so a metadata-only save whose fsync failed reported success on
+      the retry without writing a footer. `DURABILITY.md` records the models,
+      the control table, the fix, and what the models do not reach.
 - [x] The threat model is written down. **xxHash64 is not a cryptographic
       hash.** The format offers integrity against corruption, not against
       tampering: an attacker who can author content and induce truncation can

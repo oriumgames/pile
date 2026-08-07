@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -17,6 +18,22 @@ import (
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/klauspost/compress/dict"
 )
+
+// indexedFile is the whole filesystem surface an indexed world uses. It is an
+// interface rather than *os.File for one reason: the durability claim of §5.6
+// — a torn write leaves either the old checkpoint or the new one — is only
+// worth as much as the adversarial filesystem it has been run against, and
+// there is no way to fail or truncate a chosen write of a real file. *os.File
+// is the only implementation outside tests.
+type indexedFile interface {
+	io.ReaderAt
+	io.WriterAt
+	io.Writer
+	io.Closer
+	Sync() error
+	Truncate(size int64) error
+	Stat() (os.FileInfo, error)
+}
 
 // Dictionary training thresholds: below these, a shared dictionary is not
 // worth its overhead.
@@ -55,10 +72,14 @@ var ErrNoColumn = errors.New("pile: no column at position")
 // rewrites the live set into a fresh, garbage-free file.
 type IndexedWorld struct {
 	mu   sync.Mutex
-	f    *os.File
+	f    indexedFile
 	path string
-	reg  world.BlockRegistry
-	opts Options
+	// reopen replaces the file handle after Compact has renamed a fresh file
+	// over this one. nil means os.OpenFile; only tests set it, so a compaction
+	// can be crashed the same way a checkpoint can.
+	reopen func(path string) (indexedFile, error)
+	reg    world.BlockRegistry
+	opts   Options
 
 	// hdrBytes is the file's 16-byte header, authenticated by every
 	// checkpoint hash.
@@ -145,6 +166,11 @@ type IndexedWorld struct {
 	// reporting success. pendingFooterOff is that footer's offset.
 	footerPending    bool
 	pendingFooterOff int64
+	// checkpointPending marks a checkpoint that began writing and did not
+	// reach a durable footer. The dirty flags cannot carry that on their own:
+	// each is cleared as its frame is appended, so a checkpoint that failed
+	// after the last of them would look like a world with nothing to save.
+	checkpointPending bool
 }
 
 // frameRef locates a stored frame and authenticates it: every frame the
@@ -214,6 +240,12 @@ func CreateIndexed(path string, reg world.BlockRegistry, opts Options) (*Indexed
 	if err != nil {
 		return nil, fmt.Errorf("pile: create indexed world: %w", err)
 	}
+	return createIndexedOn(f, path, reg, opts)
+}
+
+// createIndexedOn is CreateIndexed with the file already open, so a test can
+// supply one that fails or tears at a chosen write.
+func createIndexedOn(f indexedFile, path string, reg world.BlockRegistry, opts Options) (*IndexedWorld, error) {
 	w, err := newIndexedWorld(f, path, reg, opts, false)
 	if err != nil {
 		_ = f.Close()
@@ -267,6 +299,12 @@ func OpenIndexed(path string, reg world.BlockRegistry, readOnly bool) (*IndexedW
 	if err != nil {
 		return nil, err
 	}
+	return openIndexedOn(f, path, reg, readOnly)
+}
+
+// openIndexedOn is OpenIndexed with the file already open, so a test can
+// supply one that fails or tears at a chosen write.
+func openIndexedOn(f indexedFile, path string, reg world.BlockRegistry, readOnly bool) (*IndexedWorld, error) {
 	w, err := newIndexedWorld(f, path, reg, Options{Compression: CompressionDefault}, readOnly)
 	if err != nil {
 		_ = f.Close()
@@ -279,7 +317,7 @@ func OpenIndexed(path string, reg world.BlockRegistry, readOnly bool) (*IndexedW
 	return w, nil
 }
 
-func newIndexedWorld(f *os.File, path string, reg world.BlockRegistry, opts Options, readOnly bool) (*IndexedWorld, error) {
+func newIndexedWorld(f indexedFile, path string, reg world.BlockRegistry, opts Options, readOnly bool) (*IndexedWorld, error) {
 	reg.Finalize()
 	return &IndexedWorld{
 		f: f, path: path, reg: reg, opts: opts, readOnly: readOnly,
@@ -490,6 +528,7 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.biomeUnknown, w.biomeUnkName = nil, nil
 	w.metaRef, w.dirRef = frameRef{}, frameRef{}
 	w.footerPending = false
+	w.checkpointPending = false
 	w.recovered = false
 	w.settings, w.userData, w.markers, w.border = nil, nil, nil, nil
 	// The codecs are shared process-wide and keyed by the dictionary, so this
@@ -1209,6 +1248,15 @@ func (w *IndexedWorld) appendFrameWith(body []byte, plain bool, limit int) (fram
 	return ref, stored, nil
 }
 
+// reopenFile opens the file at path for the compaction that has just renamed a
+// fresh one over it.
+func (w *IndexedWorld) reopenFile(path string) (indexedFile, error) {
+	if w.reopen != nil {
+		return w.reopen(path)
+	}
+	return os.OpenFile(path, os.O_RDWR, 0)
+}
+
 // truncateToEnd discards anything written past the logical end of the file.
 // It is best effort: if the truncation itself fails there is nothing further
 // to be done here, and the recovery scan still bounds what a reader will
@@ -1753,9 +1801,21 @@ func (w *IndexedWorld) checkpointLocked() error {
 		w.footerPending = false
 		w.prevFooterOff = w.pendingFooterOff
 	}
-	if !w.recordsDirty && !w.metaDirty && w.pendingBlkN == 0 && w.pendingBioN == 0 {
+	// A checkpoint that fails part way through has already cleared the dirty
+	// flag of whatever it did manage to write: metaDirty goes as the meta frame
+	// is appended, which is several writes and an fsync before the footer that
+	// would make it durable. Nothing else records that a checkpoint is owed, so
+	// a metadata-only change whose sync failed found nothing to do on the next
+	// call and returned success over a footer that was never written — the
+	// change was reported saved and was gone at the next open. Records escaped
+	// only because recordsDirty happens to be cleared last, which is not a
+	// property to rest on.
+	if !w.recordsDirty && !w.metaDirty && w.pendingBlkN == 0 && w.pendingBioN == 0 && !w.checkpointPending {
 		return nil
 	}
+	// From here to the footer's sync a checkpoint is owed whatever the dirty
+	// flags say.
+	w.checkpointPending = true
 	// Flush pending palette segments.
 	if w.pendingBlkN > 0 {
 		seg := &writer{}
@@ -1895,6 +1955,7 @@ func (w *IndexedWorld) checkpointLocked() error {
 	}
 	w.footerPending = false
 	w.recordsDirty = false
+	w.checkpointPending = false
 	w.prevFooterOff = footerPos
 	return nil
 }
@@ -2010,7 +2071,7 @@ func (w *IndexedWorld) Compact() error {
 	syncErr := syncDirOf(path)
 
 	_ = w.f.Close()
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := w.reopenFile(path)
 	if err != nil {
 		w.closed = true // no usable handle; refuse further writes
 		return errors.Join(syncErr, err)
