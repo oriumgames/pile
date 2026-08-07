@@ -6,7 +6,9 @@ package format
 // allocation that no recover() can catch; it also recurses per nesting level,
 // so deeply nested input can exhaust the stack. Every blob is therefore walked
 // here first: each declared length must fit the bytes that remain, and nesting
-// is capped. The walk allocates nothing and is a single linear pass.
+// is capped, and the number of values the blob decodes into is bounded because
+// the byte bound alone does not cover a list of empty compounds. The walk is a
+// single linear pass; it allocates one string per compound key it compares.
 
 // maxNBTDepth bounds compound/list nesting.
 const maxNBTDepth = 64
@@ -15,6 +17,21 @@ const maxNBTDepth = 64
 type nbtWalker struct {
 	b   []byte
 	off int
+	// elems counts the values the blob will decode into. Lengths are bounded
+	// against the bytes that remain, which bounds arrays but not lists of
+	// compounds: an empty compound is one byte and one map.
+	elems int
+}
+
+// count charges n decoded containers against the blob's budget. Only values
+// that allocate one object each are charged: scalars inside a list or an array
+// share a single slice and cost nothing here.
+func (w *nbtWalker) count(n int) error {
+	w.elems += n
+	if w.elems > maxNBTElements {
+		return corruptf("nbt: more than %d values", maxNBTElements)
+	}
+	return nil
 }
 
 func (w *nbtWalker) remaining() int { return len(w.b) - w.off }
@@ -191,6 +208,15 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 		// able to fit in what remains.
 		if int64(n)*int64(minSize) > int64(w.remaining()) {
 			return corruptf("nbt: list of %d elements (type %d) exceeds remaining input", n, et)
+		}
+		// A list of scalars decodes into one slice, so its length costs
+		// nothing per element. A list of compounds or of lists decodes into
+		// one container per element, and that is the amplification: an empty
+		// compound is a single byte and a whole map.
+		if et == tagCompound || et == tagList {
+			if err := w.count(int(n)); err != nil {
+				return err
+			}
 		}
 		for range n {
 			if err := w.payload(et, depth+1); err != nil {

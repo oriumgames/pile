@@ -253,11 +253,15 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 	// Parse phase (serial): record boundaries are implicit, so records must
 	// be walked in order; parsing is cheap slicing. Capacity is bounded by
 	// what the input could actually contain (a record is >= 8 bytes).
-	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1))
+	// Capacity is a hint, not a promise: a recRaw is far larger than the
+	// smallest record that can produce one, so sizing it from the input lets a
+	// few kilobytes ask for gigabytes. Cap the hint and let append grow.
+	raws := make([]recRaw, 0, min(chunkN, r.remaining()/8+1, maxPrealloc))
 	// Blob ids are assigned in first-use order (§3.4), which is visible on the
 	// wire: the first reference must be 0, and each later one must either
 	// repeat an id already seen or be exactly the next unseen id. A table
 	// numbered any other way is a second encoding of the same file.
+	budget := &storageBudget{limit: maxDecodedStorages}
 	used := make([]bool, len(blobs))
 	nextID := uint64(0)
 	src := tableBlobSource(blobs, used, &nextID)
@@ -289,7 +293,7 @@ func ReadWorld(file []byte, reg world.BlockRegistry) (*WorldData, error) {
 		} else {
 			prevKey = key
 		}
-		rr, err := parseRecordBody(r, src, haveLight, x, z)
+		rr, err := parseRecordBodyBudgeted(r, src, haveLight, x, z, budget)
 		if err != nil {
 			return nil, err
 		}
@@ -407,6 +411,26 @@ type tickRawEntry struct {
 
 // parseRecordBody reads one chunk record without applying it.
 func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (recRaw, error) {
+	return parseRecordBodyBudgeted(r, src, haveLight, x, z, &storageBudget{limit: maxDecodedStorages})
+}
+
+// storageBudget bounds how many paletted storages one file decodes into.
+type storageBudget struct {
+	limit, used int
+}
+
+func (b *storageBudget) charge(n int) error {
+	if b == nil {
+		return nil
+	}
+	b.used += n
+	if b.used > b.limit {
+		return corruptf("file decodes into more than %d section storages", b.limit)
+	}
+	return nil
+}
+
+func parseRecordBodyBudgeted(r *reader, src blobSource, haveLight bool, x, z int32, budget *storageBudget) (recRaw, error) {
 	rr := recRaw{x: x, z: z}
 	var err error
 	if rr.minSection, err = r.svarint(); err != nil {
@@ -447,6 +471,12 @@ func parseRecordBody(r *reader, src blobSource, haveLight bool, x, z int32) (rec
 			// A present section with no layers is a second encoding of an
 			// absent section.
 			return rr, corruptf("section %d is present but declares no layers", i)
+		}
+		// Every stored layer becomes a live paletted storage, and one blob
+		// reference is a single byte. Bounding the input does not bound the
+		// result, so the storages a file decodes into are budgeted directly.
+		if err := budget.charge(layerN); err != nil {
+			return rr, err
 		}
 		layers := make([]decBlob, layerN)
 		for l := range layerN {
@@ -665,12 +695,21 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 	}
 
 	col.Col = &chunk.Column{Chunk: ch}
+	// Every position a record names has to lie inside the span the record
+	// declares. The span itself is validated, its contents were not, and a
+	// block entity's Y is an unbounded svarint: dragonfly indexes its
+	// sub chunk array with int16(y) and no bounds check, so an out-of-range
+	// value panics the server at world load rather than failing the decode.
+	loY, hiY := rr.minSection*16, (rr.minSection+int64(rr.sectionN))*16-1
 	seenBE := make(map[beKey]struct{}, len(rr.bes))
 	var prevBE *beKey
 	for _, be := range rr.bes {
 		// At most one block entity per position: two a reader cannot tell
 		// apart leave their order decided by nothing, which is what §4.8's
 		// totality argument rests on.
+		if be.y < loY || be.y > hiY {
+			return Column{}, corruptf("block entity at Y %d is outside the chunk's span %d..%d", be.y, loY, hiY)
+		}
 		k := beKey{packedXZ: be.packedXZ, y: be.y}
 		if _, dup := seenBE[k]; dup {
 			return Column{}, corruptf("two block entities at one position in chunk (%d,%d)", x, z)
@@ -719,6 +758,9 @@ func applyRecord(rr *recRaw, reg world.BlockRegistry, rids, biomeIDs []uint32, a
 		}
 		// Two updates identical in position, firing tick and block reference
 		// are indistinguishable, so their order is decided by nothing.
+		if t.y < loY || t.y > hiY {
+			return Column{}, corruptf("scheduled update at Y %d is outside the chunk's span %d..%d", t.y, loY, hiY)
+		}
 		k := tickKey{packedXZ: t.packedXZ, y: t.y, at: t.at, ref: t.ref}
 		if _, dup := seenTick[k]; dup {
 			return Column{}, corruptf("duplicate scheduled update in chunk (%d,%d)", x, z)

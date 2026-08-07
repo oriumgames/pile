@@ -474,6 +474,11 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.dict, w.dictRef, w.dictEnc, w.dictDec = nil, frameRef{}, nil, nil
 }
 
+// maxCheckpointChain bounds how far recovery walks back. Each link costs a
+// read and a hash of a whole directory frame, so an unbounded walk over forged
+// footers is a hang rather than a failed open.
+const maxCheckpointChain = 256
+
 // adoptCheckpoint walks footer candidates newest-first and adopts the first
 // whose directory (including palette segments, metadata and dictionary)
 // validates completely, so a torn or rotten checkpoint falls back to the
@@ -487,9 +492,12 @@ func (w *IndexedWorld) adoptCheckpoint() error {
 	for _, c := range cands {
 		seen[c.off] = true
 	}
-	for i := 0; i < len(cands); i++ {
+	// The backward scan caps itself; the chain walk did not. Every link costs a
+	// read and a hash of a directory frame, and a hostile file can carry as
+	// many forged footers as fit in it, so the walk needs the same ceiling.
+	for i := 0; i < len(cands) && len(cands) < maxCheckpointChain; i++ {
 		prev := cands[i].prev
-		for prev != 0 && !seen[prev] {
+		for prev != 0 && !seen[prev] && len(cands) < maxCheckpointChain {
 			seen[prev] = true
 			c, ok := w.tryFooter(prev)
 			if !ok {
@@ -1397,37 +1405,37 @@ func (w *IndexedWorld) Store(c Column) error {
 // none is stored.
 func (w *IndexedWorld) Column(x, z int32) (Column, error) {
 	w.mu.Lock()
-	body, rids, biomeIDs, unknown, unkStates, storeLight, err := w.fetchRecordLocked(x, z)
+	body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, err := w.fetchRecordLocked(x, z)
 	w.mu.Unlock()
 	if err != nil {
 		return Column{}, err
 	}
-	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, storeLight, x, z)
+	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z)
 }
 
 // columnHeld is Column with w.mu held for the entire call (used by Compact so
 // no Store can interleave).
 func (w *IndexedWorld) columnHeld(x, z int32) (Column, error) {
-	body, rids, biomeIDs, unknown, unkStates, storeLight, err := w.fetchRecordLocked(x, z)
+	body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, err := w.fetchRecordLocked(x, z)
 	if err != nil {
 		return Column{}, err
 	}
-	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, storeLight, x, z)
+	return w.applyRecordBody(body, rids, biomeIDs, unknown, unkStates, bioUnknown, bioNames, storeLight, x, z)
 }
 
 // fetchRecordLocked reads, verifies and decompresses a record frame. Caller
 // holds w.mu.
-func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, storeLight bool, err error) {
+func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, storeLight bool, err error) {
 	e, ok := w.dir[[2]int32{x, z}]
 	if !ok {
-		return nil, nil, nil, nil, nil, false, ErrNoColumn
+		return nil, nil, nil, nil, nil, nil, nil, false, ErrNoColumn
 	}
 	stored := make([]byte, e.length)
 	if _, err := w.f.ReadAt(stored, e.off); err != nil {
-		return nil, nil, nil, nil, nil, false, err
+		return nil, nil, nil, nil, nil, nil, nil, false, err
 	}
 	if xxhash.Sum64(stored) != e.hash {
-		return nil, nil, nil, nil, nil, false, fmt.Errorf("%w: record (%d,%d) checksum mismatch", ErrChecksum, x, z)
+		return nil, nil, nil, nil, nil, nil, nil, false, fmt.Errorf("%w: record (%d,%d) checksum mismatch", ErrChecksum, x, z)
 	}
 	if w.compressed {
 		dec := sharedFrameDecoder()
@@ -1436,28 +1444,31 @@ func (w *IndexedWorld) fetchRecordLocked(x, z int32) (body []byte, rids, biomeID
 		}
 		body, err = dec.DecodeAll(stored, nil)
 		if err != nil {
-			return nil, nil, nil, nil, nil, false, corruptf("decompress record (%d,%d): %v", x, z, err)
+			return nil, nil, nil, nil, nil, nil, nil, false, corruptf("decompress record (%d,%d): %v", x, z, err)
 		}
 	} else {
 		// The ceiling is a rule about the record, so an uncompressed one past
 		// it is just as invalid as a compressed one that decodes past it.
 		if len(stored) > maxDecodedFrame {
-			return nil, nil, nil, nil, nil, false,
+			return nil, nil, nil, nil, nil, nil, nil, false,
 				corruptf("record (%d,%d) is %d bytes, limit %d", x, z, len(stored), maxDecodedFrame)
 		}
 		body = stored
 	}
-	return body, w.rids, w.biomeIDs, w.unknown, w.unkStates, w.opts.StoreLight, nil
+	// Every palette slice the decode needs is snapshotted here, under the lock.
+	// Reading any of them off the struct afterwards races a concurrent Store or
+	// Compact, and a stale length against fresh references is an index panic.
+	return body, w.rids, w.biomeIDs, w.unknown, w.unkStates, w.biomeUnknown, w.biomeUnkName, w.opts.StoreLight, nil
 }
 
 // applyRecordBody decodes a fetched record body into a Column.
-func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, storeLight bool, x, z int32) (Column, error) {
+func (w *IndexedWorld) applyRecordBody(body []byte, rids, biomeIDs []uint32, unknown []int32, unkStates []BlockState, bioUnknown []int32, bioNames []string, storeLight bool, x, z int32) (Column, error) {
 	r := &reader{b: body}
 	// Indexed mode never elides a biome section, so it names no default; a
 	// section absent because biomes were skipped still takes the version-stable
 	// fallback rather than a numeric id.
 	col, err := decodeRecordBody(r, w.reg, rids, biomeIDs, w.reg.AirRuntimeID(), fallbackBiomeID(), false, storeLight, -1, unknown, unkStates,
-		w.biomeUnknown, w.biomeUnkName,
+		bioUnknown, bioNames,
 		func(r *reader) (decBlob, error) { return decodeOneBlob(r) }, x, z)
 	if err != nil {
 		return Column{}, err

@@ -413,4 +413,16 @@ var invariants = []Invariant{
 		Tests: []string{"TestRejectsDuplicateSegmentReference"},
 		Note:  "A segment with no entries is pure garbage two writers could differ on.",
 	},
+	{
+		Name: "decoders bound the result, not only the input", Category: Bound, Enforce: Decoded,
+		Rules: []string{"74948bd9"},
+		Tests: []string{"TestBoundsDecodedStorages", "TestBoundsDecodedNBTContainers", "TestBoundsCheckpointChain"},
+		Note:  "Several declared values cost far more to decode than to write: a blob reference is one byte and a live storage, a TAG_End inside a list of compounds is one byte and a whole map, a 44-byte footer names a frame that may decompress to 512 MiB. Bounding the count against the remaining bytes does not bound any of those.",
+	},
+	{
+		Name: "positions lie inside the declared span", Category: Bound, Enforce: Decoded,
+		Rules: []string{"acfe3166"},
+		Tests: []string{"TestRejectsOutOfSpanPositions"},
+		Note:  "The span is validated; its contents were not. A block-entity Y outside it is a coordinate the caller's own array cannot address.",
+	},
 }

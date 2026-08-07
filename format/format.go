@@ -231,6 +231,25 @@ const (
 	// a one-section chunk based at 2^40 is small and still unrepresentable.
 	minSectionIdx = -2048
 	maxSectionIdx = 2047
+	// maxDecodedStorages bounds how many paletted storages one file may decode
+	// into. Every stored layer costs a single blob reference on the wire and
+	// about a hundred bytes of live objects, so the byte ceilings bound the
+	// input without bounding the result: a chunk may declare 4096 sections of
+	// 255 layers each, and a few hundred kilobytes of repeated references then
+	// materialise tens of gigabytes. A real 10,000-chunk overworld uses about
+	// half a million, so this leaves an order of magnitude of headroom.
+	maxDecodedStorages = 1 << 22
+	// maxNBTElements bounds how many values one NBT blob may decode into. The
+	// structural walk bounds declared lengths against the bytes that remain,
+	// which is enough for arrays but not for lists of compounds: an empty
+	// compound costs one byte and allocates a map, so a 16 MiB blob can ask
+	// for sixteen million of them.
+	maxNBTElements = 1 << 20
+	// maxPrealloc caps any capacity hint taken from input. Bounding a count by
+	// the bytes that remain is not enough on its own when the decoded element
+	// is much larger than the bytes that produce it: the guard has to bound the
+	// allocation, not the count. Growing past this costs one reallocation.
+	maxPrealloc = 4096
 	// maxLayers is one below Bedrock's byte-encoded sub chunk storage count.
 	// Dragonfly addresses a layer with a uint8 and grows its storage slice
 	// with `for uint8(len(storages)) <= layer`, so a sub chunk holding 256

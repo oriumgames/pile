@@ -37,6 +37,7 @@
 673fb00d A decoder MUST NOT treat a uniform-air layer 0 as an absent section:
 6dd8dd9c only meaningful when bit 3 is set, and MUST be zero when it is clear
 718f271d MUST be non-zero, for the reason §3.1 gives for overrides:
+74948bd9 Decoders MUST therefore bound the **result** as well as the input, and the three ceilings above exist for exactly that.
 7984f33b Sections whose biomes are uniformly that biome MUST be omitted from `biomePresence`, and decoders MUST fill absent sections with the default.
 7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
 7b6bfb2d Readers MUST refuse a frame that asks for more.
@@ -50,6 +51,7 @@
 9c7d6645 The narrowest sufficient width is the only valid one, so writers MUST select it and decoders MUST reject any other.
 a4590032 Readers MUST reject unknown versions and unknown flag bits (they may change payload meaning).
 a9ee3ac1 Writers MUST drop **trailing** all-air layers, since a layer past the last stored one already reads as air, and MUST keep internal ones, encoded as an ordinary uniform section blob referencing air.
+acfe3166 a record's declared span is validated, so every block-entity and scheduled-update position it carries MUST lie inside that span.
 ad7fe57e In **mode 0** — that is, in a solid world and in a structure alike — writers MUST sort the palette by (writer-only:
 af37ce22 In a **solid** file the directory, generation and previous-footer words carry no information and MUST be zero; readers MUST reject a non-zero value.
 af4b369f The ceiling is therefore 255, and decoders MUST reject a larger `layerN`.

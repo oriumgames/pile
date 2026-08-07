@@ -525,6 +525,7 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 	}
 
 	air := reg.AirRuntimeID()
+	budget := &storageBudget{limit: maxDecodedStorages}
 	presence, err := r.take((len(s.Cells) + 7) / 8)
 	if err != nil {
 		return nil, err
@@ -542,6 +543,11 @@ func ReadStructure(file []byte, reg world.BlockRegistry) (*StructureData, error)
 		}
 		if layerN == 0 {
 			return nil, corruptf("cell %d is present but declares no layers", i)
+		}
+		// The same budget a world record is held to: a layer is one reference
+		// on the wire and a live storage in memory.
+		if err := budget.charge(layerN); err != nil {
+			return nil, err
 		}
 		sub := chunk.NewSubChunk(air)
 		for l := range layerN {

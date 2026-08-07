@@ -989,6 +989,9 @@ remain, not from these ceilings.
 | item | limit |
 |------|-------|
 | NBT nesting depth | 64 |
+| NBT containers per blob (compounds and nested lists) | 1 048 576 |
+| section storages decoded per file | 4 194 304 |
+| checkpoint chain links followed during recovery | 256 |
 | string length | 65 535 |
 | blob length | 16 MiB |
 | chunk records in a solid body | 4 294 967 295 (the largest value a u32 holds) |
@@ -1029,6 +1032,22 @@ rather than when it is finally written.
 
 Decoders MUST NOT panic on any input; every violation is a clean error. Sizes
 derived from untrusted counts must be validated before allocation.
+
+Bounding a count against the bytes that remain is necessary and not sufficient,
+because several of the values a file declares cost far more to decode than to
+write. One blob reference is a single byte and becomes a live section storage;
+one byte of `TAG_End` inside a list of compounds becomes a whole map; a
+44-byte footer names a directory frame that may decompress to 512 MiB. Decoders
+MUST therefore bound the **result** as well as the input, and the three
+ceilings above exist for exactly that. A conforming reader rejects a file that
+would decode into more section storages, more NBT containers, or a longer
+recovery chain than they allow, even though every individual field is within
+its own limit.
+
+Positions are part of this: a record's declared span is validated, so every
+block-entity and scheduled-update position it carries MUST lie inside that
+span. A reader that accepts one outside it hands its caller a coordinate the
+caller's own array cannot address.
 
 ---
 

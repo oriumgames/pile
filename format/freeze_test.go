@@ -3439,8 +3439,9 @@ func TestReaderEnforcesCollectionOrder(t *testing.T) {
 		rec.u8(0)      // no block sections
 		rec.u8(0)      // no biome sections
 		rec.uvarint(2) // two block entities
-		lo := func(bw *writer) { bw.u8(0x11); bw.svarint(-60); bw.blob(emptyCompound()) }
-		hi := func(bw *writer) { bw.u8(0x22); bw.svarint(-60); bw.blob(emptyCompound()) }
+		// Inside the record's declared span of 0..15.
+		lo := func(bw *writer) { bw.u8(0x11); bw.svarint(5); bw.blob(emptyCompound()) }
+		hi := func(bw *writer) { bw.u8(0x22); bw.svarint(5); bw.blob(emptyCompound()) }
 		if swap {
 			hi(rec)
 			lo(rec)
@@ -3552,5 +3553,148 @@ func TestRejectsNonMinimalUniformWidth(t *testing.T) {
 	}
 	if _, err := decodeOneBlob(&reader{b: blob(widthU16, 8192)}); err == nil {
 		t.Error("a single-entry palette with u16 indices was accepted")
+	}
+}
+
+// Security bounds. Each of these caps something the byte ceilings do not: the
+// input is bounded, the result was not.
+
+// TestRejectsOutOfSpanPositions: a record's span is validated, its contents
+// were not. Block-entity Y is an unbounded svarint, and dragonfly indexes its
+// sub chunk array with int16(y) and no bounds check, so an out-of-range value
+// panics the server at world load rather than failing the decode.
+func TestRejectsOutOfSpanPositions(t *testing.T) {
+	rec := func(beY int64) []byte {
+		w := &writer{}
+		w.svarint(0) // minSection: span is 0..15
+		w.uvarint(1)
+		w.u8(0)
+		w.u8(0)
+		w.uvarint(1) // one block entity
+		w.u8(0x11)
+		w.svarint(beY)
+		w.blob(emptyCompound())
+		w.uvarint(0)
+		w.svarint(0)
+		w.uvarint(0)
+		w.blob(nil)
+		return w.bytes()
+	}
+	apply := func(beY int64) error {
+		rr, err := parseRecordBody(&reader{b: rec(beY)}, tableBlobSource(nil, nil, nil), false, 0, 0)
+		if err != nil {
+			return err
+		}
+		_, err = applyRecord(&rr, testRegistry(t), nil, nil, 0, 0, false, -1, nil, nil, nil, nil)
+		return err
+	}
+	if err := apply(5); err != nil {
+		t.Fatalf("an in-span block entity was rejected: %v", err)
+	}
+	for _, y := range []int64{-1, 16, 32768, -32769, 1 << 40} {
+		if err := apply(y); err == nil {
+			t.Errorf("a block entity at Y %d, outside the span 0..15, was accepted", y)
+		}
+	}
+}
+
+// TestBoundsDecodedStorages: a stored layer is one blob reference on the wire
+// and a live paletted storage in memory, so a few hundred kilobytes of
+// repeated references can materialise tens of gigabytes. The byte ceilings
+// bound the input and not the result.
+func TestBoundsDecodedStorages(t *testing.T) {
+	b := &storageBudget{limit: maxDecodedStorages}
+	if err := b.charge(maxDecodedStorages); err != nil {
+		t.Fatalf("the budget refused its own limit: %v", err)
+	}
+	if err := b.charge(1); err == nil {
+		t.Fatal("the budget did not stop at its limit")
+	}
+	// And it accumulates across records rather than resetting per record,
+	// which is what makes it a file-wide ceiling.
+	c := &storageBudget{limit: 10}
+	if err := c.charge(6); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.charge(6); err == nil {
+		t.Fatal("the budget reset between charges")
+	}
+}
+
+// TestBoundsDecodedNBTContainers: the structural walk bounds declared lengths
+// against the bytes that remain, which covers a list of scalars sharing one
+// slice but not a list of compounds, where an empty element costs one byte and
+// allocates a whole map.
+func TestBoundsDecodedNBTContainers(t *testing.T) {
+	// A list of empty compounds: one byte each on the wire, one map each once
+	// decoded.
+	blob := func(n int32) []byte {
+		w := &writer{}
+		w.u8(tagCompound)
+		w.b = append(w.b, 0, 0) // unnamed root
+		w.u8(tagList)
+		w.b = append(w.b, 1, 0, 'a')
+		w.u8(tagCompound)
+		w.i32(n)
+		for range n {
+			w.u8(tagEnd)
+		}
+		w.u8(tagEnd)
+		return w.bytes()
+	}
+	if err := validateNBT(blob(16)); err != nil {
+		t.Fatalf("a small list of compounds was rejected: %v", err)
+	}
+	if err := validateNBT(blob(maxNBTElements + 1)); err == nil {
+		t.Fatal("a list of more compounds than the ceiling was accepted")
+	}
+	// A list of scalars is one slice however long, so the ceiling must not
+	// reject a legal one.
+	scalars := &writer{}
+	scalars.u8(tagCompound)
+	scalars.b = append(scalars.b, 0, 0)
+	scalars.u8(tagList)
+	scalars.b = append(scalars.b, 1, 0, 'a')
+	scalars.u8(tagByte)
+	scalars.i32(maxNBTElements + 1)
+	scalars.b = append(scalars.b, make([]byte, maxNBTElements+1)...)
+	scalars.u8(tagEnd)
+	if err := validateNBT(scalars.bytes()); err != nil {
+		t.Fatalf("a long list of scalars was rejected: %v", err)
+	}
+}
+
+// TestBoundsCheckpointChain: the backward scan caps itself, the chain walk did
+// not. Every link costs a read and a hash of a whole directory frame, and a
+// hostile file can carry as many forged footers as fit in it.
+func TestBoundsCheckpointChain(t *testing.T) {
+	if maxCheckpointChain <= 0 {
+		t.Fatal("the checkpoint chain has no ceiling")
+	}
+	reg := testRegistry(t)
+	path := filepath.Join(t.TempDir(), "w.pile")
+	w, err := CreateIndexed(path, reg, Options{Compression: CompressionNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enough generations to prove an ordinary chain is still walked.
+	for i := range int32(8) {
+		if err := w.Store(buildTestColumn(t, reg, i, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Checkpoint(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := OpenIndexed(path, reg, true)
+	if err != nil {
+		t.Fatalf("an ordinary chain was refused: %v", err)
+	}
+	defer v.Close()
+	if v.ChunkCount() != 8 {
+		t.Fatalf("chunks = %d, want 8", v.ChunkCount())
 	}
 }
