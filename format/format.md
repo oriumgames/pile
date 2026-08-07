@@ -66,6 +66,18 @@ just writer conventions, because duplicate keys are ambiguous and a fixed
 order is what lets independent writers produce identical bytes for identical
 content. Decoders MUST reject blobs that violate them.
 
+An NBT string -- a value or a compound key -- MUST NOT exceed 32 767 bytes,
+and decoders MUST reject a blob carrying a longer one. The length field is a
+`u16` and would express 65 535, and this is the one place in this document
+where the stated ceiling and the reachable one differ: the Bedrock NBT readers
+in practical use take that length as a **signed** int16, so every length from
+32 768 up arrives negative and the blob fails to parse. A writer that emitted
+one would produce a file it cannot read back, which is the failure §8 requires
+writers to avoid. The rule is written at the reachable value rather than the
+expressible one because a specification that states a ceiling nobody can reach
+sends a second implementation to produce files this one refuses, which is
+precisely what happened before it was written down.
+
 `TAG_List` of a numeric type and the corresponding array tag carry the same
 values but are different tags, and both occur in vanilla content. Decoders
 MUST keep them apart, and encoders MUST re-emit each value with the tag it was

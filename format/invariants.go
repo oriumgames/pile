@@ -151,6 +151,13 @@ var invariants = []Invariant{
 		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist. The sentence also covers every value of either field the table does not list, which is a separate check from the pairing and needs its own fixture.",
 	},
 	{
+		Name: "an NBT string fits what a Bedrock reader can address", Category: Bound, Enforce: Decoded,
+		Rules: []string{"51ab5d05"},
+		Tests: []string{"TestRejectsOversizedNBTString", "TestNBTWriterHoldsTheContainerBudget"},
+		Note: "The length field is a u16 and expresses 65,535, and the Bedrock NBT readers in practical use take it as a signed int16, so 32,768 and up arrive negative. This is the one place the specification's stated ceiling and its reachable one differed, and it was found from both sides at once: a writer emitting a 69,780-byte block-entity blob produced a file ReadWorld refuses, silently, with StoreColumn and Close both returning nil. " +
+			"Enforced here rather than left to the dependency, which refuses the same blobs with \"unexpected buffer end\" several layers from the cause. Same accept/reject boundary, an error that names the rule. Values and compound keys are separate checks because they are read by separate functions; a fixture for one says nothing about the other.",
+	},
+	{
 		Name: "the retired dimension bits are reserved", Category: Presence, Enforce: Decoded,
 		Rules: []string{"8498fc02"},
 		Tests: []string{"TestRejectsRetiredDimensionBits"},

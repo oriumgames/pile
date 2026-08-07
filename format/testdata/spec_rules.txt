@@ -26,6 +26,7 @@
 43ff86c5 Decoders MUST NOT panic on any input; every violation is a clean error.
 4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
 4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
+51ab5d05 An NBT string -- a value or a compound key -- MUST NOT exceed 32 767 bytes, and decoders MUST reject a blob carrying a longer one.
 5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
 56fab33d **Recovery is bounded by its total work and not by its factors.** A reader MUST stop recovery, and refuse the file, once the directory entries it has parsed during one open reach the ceiling above, counted across every checkpoint candidate it tries rather than per candidate.
 5789390a A structure header MUST set no flags other than `Uncompressed`, its settings, markers and border blobs MUST be empty, and its biome palette MUST have zero entries.

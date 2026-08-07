@@ -5465,3 +5465,55 @@ func TestRejectsStructureOriginOutsideInt32(t *testing.T) {
 		t.Fatalf("a legal extreme origin was rejected: %v", err)
 	}
 }
+
+// TestRejectsOversizedNBTString drives §1's NBT string ceiling.
+//
+// The length field is a u16 and would express 65,535, but the Bedrock NBT
+// readers in practical use take it as a signed int16, so 32,768 and up arrive
+// negative and the blob fails to parse several layers from the cause. The
+// ceiling is therefore written at the reachable value, and refused here so the
+// error names the rule.
+//
+// Both halves: a value and a compound key, because they are read by different
+// functions and a fixture for one says nothing about the other.
+func TestRejectsOversizedNBTString(t *testing.T) {
+	// Build the blob by hand: marshalNBT refuses these lengths on the writer
+	// side, which is the point, so a round trip cannot produce the fixture.
+	blob := func(key string, valueLen int) []byte {
+		w := &writer{}
+		w.raw([]byte{tagCompound})
+		w.u16(0) // unnamed root
+		w.raw([]byte{tagString})
+		w.u16(uint16(len(key)))
+		w.raw([]byte(key))
+		w.u16(uint16(valueLen))
+		w.raw(bytes.Repeat([]byte("a"), valueLen))
+		w.raw([]byte{tagEnd})
+		return w.bytes()
+	}
+	for _, c := range []struct {
+		name string
+		blob []byte
+		want string
+	}{
+		{"value at the ceiling", blob("k", maxNBTStringWrite), ""},
+		{"value one past it", blob("k", maxNBTStringWrite+1), "string of"},
+		{"key one past it", blob(strings.Repeat("k", maxNBTStringWrite+1), 1), "compound key of"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateNBT(c.blob)
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("a blob at the ceiling was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("an oversized NBT string was accepted")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+}

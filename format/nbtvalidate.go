@@ -79,6 +79,13 @@ func (w *nbtWalker) name() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Refuse the length here rather than leaving it to the NBT reader below,
+	// which takes it as a signed int16 and fails with "unexpected buffer end"
+	// several layers away from the cause. Same accept/reject boundary, an
+	// error that says which rule.
+	if n > maxNBTStringWrite {
+		return "", corruptf("nbt: compound key of %d bytes, past the %d a Bedrock NBT reader can address", n, maxNBTStringWrite)
+	}
 	if w.remaining() < n {
 		return "", corruptf("nbt: truncated name (want %d bytes, have %d)", n, w.remaining())
 	}
@@ -157,6 +164,9 @@ func (w *nbtWalker) payload(t byte, depth int) error {
 		n, err := w.u16()
 		if err != nil {
 			return err
+		}
+		if n > maxNBTStringWrite {
+			return corruptf("nbt: string of %d bytes, past the %d a Bedrock NBT reader can address", n, maxNBTStringWrite)
 		}
 		return w.skip(n)
 	case tagByteArray, tagIntArray, tagLongArray:
