@@ -55,6 +55,7 @@ corruption, not tampering.
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
 | `pile check <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. |
 | `pile render <world> [-o map.png] [--dim d] [--bg #rrggbb]` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
+| `pile blocks <mcdb-world>` | List the block identifiers a leveldb world uses and the property values each takes. Needs **no registry**, because it reads the palettes without decoding a chunk — so it works on the worlds `pile convert` cannot open. `--custom` lists only what is outside `minecraft:`; `--quiet` prints bare identifiers. |
 | `pile hash <dir\|file>...` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
 | `pile version` | pile, wire format and dragonfly versions. The first three lines of any bug report. |
 
@@ -122,3 +123,32 @@ pile export ./maps/lobby ./lobby-src
 $EDITOR ./lobby-src/data.json
 pile import ./lobby-src ./maps/lobby-new
 ```
+
+## Converting a world whose blocks come from a behaviour pack
+
+`pile convert` links the vanilla block registry, and dragonfly's decoder refuses
+a block state it cannot resolve rather than substituting anything. So a world
+using a pack's blocks cannot be converted by this binary at all — no flag fixes
+that, because Go cannot load your block types into a prebuilt program.
+
+The conversion belongs in your own server, where your registry exists:
+
+```sh
+pile blocks --custom ./the-world     # what your registry has to cover
+```
+
+```go
+// then, in your server, with the pack's blocks already registered:
+n, err := pile.ImportMCDB("./the-world", "./maps/lobby", pile.Registry(myRegistry))
+```
+
+That is a one-time step. A `.pile` file stores block **names and properties**,
+never runtime IDs, so the converted world loads under a different registry, a
+different dragonfly, or a build where the pack has changed — and any state that
+stops resolving is preserved verbatim through load and save rather than lost.
+
+`pile blocks` prints the property schema per identifier for a reason: a custom
+block is announced to the client once per *identifier*, and the client generates
+the state list itself from the declared properties. Declare fewer states than
+you registered and the client's palette is shorter than the server's, which
+shows up as every block past the first custom one rendering as something else.

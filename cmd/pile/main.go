@@ -57,6 +57,8 @@ func main() {
 		err = cmdPrune(os.Args[2:])
 	case "hash":
 		err = cmdHash(os.Args[2:])
+	case "blocks":
+		err = cmdBlocks(os.Args[2:])
 	case "snapshot":
 		err = cmdSnapshot(os.Args[2:])
 	case "snapshots":
@@ -120,6 +122,10 @@ commands:
                         current registry (exit 1 if any)
   prune   <world> --bounds x1,z1,x2,z2
                         drop chunks outside a block box
+  blocks  <mcdb-world>  list the block identifiers a leveldb world uses and the
+                        property values each takes, without needing a registry:
+                        what a server must register before converting a world
+                        whose blocks come from a behaviour pack
   hash    <dir|file>... print the content identity of each world or file;
                         identical content gives an identical hash whatever the
                         mode or compression. --quiet exits 1 if they differ
