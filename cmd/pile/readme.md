@@ -59,7 +59,7 @@ corruption, not tampering.
 | `pile inspect <file.pile>` | Header, flags, decoded settings, sizes; no chunk decode. Indexed files additionally show generation, chunk count and garbage ratio. |
 | `pile verify <dir\|file>` | Full decode with checksum verification; per-record verification for indexed files. On a world directory it also compares the metadata each dimension file carries and warns when they disagree. |
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
-| `pile check [--allow ns,ns] <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow hive` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
+| `pile check [--allow ns,ns] <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow customnamespace` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
 | `pile render [-o map.png] [--dim d] [--bg #rrggbb] <world>` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
 | `pile blocks [--custom] [--quiet] <mcdb-world\|dir\|file>` | List the block identifiers a world uses and the property values each takes. Needs **no registry**, because it reads the palettes without decoding a chunk — so it works on the worlds `pile convert` cannot open. Takes an mcdb world or a pile one. `--custom` lists only what is outside `minecraft:`; `--quiet` prints bare identifiers. |
 | `pile hash [--quiet] <dir\|file> [<dir\|file>...]` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
@@ -217,7 +217,7 @@ Afterwards, the same commands work on the converted world — `verify`, `stats`,
 do not trouble them. `check` does resolve, by design, so give it the namespace:
 
 ```sh
-pile check --allow hive ./maps/lobby
+pile check --allow customnamespace ./maps/lobby
 ```
 
 Without it the command reports every one of the pack's states and exits 1, which

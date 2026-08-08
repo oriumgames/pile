@@ -294,7 +294,7 @@ func cmdCheck(args []string) error {
 	// the worlds that most need checking, and the useful question there is
 	// narrower: do the *vanilla* blocks still resolve, or did a dragonfly
 	// upgrade take one away?
-	allow := fs.String("allow", "", "comma-separated namespaces to treat as expected, e.g. --allow hive")
+	allow := fs.String("allow", "", "comma-separated namespaces to treat as expected, e.g. --allow customnamespace")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
