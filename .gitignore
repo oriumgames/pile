@@ -3,3 +3,6 @@
 
 # Working notes: kept locally, not part of the published module.
 /[A-Z][A-Z0-9_-]*.md
+
+# Local scratch server and its converted worlds.
+/.test/
