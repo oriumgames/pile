@@ -70,10 +70,10 @@ func TestDictCodecCacheIsBounded(t *testing.T) {
 	if held == 0 {
 		t.Fatal("the cache holds nothing at all: it is not a cache, and every open re-parses")
 	}
-	// And the constants are what the measurement in SECURITY.md was taken
-	// against, so moving them is an edit here as well.
+	// The constants are what the recorded measurement was taken against, so
+	// moving them means re-measuring.
 	if dictCacheEntries != 16 || dictCacheBytes != 16<<20 {
-		t.Fatalf("the dictionary bounds moved to %d entries / %d bytes; re-measure and update SECURITY.md",
+		t.Fatalf("the dictionary bounds moved to %d entries / %d bytes; re-measure before trusting the old figures",
 			dictCacheEntries, dictCacheBytes)
 	}
 }

@@ -1,6 +1,6 @@
 package format
 
-// Performance baselines. PERFORMANCE.md is the record; this file is what keeps
+// Performance baselines. testdata/benchmarks.txt is the record; this file is what keeps
 // the record honest.
 //
 // Nothing here measures anything. That is deliberate, and it is the whole
@@ -70,13 +70,13 @@ func baselineHas(recorded, name string) bool {
 //
 // It is the cheapest useful thing a test can say about performance: it cannot
 // tell you a benchmark got slower, but it can tell you that nobody would find
-// out if it did. FREEZE.md's open item was "benchmarks exist but nothing gates
-// them, and there are no recorded baselines" — a record that silently stops
-// covering new work is the same hole with a file in front of it.
+// out if it did. "Benchmarks exist but nothing gates them" and "a record that
+// silently stops covering new work" are the same hole, one of them with a file
+// in front of it.
 func TestBenchmarkBaselinesRecorded(t *testing.T) {
 	b, err := os.ReadFile(baselineFile)
 	if err != nil {
-		t.Fatalf("%v (record it with scripts/bench.sh record; see PERFORMANCE.md)", err)
+		t.Fatalf("%v (record it with scripts/bench.sh record)", err)
 	}
 	recorded := string(b)
 	for _, name := range benchmarkNames(t, "bench_test.go") {
@@ -87,8 +87,8 @@ func TestBenchmarkBaselinesRecorded(t *testing.T) {
 	}
 }
 
-// TestIndexedStoreDoesNotScaleWithPalette holds one of the two shapes STATUS.md
-// says must not be optimised back: storing a column that introduces no new
+// TestIndexedStoreDoesNotScaleWithPalette holds one of the two shapes that must
+// not be optimised back: storing a column that introduces no new
 // palette entries must cost what it adds, not what the palette already holds.
 //
 // The regression it exists for is a real one that was fixed and had no test.
@@ -136,7 +136,7 @@ func storeAllocs(t *testing.T, reg world.BlockRegistry, col Column, prep func(*t
 	}
 	// One warm Store first: the shared encoder and the frame buffers are built
 	// on first use, and charging that to the measurement is the same mistake a
-	// short benchmark run makes. PERFORMANCE.md, "The variance trap".
+	// short benchmark run makes.
 	if err := w.Store(col); err != nil {
 		t.Fatal(err)
 	}

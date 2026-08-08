@@ -111,7 +111,7 @@ func TestDecodeBudgetCeilingIsUnreachableByDefault(t *testing.T) {
 	}
 }
 
-// emptyColumnWorld builds the file SECURITY.md records as the residual: n chunk
+// emptyColumnWorld builds the file that is the accepted residual: n chunk
 // records that each declare one section and mark none present. It is a legal
 // file — the reader accepts it, and the test below checks that it does — and it
 // decodes into n whole columns and not one section storage.

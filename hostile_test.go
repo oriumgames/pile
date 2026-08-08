@@ -51,7 +51,7 @@ func writeHostileWorld(t testing.TB, path string, cols []format.Column) {
 	}
 }
 
-// emptyColumns builds n columns that hold nothing: the shape SECURITY.md's
+// emptyColumns builds n columns that hold nothing: the shape the
 // 1,161-byte file is made of.
 func emptyColumns(t testing.TB, n int32) []format.Column {
 	t.Helper()
@@ -790,7 +790,7 @@ func TestConcurrentAccessToAHostileWorld(t *testing.T) {
 // opens again.
 //
 // This test holds the boundary that works. The half above it is recorded in
-// SECURITY.md, "Found here, fixable only in format", and the fix belongs in
+// The fix belongs in
 // format/nbt.go's marshaller, which must refuse what its own reader will.
 func TestLongNBTStringsRoundTrip(t *testing.T) {
 	reg := testRegistry(t)

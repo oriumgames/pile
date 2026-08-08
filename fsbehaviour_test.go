@@ -14,13 +14,14 @@ import (
 
 // The filesystem behaviour audit, as tests.
 //
-// FREEZE.md asks for four things to be deliberate rather than accidental: path
+// Four things have to be deliberate rather than accidental: path
 // traversal, symlinks on atomic rename, permission bits, and temp-file naming.
 // Each is pinned here, including the ones whose answer is "this is what it
 // does and it is on purpose" — a documented decision with no test is a
 // decision that changes the next time someone edits the line.
 //
-// FSBEHAVIOUR.md records the reasoning and the cases these do not cover.
+// Each case below states what it covers; what none of them cover is a second
+// process on the same world directory, which is out of scope by contract.
 
 // symlinkOrSkip creates a symlink, skipping on filesystems that have none.
 func symlinkOrSkip(t *testing.T, target, link string) {

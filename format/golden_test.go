@@ -58,8 +58,8 @@ var (
 // TestSpecRulesPinned is deliberately *not* locked. Its -update re-pins the
 // specification's normative sentences, and adding a MUST that states a rule the
 // implementation already enforces moves no byte and stays permitted after the
-// freeze (FREEZE.md, "After the freeze"). What is forbidden there is changing
-// what a reader accepts, and that shows up as a moved fixture here.
+// freeze. What is forbidden after the freeze is changing what a reader
+// accepts, and that shows up as a moved fixture here.
 func requireUnfrozen(t *testing.T) {
 	t.Helper()
 	if !*update || Version != FrozenVersion {
@@ -69,8 +69,9 @@ func requireUnfrozen(t *testing.T) {
 		"(format.FrozenVersion = %d), so no fixture may move and -format-change does not lift this.\n"+
 		"To change the bytes: set format.Version = %d in format/format.go, which lifts this lock; "+
 		"re-run with -update; then freeze the new version by setting format.FrozenVersion = %d. "+
-		"See FREEZE.md, \"Moving to v%d\".",
-		Version, FrozenVersion, Version+1, Version+1, Version+1)
+		"Then update vecSpecVersion in vectorwalk_test.go and the title of format.md by hand: "+
+		"both state the version deliberately rather than deriving it.",
+		Version, FrozenVersion, Version+1, Version+1)
 }
 
 const manifestPath = goldenDir + "/golden_manifest.txt"
@@ -116,8 +117,8 @@ func writeManifest(t *testing.T, hashes map[string]uint64) {
 	}
 }
 
-// TestManifestsAgreeWithVersion pins FREEZE.md's first Mechanics box: the
-// version the code writes is the version every byte-locked manifest was
+// TestManifestsAgreeWithVersion pins the obvious thing: the version the code
+// writes is the version every byte-locked manifest was
 // generated at. Each manifest is written by its own -update path, so a
 // regeneration that ran at a different version — or a Version bump that
 // regenerated only some of them — shows up here rather than in whichever suite
@@ -156,16 +157,16 @@ func TestManifestsAgreeWithVersion(t *testing.T) {
 // importing them, which is the only reason a vector it accepts is evidence of
 // anything: a reader built from the decoder cannot disagree with the decoder.
 // The cost is a constant that a version bump has to reach by hand, and
-// "Moving to v3" in FREEZE.md listing it as a step is not enforcement — this
-// project has been bitten three times by a rule that was written down and
-// pinned by nothing. So the coupling is checked here and the walker stays
-// independent.
+// A version bump therefore has to reach it by hand, and a step written down
+// somewhere is not enforcement — this project has been bitten three times by a
+// rule that was recorded and pinned by nothing. So the coupling is checked here
+// and the walker stays independent.
 func TestWalkerVersionMatchesFormat(t *testing.T) {
 	if vecSpecVersion != Version {
 		t.Fatalf("the independent vector walker parses version %d and format.Version is %d.\n"+
 			"Edit vecSpecVersion in format/vectorwalk_test.go by hand — it is deliberately not\n"+
 			"derived from format.Version, because a walker that follows the decoder cannot\n"+
-			"contradict it. See FREEZE.md, \"Moving to v3\", step 3.",
+			"contradict it.",
 			vecSpecVersion, Version)
 	}
 }
@@ -612,6 +613,13 @@ func buildGoldenIndexedCompact(t *testing.T, reg world.BlockRegistry) []byte {
 	for i := range int32(24) {
 		c := d.Columns[int(i)%len(d.Columns)]
 		c.X, c.Z = i, i%3
+		// Re-anchor the block entities on the column's new position. A
+		// block entity's X and Z are folded into one packed nibble pair, so
+		// one carried over from the column this was cloned from is outside
+		// the span the record declares -- a file the writer refuses and, before
+		// it did, one it wrote and could not read back.
+		c.Col.BlockEntities = reanchorBEs(c.Col.BlockEntities, i, i%3)
+		c.Col.ScheduledBlocks = reanchorTicks(c.Col.ScheduledBlocks, i, i%3)
 		ch := c.Col.Chunk.Clone()
 		for y := int16(-64); y < -64+int16(i%12); y++ {
 			ch.SetBlock(uint8(i%16), y, uint8((i*7)%16), 0, dirt)
@@ -628,6 +636,8 @@ func buildGoldenIndexedCompact(t *testing.T, reg world.BlockRegistry) []byte {
 	for i := range int32(8) {
 		c := d.Columns[0]
 		c.X, c.Z = i, i%3
+		c.Col.BlockEntities = reanchorBEs(c.Col.BlockEntities, i, i%3)
+		c.Col.ScheduledBlocks = reanchorTicks(c.Col.ScheduledBlocks, i, i%3)
 		if err := w.Store(c); err != nil {
 			t.Fatal(err)
 		}
@@ -749,9 +759,9 @@ func goldenStructure(t *testing.T, reg world.BlockRegistry) *StructureData {
 // goldenStructure carries exactly one of each, so neither sort had anything to
 // order and reversing either moved no golden byte. Both rules were held only by
 // the structure_full conformance vector. That is real coverage and it is not
-// the coverage the freeze relies on: FREEZE.md's post-freeze rule is "run the
-// golden suite, and if it passes the change is permitted", so a canonical-form
-// rule no golden can see is one that check does not protect.
+// the coverage the freeze relies on: the post-freeze check is "run the golden
+// suite, and if it passes the change is permitted", so a canonical-form rule no
+// golden can see is one that check does not protect.
 //
 // The block entities are supplied in exactly the reverse of their canonical
 // order, so the fixture fails if the writer stops imposing one rather than
@@ -1131,4 +1141,38 @@ func TestUncoveredOptionPaths(t *testing.T) {
 		}
 		compareColumns(t, w, g)
 	}
+}
+
+// reanchorBEs moves block entities onto the column at (cx, cz), keeping their
+// position within the chunk. Cloning a column to a new key and leaving its
+// block entities behind produces a record whose declared span does not contain
+// them, which the writer refuses.
+func reanchorBEs(bes []chunk.BlockEntity, cx, cz int32) []chunk.BlockEntity {
+	if len(bes) == 0 {
+		return bes
+	}
+	out := make([]chunk.BlockEntity, len(bes))
+	for i, be := range bes {
+		p := be.Pos
+		out[i] = chunk.BlockEntity{
+			Pos:  cube.Pos{int(cx)*16 + (p.X() & 15), p.Y(), int(cz)*16 + (p.Z() & 15)},
+			Data: be.Data,
+		}
+	}
+	return out
+}
+
+// reanchorTicks does for scheduled updates what reanchorBEs does for block
+// entities: their positions are packed the same way and refused the same way.
+func reanchorTicks(ts []chunk.ScheduledBlockUpdate, cx, cz int32) []chunk.ScheduledBlockUpdate {
+	if len(ts) == 0 {
+		return ts
+	}
+	out := make([]chunk.ScheduledBlockUpdate, len(ts))
+	for i, t := range ts {
+		p := t.Pos
+		out[i] = t
+		out[i].Pos = cube.Pos{int(cx)*16 + (p.X() & 15), p.Y(), int(cz)*16 + (p.Z() & 15)}
+	}
+	return out
 }

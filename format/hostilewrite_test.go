@@ -20,7 +20,7 @@ package format
 // attacker-controlled bytes.
 //
 // Five of those were live when this file was written. Each has a named test
-// below with its measured before, and `SECURITY.md` records them:
+// below with its measured before:
 //
 //  1. A block entity or scheduled update outside the column it is stored in.
 //     X and Z are folded into one packed nibble pair, so (100,0,200) in chunk

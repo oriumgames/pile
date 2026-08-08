@@ -2,23 +2,22 @@ package format
 
 // The hostile-input matrix.
 //
-// `FREEZE.md` names three security preconditions and gives this file as the
-// exit criterion for the first: no allocation is sized from unvalidated input,
-// proved by "truncation at every field boundary, every count at 0, 1, max,
-// max+1 — driven through ReadWorld, ReadStructure, ReadMeta and OpenIndexed".
-// The other two — no integer computation wraps before its bounds check, and no
-// input causes an unbounded loop — are exercised by the same inputs, since a
-// wrap and a runaway loop both show up here as a panic or as a decode that
-// never returns.
+// This file is the exit criterion for three properties at once. The first is
+// that no allocation is sized from unvalidated input, proved by truncation at
+// every field boundary and every count at 0, 1, max and max+1, driven through
+// ReadWorld, ReadStructure, ReadMeta and OpenIndexed. The other two — no
+// integer computation wraps before its bounds check, and no input causes an
+// unbounded loop — are exercised by the same inputs, since a wrap and a
+// runaway loop both show up here as a panic or as a decode that never returns.
 //
-// The lesson this file is designed around is `STATUS.md`'s: the bounds
-// discipline was real but bounded the wrong thing. Checking a count against
+// The lesson this file is designed around: the bounds discipline was real but
+// bounded the wrong thing. Checking a count against
 // the bytes that remain is necessary and not sufficient, because several
 // values a file declares cost far more to decode than to write. So the matrix
 // is not only "does it reject the file": TestHostileAllocationCeilings
 // measures how many bytes a decode allocates for a file of a few kilobytes and
 // fails when the ratio is wrong. Every ceiling in it was over-run before the
-// fix it guards, and the numbers are in `SECURITY.md`.
+// fix it guards, and each ceiling names its measured before at its own case.
 //
 // Nothing here may change which files are accepted. Every case therefore
 // asserts on behaviour a conforming reader already had: no panic, no hang,

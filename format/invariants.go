@@ -439,7 +439,7 @@ var invariants = []Invariant{
 		Name: "decoders never panic", Category: Integrity, Enforce: Decoded,
 		Rules: []string{"43ff86c5"},
 		Tests: []string{"FuzzReadWorld", "FuzzReadStructure", "FuzzOpenIndexed", "FuzzNBTStability"},
-		Note:  "The only entry whose control is not a fixture. A plain `go test` runs the seed corpora, which are the inputs already known to be safe, so disabling a bound leaves them green; what shows the property is real is that the same edits panic the targeted tests instead -- deleting the structure cell ceiling makes TestRejectsStructureCellOverflow panic in make. The evidence FREEZE.md asks for here is a long fuzzing session, not a red test, and that precondition is tracked separately.",
+		Note:  "The only entry whose control is not a fixture. A plain `go test` runs the seed corpora, which are the inputs already known to be safe, so disabling a bound leaves them green; what shows the property is real is that the same edits panic the targeted tests instead -- deleting the structure cell ceiling makes TestRejectsStructureCellOverflow panic in make. The evidence this entry needs is a long fuzzing session rather than a red test, and it is not something a fixture can stand in for.",
 	},
 	// -- Specification review (round 23) ---------------------------------
 	{

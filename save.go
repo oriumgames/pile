@@ -44,7 +44,10 @@ func (p *Provider) SaveAsync() {
 	// so a read-only save finds nothing to write and produces no file either
 	// way. It is kept as the second line of that defence rather than removed,
 	// because what stands behind it is ten other guards and not an argument.
-	// HARNESS.md records the control that stays green and why.
+	// It has no distinguishing input and so no control that can fail: every
+	// method able to set a dirty flag refuses read-only first, so a read-only
+	// save finds nothing to write either way. Kept as the second line of a
+	// property whose first line is those ten guards.
 	if p.conf.readOnly {
 		return
 	}

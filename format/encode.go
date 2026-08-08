@@ -891,8 +891,8 @@ func extractColumnRaw(c Column, skipBiomes, storeLight bool, placeholder uint32)
 	// is registry-independent. Sorting by runtime ID at this point would make
 	// the bytes depend on how a registry happened to number its states.
 	//
-	// This sort has no negative control and cannot have one, which HARNESS.md
-	// records under §6.2 so it is not mistaken for a coverage hole. sortTicks
+	// This sort has no negative control and cannot have one; it is recorded
+	// here rather than left to look like a coverage hole. sortTicks
 	// imposes a total order on (y, x, z, tick, final palette reference)
 	// afterwards, and two updates that tie on all five encode as identical
 	// bytes, so no input distinguishes this order from any other. It is kept

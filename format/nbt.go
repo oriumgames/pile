@@ -104,8 +104,8 @@ func unmarshalNBT(b []byte) (m map[string]any, err error) {
 //
 // The bound is on the *writer* only. Widening the reader to the stated 65,535
 // would change which files are accepted, which after the freeze is a version
-// bump; SECURITY.md records the divergence and what a second implementation
-// must know about it.
+// bump. §1 of the specification states the reachable ceiling rather than the
+// expressible one for exactly this reason.
 const maxNBTStringWrite = 1<<15 - 1
 
 // nbtString writes an NBT string: uint16 length + bytes.

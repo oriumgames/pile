@@ -639,7 +639,7 @@ const maxCheckpointChain = 256
 // What follows is the reasoning for the number itself, which stands:
 // 2^24 is four directories at the old entry ceiling, which is where a
 // legitimate recovery lives: a torn checkpoint's directory frame usually fails its hash
-// and costs nothing, and the crash model of DURABILITY.md leaves either the
+// and costs nothing, and the crash model the torn-write suite proves leaves either the
 // old checkpoint or the new one, so one fallback is the ordinary case and four
 // full parses is generous for the stacked-crash case. Measured on one machine,
 // 16 forged footers over a directory at the ceiling went from 17.5 s to 4.2 s

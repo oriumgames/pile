@@ -256,7 +256,7 @@ func BenchmarkProviderOpenAppend(b *testing.B) {
 // at ten thousand. Its bytes do, because a checkpoint rewrites the directory,
 // at about 66 B per column; the comment here used to claim the whole operation
 // was flat in the world size, which the recorded baseline does not support.
-// PERFORMANCE.md, "Save latency".
+// The recorded figures are in testdata/benchmarks.txt.
 func BenchmarkProviderSaveAppend(b *testing.B) {
 	reg := testRegistry(b)
 	for _, n := range []int{100, 10000} {

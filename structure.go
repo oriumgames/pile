@@ -58,7 +58,7 @@ func StructureRegistry(reg world.BlockRegistry) StructureOption {
 // It has the same blind spot the provider's does, and it matters more here
 // because a structure is a single object: the ceiling charges decoded cells and
 // section storages, and charges nothing for the block entities and entities a
-// structure carries. See SECURITY.md, "Loading a file somebody sent you".
+// structure carries.
 func StructureMaxDecodedBytes(n int64) StructureOption {
 	return func(s *Structure) { s.maxDecoded = n }
 }

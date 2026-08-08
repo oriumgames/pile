@@ -1,7 +1,8 @@
 package pile
 
 // Performance baselines for the provider. See format/baseline_test.go for why
-// nothing here measures a duration, and PERFORMANCE.md for the record itself.
+// nothing here measures a duration. The record itself is testdata/benchmarks.txt,
+// written by scripts/bench.sh.
 
 import (
 	"os"
@@ -51,7 +52,7 @@ func baselineHas(recorded, name string) bool {
 func TestBenchmarkBaselinesRecorded(t *testing.T) {
 	b, err := os.ReadFile(baselineFile)
 	if err != nil {
-		t.Fatalf("%v (record it with scripts/bench.sh record; see PERFORMANCE.md)", err)
+		t.Fatalf("%v (record it with scripts/bench.sh record)", err)
 	}
 	recorded := string(b)
 	for _, name := range benchmarkNames(t, "bench_test.go") {

@@ -387,7 +387,7 @@ const (
 // decode should measure its own process rather than trust a per-unit constant.
 const (
 	// columnBytes is what one decoded column costs in live objects: a recRaw, a
-	// chunk.Chunk and a Column. SECURITY.md measures 1,048,576 empty columns at
+	// chunk.Chunk and a Column. Measured, 1,048,576 empty columns come to
 	// 1.12 GiB retained, which is about 1,150 bytes each; §8 rounds the same
 	// figure to "about a kilobyte".
 	columnBytes = 1024

@@ -1,6 +1,7 @@
 package format
 
-// The conformance vector appendix (FREEZE.md, "Conformance").
+// The conformance vector appendix. vectors.md is the document an independent
+// implementer reads; this file is what verifies it.
 //
 // A vector is a file whose exact bytes are checked into
 // testdata/vectors, together with what a conforming implementation must
