@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
-	"github.com/df-mc/dragonfly/server/world"
 	"github.com/oriumgames/pile"
 )
 
@@ -97,28 +96,10 @@ func cmdExport(args []string) error {
 		return err
 	}
 
-	set := p.Settings()
-	gm, _ := world.GameModeID(set.DefaultGameMode)
-	diff, _ := world.DifficultyID(set.Difficulty)
 	data := exportData{
 		Dimension: *dimFlag,
 		Origin:    [3]int{min.X(), min.Y(), min.Z()},
-		Settings: exportSettings{
-			Name:               set.Name,
-			Spawn:              [3]int{set.Spawn.X(), set.Spawn.Y(), set.Spawn.Z()},
-			Time:               set.Time,
-			TimeCycle:          set.TimeCycle,
-			RainTime:           set.RainTime,
-			Raining:            set.Raining,
-			ThunderTime:        set.ThunderTime,
-			Thundering:         set.Thundering,
-			WeatherCycle:       set.WeatherCycle,
-			RequiredSleepTicks: set.RequiredSleepTicks,
-			CurrentTick:        set.CurrentTick,
-			DefaultGameMode:    gm,
-			Difficulty:         diff,
-			TickRange:          set.TickRange,
-		},
+		Settings:  exportSettingsOf(p.Settings()),
 	}
 	for _, m := range p.Markers() {
 		em := exportMarker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
@@ -189,24 +170,7 @@ func cmdImport(args []string) error {
 
 	es := data.Settings
 	set := p.Settings()
-	set.Name = es.Name
-	set.Spawn = cube.Pos{es.Spawn[0], es.Spawn[1], es.Spawn[2]}
-	set.Time = es.Time
-	set.TimeCycle = es.TimeCycle
-	set.RainTime = es.RainTime
-	set.Raining = es.Raining
-	set.ThunderTime = es.ThunderTime
-	set.Thundering = es.Thundering
-	set.WeatherCycle = es.WeatherCycle
-	set.RequiredSleepTicks = es.RequiredSleepTicks
-	set.CurrentTick = es.CurrentTick
-	if gm, ok := world.GameModeByID(es.DefaultGameMode); ok {
-		set.DefaultGameMode = gm
-	}
-	if d, ok := world.DifficultyByID(es.Difficulty); ok {
-		set.Difficulty = d
-	}
-	set.TickRange = es.TickRange
+	applyExportSettings(set, es)
 	p.SaveSettings(set)
 
 	for _, m := range data.Markers {

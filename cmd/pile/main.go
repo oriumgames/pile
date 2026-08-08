@@ -59,6 +59,8 @@ func main() {
 		err = cmdHash(os.Args[2:])
 	case "blocks":
 		err = cmdBlocks(os.Args[2:])
+	case "edit":
+		err = cmdEdit(os.Args[2:])
 	case "snapshot":
 		err = cmdSnapshot(os.Args[2:])
 	case "snapshots":
@@ -122,6 +124,9 @@ commands:
                         current registry (exit 1 if any)
   prune   <world> --bounds x1,z1,x2,z2
                         drop chunks outside a block box
+  edit    <world>       edit the world's settings, markers, border and user
+                        data as JSON in $EDITOR; --print dumps it, --apply
+                        reads it back from a file
   blocks  <mcdb-world>  list the block identifiers a leveldb world uses and the
                         property values each takes, without needing a registry:
                         what a server must register before converting a world

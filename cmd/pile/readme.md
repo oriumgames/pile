@@ -79,6 +79,28 @@ before touching it. These are how you reach those, and your own.
 | `pile rollback <world> <name> [--backup name]` | Restore one. The current state is kept as `pre-rollback` first, so picking the wrong snapshot is itself recoverable; `--backup ""` skips that. |
 | `pile unsnapshot <world> <name>` | Delete one. |
 
+## Editing a world's metadata
+
+| command | |
+|---------|---|
+| `pile edit <world> [--print] [--apply file.json] [--no-backup]` | Open the world's settings, markers, border and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
+
+Chunks are not in the file. This is for moving a spawn point, renaming a marker
+or adjusting an area — editing blocks as JSON would be a worse tool than the
+game.
+
+The list you are shown is the whole list, so deleting a marker there deletes the
+marker. Settings and markers go through typed fields rather than raw NBT, so an
+`int32` does not come back a `float64` — the failure that took a server down
+earlier in this project. A user data blob that you do not change is written back
+as the same bytes it went in as, rather than reflowed by the marshaller, so
+renaming a marker does not move the world's `ContentHash`.
+
+An edit that breaks a §7 rule — an area whose corners are the wrong way round, a
+marker with neither a position nor bounds — is refused when the world is
+written, which means nothing is written. A JSON syntax error keeps your edit in
+a temp file and tells you the path, so the cost of a typo is fixing the typo.
+
 ## Map surgery
 
 | command | |
