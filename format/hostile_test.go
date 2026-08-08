@@ -332,7 +332,6 @@ func hostileMetaPrefix(w *writer) {
 	w.blob(nil)
 	w.blob(nil)
 	w.blob(nil)
-	w.blob(nil)
 }
 
 // hostileEmptyPalettes writes an empty block palette (entries and overrides)

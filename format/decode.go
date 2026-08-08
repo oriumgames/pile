@@ -22,7 +22,6 @@ type Meta struct {
 	Settings []byte
 	UserData []byte
 	Markers  []byte
-	Border   []byte
 	Stats    []byte
 }
 
@@ -123,7 +122,7 @@ func decompressBody(h header, stored []byte) ([]byte, error) {
 // readMetaBlobs reads the meta block from the start of the body. Blobs the
 // format designates as NBT are validated here: accepting a non-canonical one
 // would admit two encodings of the same metadata.
-func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border, stats []byte, err error) {
+func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, stats []byte, err error) {
 	nbtBlob := func(what string) ([]byte, error) {
 		b, err := r.blob()
 		if err != nil {
@@ -145,9 +144,6 @@ func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border
 	if markers, err = nbtBlob("markers"); err != nil {
 		return
 	}
-	if border, err = nbtBlob("border"); err != nil {
-		return
-	}
 	if flags&FlagStats != 0 {
 		stats, err = nbtBlob("stats")
 		if err != nil {
@@ -159,10 +155,10 @@ func readMetaBlobs(r *reader, flags uint32) (settings, userData, markers, border
 	}
 	// The §7 schemas are validity rules, not writer conventions, so the reader
 	// applies exactly what the writer refuses to produce. Without this a file
-	// whose border is a list, or whose marker list is unsorted, is rejected by
+	// whose marker list is unsorted is rejected by
 	// one half of this package and accepted by the other, and an unsorted
 	// marker list is a second encoding of one marker collection.
-	if err = checkMetaSchemas(settings, markers, border); err != nil {
+	if err = checkMetaSchemas(settings, markers); err != nil {
 		return
 	}
 	return
@@ -187,14 +183,14 @@ func ReadMeta(file []byte, opts ...ReadOption) (*Meta, error) {
 		return nil, err
 	}
 	r := &reader{b: body}
-	settings, userData, markers, border, stats, err := readMetaBlobs(r, h.flags)
+	settings, userData, markers, stats, err := readMetaBlobs(r, h.flags)
 	if err != nil {
 		return nil, err
 	}
 	return &Meta{
 		Kind: h.kind, Mode: h.mode, Flags: h.flags, BlockVersion: h.blockVersion,
 		Settings: cloneBytes(settings), UserData: cloneBytes(userData),
-		Markers: cloneBytes(markers), Border: cloneBytes(border), Stats: cloneBytes(stats),
+		Markers: cloneBytes(markers), Stats: cloneBytes(stats),
 	}, nil
 }
 
@@ -220,14 +216,13 @@ func ReadWorld(file []byte, reg world.BlockRegistry, opts ...ReadOption) (*World
 	r := &reader{b: body}
 	d := &WorldData{}
 	var stats []byte
-	if d.Settings, d.UserData, d.Markers, d.Border, stats, err = readMetaBlobs(r, h.flags); err != nil {
+	if d.Settings, d.UserData, d.Markers, stats, err = readMetaBlobs(r, h.flags); err != nil {
 		return nil, err
 	}
 	_ = stats
 	d.Settings = cloneBytes(d.Settings)
 	d.UserData = cloneBytes(d.UserData)
 	d.Markers = cloneBytes(d.Markers)
-	d.Border = cloneBytes(d.Border)
 
 	rids, unknown, unkStates, err := decodeBlockPalette(r, reg, h.blockVersion)
 	if err != nil {

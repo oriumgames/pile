@@ -27,10 +27,10 @@
 4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
 4c12487a Each component of `min` MUST be less than or equal to the same component of `max`, and decoders MUST reject a marker where it is not.
 4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
+4e47554a A structure header MUST set no flags other than `Uncompressed`, its settings and markers blobs MUST be empty, and its biome palette MUST have zero entries.
 51ab5d05 An NBT string -- a value or a compound key -- MUST NOT exceed 32 767 bytes, and decoders MUST reject a blob carrying a longer one.
 5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
 56fab33d **Recovery is bounded by its total work and not by its factors.** A reader MUST stop recovery, and refuse the file, once the directory entries it has parsed during one open reach the ceiling above, counted across every checkpoint candidate it tries rather than per candidate.
-5789390a A structure header MUST set no flags other than `Uncompressed`, its settings, markers and border blobs MUST be empty, and its biome palette MUST have zero entries.
 58866f01 - An absent frame reference MUST have offset, length and hash all zero; a non-zero offset or hash with a zero length is invalid.
 5ab4d3d6 refs sorted ascending; indices remapped accordingly; the palette contains only entries actually used by the indices; a storage whose used palette collapses to one entry MUST be written uniform (width 0).
 5bb2554d - **How a field is spelled is a rule.** When one of these fields *is* present it MUST carry the tag and shape stated below, and the marker list MUST be ordered as stated.

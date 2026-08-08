@@ -502,7 +502,6 @@ func WriteStructure(out io.Writer, s *StructureData, reg world.BlockRegistry, op
 	body.blob(nil) // settings
 	body.blob(s.UserData)
 	body.blob(nil) // markers
-	body.blob(nil) // border
 	body.raw(blockPalBytes)
 	body.uvarint(0) // biome palette: structures store no biomes
 	table.encode(body)
@@ -576,11 +575,11 @@ func ReadStructure(file []byte, reg world.BlockRegistry, opts ...ReadOption) (*S
 		return nil, err
 	}
 	r := &reader{b: body}
-	settings, userData, markers, border, _, err := readMetaBlobs(r, h.flags)
+	settings, userData, markers, _, err := readMetaBlobs(r, h.flags)
 	if err != nil {
 		return nil, err
 	}
-	if len(settings) != 0 || len(markers) != 0 || len(border) != 0 {
+	if len(settings) != 0 || len(markers) != 0 {
 		return nil, corruptf("structure metadata must contain only user data")
 	}
 	rids, unknown, unkStates, err := decodeBlockPalette(r, reg, h.blockVersion)

@@ -63,7 +63,6 @@ func TestEditRoundTrip(t *testing.T) {
 		{Name: "arena", Kind: "pvp", Min: &[3]float64{-10, 60, -10}, Max: &[3]float64{10, 70, 10}},
 		{Name: "hub", Kind: "spawn", Pos: &[3]float64{1, 65, 2}},
 	}
-	d.Border = &editBorder{Min: [2]int32{-500, -500}, Max: [2]int32{500, 500}}
 	d.UserData = json.RawMessage(`{"stage":"beta"}`)
 
 	if err := editRoundTrip(t, dir, d); err != nil {
@@ -74,9 +73,6 @@ func TestEditRoundTrip(t *testing.T) {
 	if after.Settings.Name != "Edited" || after.Settings.Spawn != [3]int{10, 70, -20} ||
 		after.Settings.Time != 12345 || after.Settings.TickRange != 9 {
 		t.Errorf("settings did not round trip: %+v", after.Settings)
-	}
-	if after.Border == nil || after.Border.Min != [2]int32{-500, -500} || after.Border.Max != [2]int32{500, 500} {
-		t.Errorf("border did not round trip: %+v", after.Border)
 	}
 	// Compared as content: the blob is shown inline, so marshalling and an
 	// editor both reflow it. What must survive is what it says.
@@ -124,14 +120,12 @@ func TestEditRemovesWhatTheEditorRemoved(t *testing.T) {
 		{Name: "a", Kind: "x", Pos: &[3]float64{0, 0, 0}},
 		{Name: "b", Kind: "x", Pos: &[3]float64{1, 1, 1}},
 	}
-	d.Border = &editBorder{Min: [2]int32{-1, -1}, Max: [2]int32{1, 1}}
 	if err := editRoundTrip(t, dir, d); err != nil {
 		t.Fatal(err)
 	}
 
 	d = editRead(t, dir)
 	d.Markers = d.Markers[:1]
-	d.Border = nil
 	if err := editRoundTrip(t, dir, d); err != nil {
 		t.Fatal(err)
 	}
@@ -139,9 +133,6 @@ func TestEditRemovesWhatTheEditorRemoved(t *testing.T) {
 	after := editRead(t, dir)
 	if len(after.Markers) != 1 {
 		t.Errorf("removing a marker from the JSON left %d behind", len(after.Markers))
-	}
-	if after.Border != nil {
-		t.Errorf("removing the border from the JSON left %+v", after.Border)
 	}
 }
 

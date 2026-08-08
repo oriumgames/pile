@@ -21,7 +21,7 @@ func createIndexedWorld(t *testing.T, path string, cols ...Column) {
 		}
 	}
 	settings, _ := marshalNBT(map[string]any{"name": "indexed-test"})
-	w.SetMeta(settings, []byte("meta"), nil, nil)
+	w.SetMeta(settings, []byte("meta"), nil)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestIndexedRoundTrip(t *testing.T) {
 	if w.ChunkCount() != 3 {
 		t.Fatalf("chunk count = %d, want 3", w.ChunkCount())
 	}
-	settings, userData, _, _ := w.Meta()
+	settings, userData, _ := w.Meta()
 	m, err := unmarshalNBT(settings)
 	if err != nil || m["name"] != "indexed-test" {
 		t.Fatalf("meta settings = %v (%v)", m, err)
@@ -478,7 +478,7 @@ func TestIndexedRejectsOversizedMeta(t *testing.T) {
 	if err := w.Store(buildTestColumn(t, reg, 2, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta(nil, make([]byte, (16<<20)+1), nil, nil); err == nil {
+	if err := w.SetMeta(nil, make([]byte, (16<<20)+1), nil); err == nil {
 		t.Fatal("oversized metadata accepted")
 	}
 	if err := w.Checkpoint(); err != nil {
@@ -689,7 +689,7 @@ func TestSetMetaRefusesReadOnlyAndClosed(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil, nil); err == nil {
+	if err := w.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil); err == nil {
 		t.Error("SetMeta succeeded on a closed world")
 	}
 
@@ -698,11 +698,11 @@ func TestSetMetaRefusesReadOnlyAndClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ro.Close()
-	before, _, _, _ := ro.Meta()
-	if err := ro.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil, nil); !errors.Is(err, ErrReadOnlyFile) {
+	before, _, _ := ro.Meta()
+	if err := ro.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil, nil); !errors.Is(err, ErrReadOnlyFile) {
 		t.Errorf("SetMeta on a read-only world: err = %v, want ErrReadOnlyFile", err)
 	}
-	if after, _, _, _ := ro.Meta(); !bytes.Equal(before, after) {
+	if after, _, _ := ro.Meta(); !bytes.Equal(before, after) {
 		t.Error("a refused SetMeta changed what Meta reports")
 	}
 }

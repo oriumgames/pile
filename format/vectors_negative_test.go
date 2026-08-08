@@ -913,18 +913,6 @@ func negCases() []negCase {
 			},
 			walkerBlind: true,
 		},
-		{
-			name: "border_wrong_tag", base: "world_collections", rule: "§7.3: the border's min and max are int arrays, not lists",
-			wantErr: "two-element int array",
-			mutate: func(t *testing.T, l *vecLayout, b []byte) []byte {
-				list := append(append([]byte{tagInt}, vecNBTI32(2)...), append(vecNBTI32(-1), vecNBTI32(1)...)...)
-				return vecReplaceMeta(t, l, b, "meta.border", vecNBTRoot("",
-					vecNBTEntry(tagIntArray, "max", append(vecNBTI32(2), append(vecNBTI32(1), vecNBTI32(1)...)...)),
-					vecNBTEntry(tagList, "min", list),
-				))
-			},
-			walkerBlind: true,
-		},
 		// -- §4.2 stats -----------------------------------------------------
 		{
 			name: "stats_wrong_tag", base: "world_stats", rule: "§4.2: a stats counter that is present carries a long",

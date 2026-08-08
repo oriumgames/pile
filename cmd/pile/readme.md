@@ -88,7 +88,7 @@ before touching it. These are how you reach those, and your own.
 ### Why the metadata is checked across files
 
 Every dimension file carries its own copy of the world's settings, markers,
-border and user data, so that a single `.pile` is self-describing — you can hand
+and user data, so that a single `.pile` is self-describing — you can hand
 somebody `nether.pile` and it still knows its name and spawn. The provider reads
 the **overworld's** copy and ignores the rest.
 
@@ -103,7 +103,7 @@ dimension's copy together.
 
 | command | |
 |---------|---|
-| `pile edit [--print] [--apply file.json] [--no-backup] <world>` | Open the world's settings, markers, border and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
+| `pile edit [--print] [--apply file.json] [--no-backup] <world>` | Open the world's settings, markers and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
 
 Chunks are not in the file. This is for moving a spawn point, renaming a marker
 or adjusting an area — editing blocks as JSON would be a worse tool than the
@@ -125,7 +125,7 @@ a temp file and tells you the path, so the cost of a typo is fixing the typo.
 
 | command | |
 |---------|---|
-| `pile move (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup] <world>` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks, chunk metadata, spawn, markers and border move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
+| `pile move (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup] <world>` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks, chunk metadata, spawn and markers move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
 | `pile extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>` | Cut a region into a structure file (blocks, block entities, entities). |
 | `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
 | `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |

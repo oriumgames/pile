@@ -410,7 +410,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "a structure has one envelope", Category: Presence, Enforce: Decoded,
-		Rules: []string{"5789390a", "7b480f2f"},
+		Rules: []string{"4e47554a", "7b480f2f"},
 		Tests: []string{"TestStructureOriginExtremes", "TestRejectsStructureEnvelopeViolations"},
 		Note:  "The envelope is the header flags, the three metadata blobs, the empty biome palette, the size components and the origin range. The size and origin bounds are stated in §6's layout table rather than a sentence of their own, and a round trip of a legal structure cannot show either going.",
 	},

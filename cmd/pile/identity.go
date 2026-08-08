@@ -120,7 +120,7 @@ func canonicalDimHash(wf *pile.WorldFiles, df pile.DimFile, reg world.BlockRegis
 	var buf bytes.Buffer
 	d := &format.WorldData{
 		Settings: wf.Settings, UserData: wf.UserData,
-		Markers: wf.Markers, Border: wf.Border,
+		Markers: wf.Markers,
 		Columns: df.Columns,
 	}
 	if err := format.WriteWorld(&buf, d, reg, format.Options{Compression: format.CompressionNone}); err != nil {

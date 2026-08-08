@@ -80,7 +80,7 @@ var indexedFullFacts = struct {
 	probeBlock             string
 }{
 	generation: 3,
-	content:    0x732fef0b94bdf2fe,
+	content:    0x11eb2fd39e143b79,
 	positions: [][2]int32{
 		{0, 0}, {0, 1}, {0, 2}, {0, 3}, {0, 4},
 		{1, 0}, {1, 1}, {1, 2}, {1, 3}, {1, 4},
@@ -174,8 +174,8 @@ func TestConformanceVectorIndexed(t *testing.T) {
 	// The meta frame. Indexed mode carries the §7 blobs in a frame rather than
 	// in the header's meta block, which is why ReadMeta on an indexed file
 	// tells a caller nothing about them.
-	settings, userData, markers, border := w.Meta()
-	wantSettings, wantUserData, wantMarkers, wantBorder := vecIndexedMeta(t)
+	settings, userData, markers := w.Meta()
+	wantSettings, wantUserData, wantMarkers := vecIndexedMeta(t)
 	for _, c := range []struct {
 		name      string
 		got, want []byte
@@ -183,7 +183,6 @@ func TestConformanceVectorIndexed(t *testing.T) {
 		{"settings", settings, wantSettings},
 		{"userData", userData, wantUserData},
 		{"markers", markers, wantMarkers},
-		{"border", border, wantBorder},
 	} {
 		if !bytes.Equal(c.got, c.want) {
 			t.Errorf("meta %s = %x, want %x", c.name, c.got, c.want)
@@ -217,9 +216,9 @@ func TestConformanceVectorIndexed(t *testing.T) {
 // identity at all. It is vectorIndexedIdentity over an already-open handle.
 func vecIndexedContentHash(t *testing.T, w *IndexedWorld, reg world.BlockRegistry) uint64 {
 	t.Helper()
-	settings, userData, markers, border := w.Meta()
+	settings, userData, markers := w.Meta()
 	d := &WorldData{
-		Settings: settings, UserData: userData, Markers: markers, Border: border,
+		Settings: settings, UserData: userData, Markers: markers,
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])
@@ -244,7 +243,7 @@ func vecIndexedContentHash(t *testing.T, w *IndexedWorld, reg world.BlockRegistr
 // ---------------------------------------------------------------------------
 
 // vecIndexedMeta is the §7 metadata the vector carries in its meta frame.
-func vecIndexedMeta(t *testing.T) (settings, userData, markers, border []byte) {
+func vecIndexedMeta(t *testing.T) (settings, userData, markers []byte) {
 	t.Helper()
 	var err error
 	if settings, err = marshalNBT(map[string]any{
@@ -257,12 +256,7 @@ func vecIndexedMeta(t *testing.T) (settings, userData, markers, border []byte) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if border, err = marshalNBT(map[string]any{
-		"min": [2]int32{-128, -128}, "max": [2]int32{128, 128},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return settings, []byte("indexed-world-user-data"), markers, border
+	return settings, []byte("indexed-world-user-data"), markers
 }
 
 // vecIndexedColumn builds column i. Every column shares one pseudo-random
@@ -304,8 +298,8 @@ func TestMakeIndexedVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, userData, markers, border := vecIndexedMeta(t)
-	if err := w.SetMeta(settings, userData, markers, border); err != nil {
+	settings, userData, markers := vecIndexedMeta(t)
+	if err := w.SetMeta(settings, userData, markers); err != nil {
 		t.Fatal(err)
 	}
 	// Twenty columns, then a checkpoint.

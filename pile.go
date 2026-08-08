@@ -16,7 +16,7 @@ import (
 )
 
 // ErrReadOnly is returned by the mutating operations that can report an error
-// at all — Save, SetBorder, SetChunkUserData, Snapshot, DeleteSnapshot and
+// at all — Save, SetChunkUserData, Snapshot, DeleteSnapshot and
 // Rollback — when the provider was opened with ReadOnly. The mutators with no
 // error to return (StoreColumn, SaveSettings, SetUserData, SetMarker) are
 // silent no-ops instead, as ReadOnly's own documentation says; IsReadOnly is
@@ -65,7 +65,6 @@ type Provider struct {
 	settingsExtra map[string]any
 	userData      []byte
 	markers       []Marker
-	border        []byte
 	dims          map[int]*dimState
 
 	metaDirty bool
@@ -139,7 +138,7 @@ func Open(dir string, opts ...Option) (*Provider, error) {
 func (p *Provider) loadFromDisk() error {
 	p.dims = make(map[int]*dimState)
 	p.settings = defaultSettings()
-	p.userData, p.markers, p.border = nil, nil, nil
+	p.userData, p.markers = nil, nil
 
 	dims, err := worldDimensions(p.dir)
 	if err != nil {
@@ -166,8 +165,8 @@ func (p *Provider) loadFromDisk() error {
 			ds.iw = iw
 			ds.onDisk = true
 			if id == 0 || meta == nil {
-				s, u, m, b := iw.Meta()
-				meta = &format.Meta{Settings: s, UserData: u, Markers: m, Border: b}
+				s, u, m := iw.Meta()
+				meta = &format.Meta{Settings: s, UserData: u, Markers: m}
 			}
 			continue
 		}
@@ -189,7 +188,7 @@ func (p *Provider) loadFromDisk() error {
 		// World metadata is duplicated in every dimension file; the overworld
 		// wins, otherwise the first file found.
 		if id == 0 || meta == nil {
-			meta = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers, Border: d.Border}
+			meta = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers}
 		}
 	}
 	if meta != nil {
@@ -202,7 +201,7 @@ func (p *Provider) loadFromDisk() error {
 		if err != nil {
 			return fmt.Errorf("pile: decode markers: %w", err)
 		}
-		p.settings, p.userData, p.markers, p.border = s, meta.UserData, m, meta.Border
+		p.settings, p.userData, p.markers = s, meta.UserData, m
 	}
 	return nil
 }

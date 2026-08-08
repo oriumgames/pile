@@ -28,7 +28,7 @@ func UnresolvedStates(file []byte, reg world.BlockRegistry) ([]string, error) {
 		return nil, err
 	}
 	r := &reader{b: body}
-	if _, _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
+	if _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
 		return nil, err
 	}
 	entries, err := parseStatePalette(r, h.blockVersion)
@@ -96,7 +96,7 @@ func BlockStates(file []byte, opts ...ReadOption) ([]BlockState, error) {
 		return nil, err
 	}
 	r := &reader{b: body}
-	if _, _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
+	if _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
 		return nil, err
 	}
 	entries, err := parseStatePalette(r, h.blockVersion)

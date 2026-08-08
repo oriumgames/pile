@@ -134,7 +134,7 @@ _ = b.Save("maps/arena")   // or straight to disk
 
 ## Self-describing maps
 
-Settings, named markers, a world border and arbitrary world/chunk metadata
+Settings, named markers and arbitrary world/chunk metadata
 travel inside the file. A marker is a point, a region, or both:
 
 ```go
@@ -145,7 +145,6 @@ p.SetMarker(pile.Area("arena", "pvp", [3]float64{-10, 60, -10}, [3]float64{10, 7
 
 ```go
 p.Markers() / p.SetMarker(m)
-p.Border()  / p.SetBorder(&pile.Border{...})
 p.UserData() / p.SetUserData(b)
 p.ChunkUserData(pos, dim) / p.SetChunkUserData(pos, dim, b)
 ```

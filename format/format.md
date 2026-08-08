@@ -89,10 +89,9 @@ decoded from:
   A decoder that lowers every array into the same host-language value as a
   list cannot produce byte-identical output and is not conforming.
 - In the **metadata compounds this document specifies** (§7), the tag of each
-  field is fixed by that section and MUST be emitted exactly: the world
-  border's `min` and `max` are `TAG_Int_Array`, not lists. Writers MUST reject
-  a metadata blob whose fields carry the wrong tag, because a reader cannot
-  tell afterwards.
+  field is fixed by that section and MUST be emitted exactly: a setting
+  declared a long is a long and not an int. Writers MUST reject a metadata blob
+  whose fields carry the wrong tag, because a reader cannot tell afterwards.
 
 World and chunk **user data are not NBT at all**: they are opaque byte strings
 that the format never parses, so no rule in this section applies to them and
@@ -520,7 +519,6 @@ resolves to: dropping it discards the state it was preserving.
 settings         blob             NBT; world settings (§7.1); may be empty
 userData         blob             application-defined; may be empty
 markers          blob             NBT (§7.2); may be empty
-border           blob             NBT (§7.3); may be empty
 stats            blob             present iff flag Stats; NBT (§4.2)
 ```
 
@@ -792,7 +790,7 @@ MUST reject duplicate segment references (both are allocation amplifiers).
 
 ### 5.4 Meta frame
 
-`settings`, `userData`, `markers`, `border` blobs, §4.1 layout without the
+`settings`, `userData` and `markers` blobs, §4.1 layout without the
 stats field. A new meta frame is appended when metadata changes; the directory
 points at the latest.
 
@@ -909,7 +907,7 @@ A structure is a free-standing box of blocks with a paste anchor. The body is
 a single unit like solid mode:
 
 ```
-meta block       §4.1 (settings/markers/border empty; userData usable; no stats)
+meta block       §4.1 (settings and markers empty; userData usable; no stats)
 block palette    §3.1
 biome palette    §3.2 with count = 0   (structures store no biomes)
 blob table       §3.4
@@ -935,8 +933,8 @@ decoders MUST reject a structure whose origin falls outside it, so that one
 anchor has one encoding and a reader is never handed a coordinate its own
 array cannot address.
 
-A structure header MUST set no flags other than `Uncompressed`, its settings,
-markers and border blobs MUST be empty, and its biome palette MUST have zero
+A structure header MUST set no flags other than `Uncompressed`, its settings
+and markers blobs MUST be empty, and its biome palette MUST have zero
 entries. Decoders MUST reject files that violate this, so one structure has
 exactly one valid envelope.
 
@@ -1055,11 +1053,6 @@ stays the application's own category — `spawn_region`, `no_pvp`, whatever the
 map means — because a field that has to say `"area"` to be understood is a
 field doing two jobs, and the second one is already answered by the bounds
 being there.
-
-### 7.4 Border
-
-Compound `{min: int_array[2], max: int_array[2]}`: the inclusive XZ block
-bounds of the playable area. Advisory.
 
 ---
 

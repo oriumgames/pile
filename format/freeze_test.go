@@ -196,7 +196,7 @@ func TestRejectsUnusedLocalPaletteEntry(t *testing.T) {
 	reg := testRegistry(t)
 	body := func(pad bool) []byte {
 		w := &writer{}
-		for range 4 {
+		for range 3 {
 			w.blob(nil)
 		}
 		w.uvarint(2) // global block palette
@@ -254,7 +254,6 @@ func TestRejectsOutOfRangePaletteIndex(t *testing.T) {
 	// to show an out-of-range index survives every earlier check.
 	body := func(idx byte) []byte {
 		w := &writer{}
-		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
@@ -383,7 +382,7 @@ func TestIndexedDetectsFrameCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings, _ := marshalNBT(map[string]any{"name": "abc"})
-	if err := w.SetMeta(settings, []byte("abc"), nil, nil); err != nil {
+	if err := w.SetMeta(settings, []byte("abc"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -412,7 +411,7 @@ func TestIndexedDetectsFrameCorruption(t *testing.T) {
 		return // refused outright: also acceptable
 	}
 	defer r.Close()
-	_, ud, _, _ := r.Meta()
+	_, ud, _ := r.Meta()
 	if string(ud) == "zbc" {
 		t.Fatal("a corrupted metadata frame was served as valid")
 	}
@@ -553,26 +552,6 @@ func TestOpaqueNBTArraysSurvive(t *testing.T) {
 	}
 }
 
-// TestRejectsBorderSchema: §7.3 fixes the tag of every border field. A
-// dynamically typed decoder cannot tell a list from an array after the fact,
-// so the tags have to be right on the way in.
-func TestRejectsBorderSchema(t *testing.T) {
-	reg := testRegistry(t)
-	d := testWorld(t, reg)
-	bad, err := marshalNBT(map[string]any{"min": []int32{-1, -1}, "max": [2]int32{1, 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.Border = bad
-	var buf bytes.Buffer
-	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
-		t.Fatal("a border whose min is a list was accepted")
-	}
-}
-
-// TestCollectionTiesUseWrittenBytes: block entity coordinates are stripped and
-// an entity's UniqueID is overwritten with its authoritative ID, so neither
-// may decide the order. Two worlds differing only in those discarded values
 // must encode identically.
 func TestCollectionTiesUseWrittenBytes(t *testing.T) {
 	reg := testRegistry(t)
@@ -720,21 +699,13 @@ func TestIndexedSetMetaRejectsNonCanonical(t *testing.T) {
 		0x01, 1, 0, 'b', 1,
 		0x01, 1, 0, 'a', 1,
 		0x00}
-	if err := w.SetMeta(bad, nil, nil, nil); err == nil {
+	if err := w.SetMeta(bad, nil, nil); err == nil {
 		t.Fatal("SetMeta accepted a settings blob the reader rejects")
 	}
 	// An empty compound is valid: §7 makes every metadata field optional and
 	// fixes only the spelling of the ones that are present.
-	if err := w.SetMeta(nil, nil, nil, []byte{0x0a, 0, 0, 0x00}); err != nil {
-		t.Fatalf("SetMeta rejected an empty border compound: %v", err)
-	}
-	// A present field with the wrong tag is not.
-	badBorder, err := marshalNBT(map[string]any{"min": []int32{0, 0}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.SetMeta(nil, nil, nil, badBorder); err == nil {
-		t.Fatal("SetMeta accepted a border whose min is a list")
+	if err := w.SetMeta(nil, nil, []byte{0x0a, 0, 0, 0x00}); err != nil {
+		t.Fatalf("SetMeta rejected an empty markers compound: %v", err)
 	}
 }
 
@@ -2180,7 +2151,6 @@ func TestMetadataFieldsAreOptional(t *testing.T) {
 	}{
 		{"settings", func(d *WorldData) { d.Settings = empty }},
 		{"markers", func(d *WorldData) { d.Markers = empty }},
-		{"border", func(d *WorldData) { d.Border = empty }},
 	} {
 		d := testWorld(t, reg)
 		blob.set(d)
@@ -2191,16 +2161,7 @@ func TestMetadataFieldsAreOptional(t *testing.T) {
 	}
 
 	// Spelling is still a rule: a present field with the wrong tag is invalid.
-	d := testWorld(t, reg)
-	bad, err := marshalNBT(map[string]any{"max": []int32{1, 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.Border = bad
-	var buf bytes.Buffer
-	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
-		t.Fatal("a border whose max is a list was accepted")
-	}
+	// TestRejectsMetaSchemaViolations covers that for the blobs that remain.
 }
 
 // TestWriterRejectsDeepNBTLists: the depth limit was checked only when the
@@ -2565,7 +2526,7 @@ func TestReaderEnforcesMetadataSchemas(t *testing.T) {
 	if err := checkMarkersBlob(unsorted); err == nil {
 		t.Fatal("the shared schema check accepts an unsorted marker list")
 	}
-	if _, _, _, _, _, err := readMetaBlobs(&reader{b: metaBody(t, unsorted)}, 0); err == nil {
+	if _, _, _, _, err := readMetaBlobs(&reader{b: metaBody(t, unsorted)}, 0); err == nil {
 		t.Fatal("the reader accepted an unsorted marker list")
 	}
 }
@@ -2577,7 +2538,6 @@ func metaBody(t *testing.T, markers []byte) []byte {
 	w.blob(nil) // settings
 	w.blob(nil) // user data
 	w.blob(markers)
-	w.blob(nil) // border
 	return w.bytes()
 }
 
@@ -2827,9 +2787,8 @@ func TestSetMetaChecksAggregateFrame(t *testing.T) {
 	// Four blobs, each just inside the per-blob ceiling, together past the
 	// frame ceiling. Only the opaque one can be arbitrary bytes; the rest are
 	// canonical compounds padded with an unlisted byte array.
-	// Exactly at the per-blob ceiling, so the four together pass the frame
-	// ceiling by their length prefixes alone. The NBT wrapper's size is not
-	// worth predicting, so the payload is adjusted until the blob lands.
+	// Exactly at the per-blob ceiling. The NBT wrapper's size is not worth
+	// predicting, so the payload is adjusted until the blob lands.
 	pad := func() []byte {
 		payload := maxBlobLen - 32
 		for range 4 {
@@ -2846,12 +2805,21 @@ func TestSetMetaChecksAggregateFrame(t *testing.T) {
 		return nil
 	}
 	big := pad()
-	if err := w.SetMeta(big, make([]byte, maxBlobLen), big, big); err == nil {
-		t.Fatal("metadata totalling more than one frame was accepted")
+	// Every blob at its ceiling, which is the largest metadata a caller can
+	// hand SetMeta at all: three times 16 MiB is 48, under the 64 MiB frame
+	// ceiling, so it has to be accepted.
+	//
+	// This used to be the case that proved the frame ceiling rejects what the
+	// per-blob rules let through -- with four blobs, 64 MiB was reachable. The
+	// border blob's removal took the maximum to 48 MiB and left the frame check
+	// in SetMeta with no input that can reach it. It is kept as a bound rather
+	// than deleted as enforcement, because metaFrameLen also counts the length
+	// prefixes and a later field would make it live again; what is gone is any
+	// way to test it from here.
+	if err := w.SetMeta(big, make([]byte, maxBlobLen), big); err != nil {
+		t.Fatalf("metadata at the per-blob ceiling was rejected: %v", err)
 	}
-	// One blob of the same size is fine, so the frame ceiling is what rejected
-	// the set rather than any per-blob rule.
-	if err := w.SetMeta(big, nil, nil, nil); err != nil {
+	if err := w.SetMeta(big, nil, nil); err != nil {
 		t.Fatalf("a single legal blob was rejected: %v", err)
 	}
 }
@@ -2958,7 +2926,7 @@ func TestRejectsLayerCountInCells(t *testing.T) {
 	// so the read ran out of bytes and the ceiling was never consulted: it
 	// stayed green with the bound deleted.
 	file := func(layerN uint64) []byte {
-		var noMeta [4][]byte
+		var noMeta [3][]byte
 		body := &writer{}
 		for _, b := range noMeta {
 			body.blob(b)
@@ -3076,7 +3044,7 @@ func TestRejectsRedundantVersionOverride(t *testing.T) {
 func TestRejectsOverLimitCounts(t *testing.T) {
 	reg := testRegistry(t)
 	// A structure whose first dimension is one past the ceiling.
-	var noMeta [4][]byte
+	var noMeta [3][]byte
 	body := structBody(noMeta, func(w *writer) {
 		w.uvarint(0) // biome palette
 		w.uvarint(0) // blob table
@@ -3174,7 +3142,7 @@ func TestRejectsOverLimitCounts(t *testing.T) {
 func TestRejectsStructureCellOverflow(t *testing.T) {
 	reg := testRegistry(t)
 	file := func(size [3]uint64, presence int) []byte {
-		var noMeta [4][]byte
+		var noMeta [3][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table
@@ -3223,7 +3191,6 @@ func TestReaderRejectsUnorderedRecords(t *testing.T) {
 	body.blob(nil)
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.uvarint(0) // block palette
 	body.uvarint(0) // overrides
 	body.uvarint(0) // biome palette
@@ -3255,7 +3222,6 @@ func TestRejectsTrailingBytesAfterBody(t *testing.T) {
 	worldBody.blob(nil)  // settings
 	worldBody.blob(nil)  // userData
 	worldBody.blob(nil)  // markers
-	worldBody.blob(nil)  // border
 	worldBody.uvarint(0) // block palette
 	worldBody.uvarint(0) // version overrides
 	worldBody.uvarint(0) // biome palette
@@ -3265,7 +3231,7 @@ func TestRejectsTrailingBytesAfterBody(t *testing.T) {
 	worldBody.svarint(0)
 	worldBody.raw(recordBody(recordFields{}))
 
-	var noMeta [4][]byte
+	var noMeta [3][]byte
 	structureBody := structBody(noMeta, func(w *writer) {
 		w.uvarint(0) // biome palette
 		w.uvarint(0) // blob table
@@ -3512,7 +3478,6 @@ func TestStatsPreservesUnknownKeys(t *testing.T) {
 	body.blob(nil)
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.blob(stats)
 	body.uvarint(0) // block palette
 	body.uvarint(0) // version overrides
@@ -3613,7 +3578,7 @@ func TestRejectsZeroBlockVersion(t *testing.T) {
 	// whether the file is accepted.
 	empty := func() []byte {
 		w := &writer{}
-		for range 4 {
+		for range 3 {
 			w.blob(nil)
 		}
 		w.uvarint(0) // block palette
@@ -3787,7 +3752,7 @@ func structureFile(flags uint32, body []byte) []byte {
 // that precedes the biome palette: four metadata blobs, an empty block palette
 // and no version overrides. meta supplies the four blobs, so a test that needs
 // one non-empty can say so.
-func structBody(meta [4][]byte, rest func(*writer)) []byte {
+func structBody(meta [3][]byte, rest func(*writer)) []byte {
 	w := &writer{}
 	for _, b := range meta {
 		w.blob(b)
@@ -3802,7 +3767,7 @@ func structBody(meta [4][]byte, rest func(*writer)) []byte {
 // envelope. Round-tripping a legal one cannot show the rejections going.
 func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	reg := testRegistry(t)
-	var noMeta [4][]byte
+	var noMeta [3][]byte
 	// tail writes everything from the blob table to the end of the body, with
 	// the size and origin the caller chooses.
 	tail := func(size [3]uint64, origin [3]int64) func(*writer) {
@@ -3842,13 +3807,13 @@ func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	}), reg); err == nil {
 		t.Error("a structure with a biome palette was accepted")
 	}
-	// Non-empty settings. The reader tests settings, markers and border in
+	// Non-empty settings. The reader tests settings and markers in
 	// one condition, so one of the three drives it.
 	settings, err := marshalNBT(map[string]any{"name": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	withSettings := structBody([4][]byte{settings, nil, nil, nil}, rest)
+	withSettings := structBody([3][]byte{settings, nil, nil}, rest)
 	if _, err := ReadStructure(structureFile(FlagUncompressed, withSettings), reg); err == nil {
 		t.Error("a structure carrying settings was accepted")
 	}
@@ -4005,7 +3970,6 @@ func TestStatsMissingKeyAccepted(t *testing.T) {
 	body.blob(nil)
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.blob(partial)
 	body.uvarint(0)
 	body.uvarint(0)
@@ -4120,7 +4084,6 @@ func TestRejectsUnreferencedBlob(t *testing.T) {
 		w.blob(nil) // settings
 		w.blob(nil) // user data
 		w.blob(nil) // markers
-		w.blob(nil) // border
 		w.uvarint(1)
 		w.str("minecraft:stone")
 		w.uvarint(0) // no properties
@@ -4208,7 +4171,6 @@ func oneRecordBody(rec []byte) []byte {
 	w.blob(nil)  // settings
 	w.blob(nil)  // user data
 	w.blob(nil)  // markers
-	w.blob(nil)  // border
 	w.uvarint(0) // block palette
 	w.uvarint(0) // version overrides
 	w.uvarint(0) // biome palette
@@ -4302,7 +4264,7 @@ func TestStructureRejectsBlockEntityOutsideBox(t *testing.T) {
 	// A 2x2x2 box, so a coordinate of 1 is the last legal one and 2 is past
 	// the end on every axis.
 	file := func(pos [3]uint64) []byte {
-		var noMeta [4][]byte
+		var noMeta [3][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table
@@ -4398,7 +4360,6 @@ func collectionBody(bes, ticks []func(*writer)) []byte {
 	w.blob(nil) // settings
 	w.blob(nil) // user data
 	w.blob(nil) // markers
-	w.blob(nil) // border
 	w.uvarint(1)
 	w.str("minecraft:stone")
 	w.uvarint(0)
@@ -4490,7 +4451,6 @@ func TestReaderEnforcesBlobFirstUseOrder(t *testing.T) {
 	// Two distinct uniform blobs, referenced by one record's two sections.
 	body := func(first, second uint64) []byte {
 		w := &writer{}
-		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
@@ -4923,7 +4883,7 @@ func (p parityShape) table(w *writer) {
 // sections 0..0, so a block entity's Y lies in 0..15 as it does in the cell.
 func (p parityShape) worldBody() []byte {
 	w := &writer{}
-	for range 4 {
+	for range 3 {
 		w.blob(nil)
 	}
 	p.palette(w)
@@ -4959,7 +4919,7 @@ func (p parityShape) worldBody() []byte {
 // holding the same layers and the same block entities.
 func (p parityShape) structureBody() []byte {
 	w := &writer{}
-	for range 4 {
+	for range 3 {
 		w.blob(nil)
 	}
 	p.palette(w)
@@ -5067,7 +5027,7 @@ func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
 	// the default and stay legal.
 	body := func(secRef uint64) []byte {
 		w := &writer{}
-		for range 4 {
+		for range 3 {
 			w.blob(nil)
 		}
 		w.uvarint(0) // block palette
@@ -5327,7 +5287,7 @@ func TestRejectsTrailingBytesInFrames(t *testing.T) {
 	}
 	meta := func() []byte {
 		w := &writer{}
-		for range 4 {
+		for range 3 {
 			w.blob(nil)
 		}
 		return w.bytes()
@@ -5428,7 +5388,7 @@ func TestRejectsTrailingBytesInFrames(t *testing.T) {
 func TestRejectsStructureOriginOutsideInt32(t *testing.T) {
 	reg := testRegistry(t)
 	file := func(origin [3]int64) []byte {
-		var noMeta [4][]byte
+		var noMeta [3][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table

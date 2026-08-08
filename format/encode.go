@@ -75,7 +75,6 @@ type WorldData struct {
 	Settings []byte
 	UserData []byte
 	Markers  []byte
-	Border   []byte
 	Columns  []Column
 }
 
@@ -294,7 +293,6 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	body.blob(d.Settings)
 	body.blob(d.UserData)
 	body.blob(d.Markers)
-	body.blob(d.Border)
 	if opts.Stats {
 		var filled int
 		for i := range inter {
@@ -392,7 +390,6 @@ func validateWorldData(d *WorldData) error {
 		{d.Settings, "world settings blob", true},
 		{d.UserData, "world user data", false},
 		{d.Markers, "markers blob", true},
-		{d.Border, "border blob", true},
 	} {
 		if err := checkBlob(b.p, b.what); err != nil {
 			return err
@@ -407,7 +404,7 @@ func validateWorldData(d *WorldData) error {
 			}
 		}
 	}
-	if err := checkMetaSchemas(d.Settings, d.Markers, d.Border); err != nil {
+	if err := checkMetaSchemas(d.Settings, d.Markers); err != nil {
 		return err
 	}
 	// The reader bounds how many section storages a file decodes into; the
@@ -448,14 +445,11 @@ func validateWorldData(d *WorldData) error {
 // checkMetaSchemas applies every §7 schema. The tag of each specified field is
 // fixed, and a dynamically typed decoder cannot tell afterwards which one a
 // value came from, so the blobs have to be right on the way in.
-func checkMetaSchemas(settings, markers, border []byte) error {
+func checkMetaSchemas(settings, markers []byte) error {
 	if err := checkSettingsBlob(settings); err != nil {
 		return err
 	}
-	if err := checkMarkersBlob(markers); err != nil {
-		return err
-	}
-	return checkBorderBlob(border)
+	return checkMarkersBlob(markers)
 }
 
 // settingsSchema fixes the tag of every field §7.1 names. Unlisted keys are
@@ -666,32 +660,6 @@ func doubleTriple(v any) ([3]float64, error) {
 		return out, nil
 	}
 	return out, fmt.Errorf("is %T, want a list of three doubles", v)
-}
-
-// checkBorderBlob enforces the border schema of the specification: min and max
-// are two-element int arrays, not lists. Structural NBT validation cannot catch
-// this, and a decoder into a dynamically typed map cannot tell the two apart
-// after the fact, so the tags have to be right on the way in.
-func checkBorderBlob(b []byte) error {
-	if len(b) == 0 {
-		return nil
-	}
-	m, err := unmarshalNBT(b)
-	if err != nil {
-		return fmt.Errorf("pile: border blob: %w", err)
-	}
-	// Presence is a convention and spelling is a rule (§7): a field that is
-	// absent is fine, one that is present has to carry the stated tag.
-	for _, k := range []string{"min", "max"} {
-		v, ok := m[k]
-		if !ok {
-			continue
-		}
-		if _, ok := v.([2]int32); !ok {
-			return fmt.Errorf("pile: border blob: %q is %T, want a two-element int array", k, v)
-		}
-	}
-	return nil
 }
 
 // compareNBT orders two compounds by their canonical encodings, giving a

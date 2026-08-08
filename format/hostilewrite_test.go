@@ -340,9 +340,6 @@ func TestHostileWriteShapes(t *testing.T) {
 		{name: "settings blob that is not NBT", mustRefuse: true, build: func(*testing.T, world.BlockRegistry) *WorldData {
 			return &WorldData{Settings: []byte{0xFF, 0xFF, 0xFF}}
 		}},
-		{name: "border blob with a list where an int array belongs", mustRefuse: true, build: func(t *testing.T, reg world.BlockRegistry) *WorldData {
-			return &WorldData{Border: mustNBT(t, map[string]any{"min": []int32{-8, -8}})}
-		}},
 		{name: "markers out of order", mustRefuse: true, build: func(t *testing.T, reg world.BlockRegistry) *WorldData {
 			return &WorldData{Markers: mustNBT(t, map[string]any{"markers": []map[string]any{
 				{"name": "b", "kind": "spawn", "pos": []float64{0, 0, 0}},
@@ -1152,7 +1149,7 @@ func TestHostileIndexedWriteSurface(t *testing.T) {
 	if err := w.Store(good(1, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta(mustNBT(t, map[string]any{"name": "hostile"}), []byte("u"), nil, nil); err != nil {
+	if err := w.SetMeta(mustNBT(t, map[string]any{"name": "hostile"}), []byte("u"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Compact(); err != nil {

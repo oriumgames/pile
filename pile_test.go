@@ -214,9 +214,6 @@ func TestReadOnlyRefusesEveryMutator(t *testing.T) {
 	if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("original")); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.SetBorder(&Border{Min: [2]int32{-8, -8}, Max: [2]int32{8, 8}}); err != nil {
-		t.Fatal(err)
-	}
 	if err := p.Snapshot("base"); err != nil {
 		t.Fatal(err)
 	}
@@ -258,12 +255,6 @@ func TestReadOnlyRefusesEveryMutator(t *testing.T) {
 	}
 	if got := r.ChunkUserData(world.ChunkPos{0, 0}, world.Overworld); !bytes.Equal(got, []byte("original")) {
 		t.Fatalf("SetChunkUserData changed a read-only provider: %q", got)
-	}
-	if err := r.SetBorder(&Border{Min: [2]int32{-1, -1}, Max: [2]int32{1, 1}}); !errors.Is(err, ErrReadOnly) {
-		t.Fatalf("SetBorder on read-only = %v, want ErrReadOnly", err)
-	}
-	if b := r.Border(); b == nil || b.Max != [2]int32{8, 8} {
-		t.Fatalf("SetBorder changed a read-only provider: %+v", b)
 	}
 	if err := r.Snapshot("forbidden"); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("Snapshot on read-only = %v, want ErrReadOnly", err)

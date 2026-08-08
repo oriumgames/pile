@@ -56,7 +56,7 @@ func (r *MoveReport) ClippedTotal() int {
 
 // MoveWorld translates a pile world on disk: all blocks, biomes, entities,
 // block entities, scheduled ticks, chunk metadata, plus spawn, markers and
-// world border. Files keep their mode (solid or indexed) and are replaced
+// markers. Files keep their mode (solid or indexed) and are replaced
 // atomically. The move is all-or-nothing across dimensions.
 func MoveWorld(dir string, opt MoveOptions) (*MoveReport, error) {
 	reg := opt.Registry
@@ -94,7 +94,6 @@ func MoveWorld(dir string, opt MoveOptions) (*MoveReport, error) {
 	if wf.Markers, err = moveMarkers(wf.Markers, opt.Offset); err != nil {
 		return nil, err
 	}
-	wf.Border = moveBorder(wf.Border, opt.Offset)
 
 	// Backup, then write every file back atomically in its original mode.
 	if opt.Backup {
@@ -464,41 +463,4 @@ func moveMarkers(blob []byte, off cube.Pos) ([]byte, error) {
 		}
 	}
 	return markersToNBT(ms)
-}
-
-// moveBorder translates a world border blob ({min: [2]int32, max: [2]int32})
-// horizontally. Blobs that do not match the shape pass through unchanged.
-func moveBorder(blob []byte, off cube.Pos) []byte {
-	if len(blob) == 0 {
-		return nil
-	}
-	m, err := format.UnmarshalNBT(blob)
-	if err != nil {
-		return blob
-	}
-	shift := func(v any) (any, bool) {
-		// The border schema fixes these as int arrays, so the translated
-		// value must stay a fixed-size array: a slice would re-encode as a
-		// TAG_List and no longer match the schema.
-		switch pair := v.(type) {
-		case []int32:
-			if len(pair) == 2 {
-				return [2]int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
-			}
-		case [2]int32:
-			return [2]int32{pair[0] + int32(off.X()), pair[1] + int32(off.Z())}, true
-		}
-		return v, false
-	}
-	minV, ok1 := shift(m["min"])
-	maxV, ok2 := shift(m["max"])
-	if !ok1 || !ok2 {
-		return blob
-	}
-	m["min"], m["max"] = minV, maxV
-	out, err := format.MarshalNBT(m)
-	if err != nil {
-		return blob
-	}
-	return out
 }

@@ -88,7 +88,7 @@ func inspectIndexed(f string, limit decodeLimit) error {
 	}
 	defer w.Close()
 	st, _ := os.Stat(f)
-	settings, userData, markers, _ := w.Meta()
+	settings, userData, markers := w.Meta()
 	fmt.Printf("%s:\n", f)
 	fmt.Printf("  size          %d bytes\n", st.Size())
 	fmt.Printf("  kind          world\n")
@@ -175,8 +175,8 @@ func cmdVerify(args []string) error {
 				}
 				n++
 			}
-			set, ud, mk, bd := w.Meta()
-			meta[f] = &format.Meta{Settings: set, UserData: ud, Markers: mk, Border: bd}
+			set, ud, mk := w.Meta()
+			meta[f] = &format.Meta{Settings: set, UserData: ud, Markers: mk}
 			_ = w.Close()
 			fmt.Printf("%s: ok (%d chunks, indexed)\n", f, n)
 			continue
@@ -189,7 +189,7 @@ func cmdVerify(args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		meta[f] = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers, Border: d.Border}
+		meta[f] = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers}
 		fmt.Printf("%s: ok (%d chunks)\n", f, len(d.Columns))
 	}
 	if diffs := metadataDivergence(meta); len(diffs) > 0 {
@@ -297,7 +297,6 @@ func metadataDivergence(meta map[string]*format.Meta) []string {
 		}{
 			{"settings", meta[ref].Settings, meta[n].Settings},
 			{"markers", meta[ref].Markers, meta[n].Markers},
-			{"border", meta[ref].Border, meta[n].Border},
 			{"user data", meta[ref].UserData, meta[n].UserData},
 		} {
 			if !bytes.Equal(f.a, f.b) {

@@ -110,7 +110,7 @@ commands:
                         convert between solid and indexed file modes
   move    (--by dx,dy,dz | --spawn-to x,y,z | --center) <world>
                         translate a whole world (blocks, entities, spawn,
-                        markers, border); refuses lossy moves unless --clip;
+                        markers); refuses lossy moves unless --clip;
                         --dry-run previews, auto-backup to snapshots/pre-move
   origin  (--set x,y,z | --zero | --center) <structure.pile>
                         change a structure's paste anchor (pure metadata)
@@ -127,7 +127,7 @@ commands:
                         current registry (exit 1 if any)
   prune   --bounds x1,z1,x2,z2 <world>
                         drop chunks outside a block box
-  edit    <world>       edit the world's settings, markers, border and user
+  edit    <world>       edit the world's settings, markers and user
                         data as JSON in $EDITOR; --print dumps it, --apply
                         reads it back from a file
   blocks  <mcdb-world>  list the block identifiers a leveldb world uses and the

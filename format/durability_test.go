@@ -39,9 +39,9 @@ func tinyColumn(t testing.TB, reg world.BlockRegistry, x, z int32, r uint32) Col
 
 // worldState is everything about an opened world a crash could get wrong.
 type worldState struct {
-	gen                                 uint64
-	chunks                              map[[2]int32]uint64
-	settings, userData, markers, border string
+	gen                         uint64
+	chunks                      map[[2]int32]uint64
+	settings, userData, markers string
 }
 
 func (s worldState) String() string {
@@ -55,7 +55,7 @@ func (s worldState) String() string {
 func (s worldState) equal(o worldState) bool {
 	return s.gen == o.gen && maps.Equal(s.chunks, o.chunks) &&
 		s.settings == o.settings && s.userData == o.userData &&
-		s.markers == o.markers && s.border == o.border
+		s.markers == o.markers
 }
 
 // captureState opens a file and reads everything out of it. It fails the test
@@ -80,8 +80,8 @@ func captureState(t *testing.T, path string, reg world.BlockRegistry, what strin
 		}
 		st.chunks[k] = xxhash.Sum64(body)
 	}
-	s, u, m, b := w.Meta()
-	st.settings, st.userData, st.markers, st.border = string(s), string(u), string(m), string(b)
+	s, u, m := w.Meta()
+	st.settings, st.userData, st.markers = string(s), string(u), string(m)
 	return st
 }
 
@@ -116,7 +116,7 @@ func crashScenarios(t *testing.T) []crashScenario {
 		if err := w.Store(c); err != nil {
 			return err
 		}
-		if err := w.SetMeta(meta2, []byte("v2"), nil, nil); err != nil {
+		if err := w.SetMeta(meta2, []byte("v2"), nil); err != nil {
 			return err
 		}
 		return w.Checkpoint()
@@ -126,7 +126,7 @@ func crashScenarios(t *testing.T) []crashScenario {
 		if err := w.Store(tinyColumn(t, reg, 0, 0, stone)); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.SetMeta(meta1, []byte("v1"), nil, nil); err != nil {
+		if err := w.SetMeta(meta1, []byte("v1"), nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.Checkpoint(); err != nil {
@@ -456,7 +456,7 @@ func TestRecoveryFollowsPrevFooterChain(t *testing.T) {
 	if err := w.Store(tinyColumn(t, reg, 0, 0, stone)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta(meta1, []byte("good"), nil, nil); err != nil {
+	if err := w.SetMeta(meta1, []byte("good"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Checkpoint(); err != nil {
@@ -465,7 +465,7 @@ func TestRecoveryFollowsPrevFooterChain(t *testing.T) {
 	goodGen := w.Generation()
 
 	// From here on every checkpoint shares one meta frame.
-	if err := w.SetMeta(meta2, []byte("doomed"), nil, nil); err != nil {
+	if err := w.SetMeta(meta2, []byte("doomed"), nil); err != nil {
 		t.Fatal(err)
 	}
 	// One past the scan's candidate cap, so the scan cannot reach the good
@@ -502,7 +502,7 @@ func TestRecoveryFollowsPrevFooterChain(t *testing.T) {
 	if r.Generation() != goodGen {
 		t.Fatalf("adopted generation %d, want %d (the last checkpoint before the damaged meta frame)", r.Generation(), goodGen)
 	}
-	if _, u, _, _ := r.Meta(); string(u) != "good" {
+	if _, u, _ := r.Meta(); string(u) != "good" {
 		t.Fatalf("adopted metadata %q, want %q", u, "good")
 	}
 	if r.ChunkCount() != 1 {
@@ -817,7 +817,7 @@ func TestRecoveryRejectsCheckpointWhoseSharedFrameHashFails(t *testing.T) {
 	goodGen := w.Generation()
 	// A second checkpoint with a meta frame of its own, so the damage below
 	// belongs to it alone and the first checkpoint stays whole.
-	if err := w.SetMeta(nil, filler, nil, nil); err != nil {
+	if err := w.SetMeta(nil, filler, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Checkpoint(); err != nil {
@@ -898,7 +898,7 @@ func TestCheckpointDoesNotReportSuccessWithAnUnsyncedFooter(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings, _ := marshalNBT(map[string]any{"name": "metadata only"})
-	if err := w2.SetMeta(settings, nil, nil, nil); err != nil {
+	if err := w2.SetMeta(settings, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w2.Checkpoint(); err == nil {
@@ -920,7 +920,7 @@ func TestCheckpointDoesNotReportSuccessWithAnUnsyncedFooter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if s, _, _, _ := r.Meta(); len(s) == 0 {
+	if s, _, _ := r.Meta(); len(s) == 0 {
 		t.Fatal("the metadata the retried checkpoint promised is not in the file")
 	}
 }

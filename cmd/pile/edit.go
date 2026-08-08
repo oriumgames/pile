@@ -35,17 +35,11 @@ import (
 type editData struct {
 	Settings exportSettings `json:"settings"`
 	Markers  []exportMarker `json:"markers"`
-	Border   *editBorder    `json:"border"`
 
 	// UserData is the world's metadata blob: inline when it is valid JSON,
 	// base64 otherwise, so an editor shows something readable when it can.
 	UserData       json.RawMessage `json:"userData"`
 	UserDataBase64 string          `json:"userDataBase64,omitempty"`
-}
-
-type editBorder struct {
-	Min [2]int32 `json:"min"`
-	Max [2]int32 `json:"max"`
 }
 
 func cmdEdit(args []string) error {
@@ -120,9 +114,6 @@ func readEditData(p *pile.Provider) editData {
 		}
 		d.Markers = append(d.Markers, em)
 	}
-	if b := p.Border(); b != nil {
-		d.Border = &editBorder{Min: b.Min, Max: b.Max}
-	}
 	if ud := p.UserData(); len(ud) > 0 {
 		if json.Valid(ud) {
 			d.UserData = ud
@@ -171,12 +162,6 @@ func applyEditData(dir string, d, before editData, noBackup bool, limit decodeLi
 			mk.Bounds = &pile.Bounds{Min: *m.Min, Max: *m.Max}
 		}
 		p.SetMarker(mk)
-	}
-
-	if d.Border != nil {
-		p.SetBorder(&pile.Border{Min: d.Border.Min, Max: d.Border.Max})
-	} else {
-		p.SetBorder(nil)
 	}
 
 	switch {

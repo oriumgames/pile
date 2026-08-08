@@ -401,7 +401,7 @@ func BenchmarkMoveWorldFast(b *testing.B) {
 }
 
 // BenchmarkMoveWorldSlow measures the general move: the offset straddles chunk
-// borders, so every block, biome and entry is read and rewritten into freshly
+// metadata, so every block, biome and entry is read and rewritten into freshly
 // allocated destination columns.
 func BenchmarkMoveWorldSlow(b *testing.B) {
 	b.ReportAllocs()

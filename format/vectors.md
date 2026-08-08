@@ -86,7 +86,6 @@ off  bytes                            field                            value
  16  00                               meta.settings (blob, len 0)      empty
  17  00                               meta.userData (blob, len 0)      empty
  18  00                               meta.markers  (blob, len 0)      empty
- 19  00                               meta.border   (blob, len 0)      empty
  20  01                               blockPalette.count               1
  21  0f                               entry[0].name.len                15
  22  6d 69 6e ... 6e 65               entry[0].name                    "minecraft:stone"
@@ -163,9 +162,9 @@ looks like, which is a different thing from a column that was never stored.
 | `world_dim_nether.pile` | 118 | `c62c88c4f7de5206` | `world_minimal`'s content with dimension bits 5-7 = 1 |
 | `world_dim_end.pile` | 118 | `c62c88c4f7de5206` | the same with dimension bits 5-7 = 2 |
 | `structure_edge_padding.pile` | 12 431 | `f55d6c695c07baab` | a 17×3×18 structure: the box is not a multiple of 16, so its four cells have padding outside it. Padding is air in every layer (§6) |
-| `structure_full.pile` | 12 684 | `5e1f1c878ca0ef99` | a negative origin, an internal all-air cell layer, block entities, entities and user data; settings, markers and border empty and the biome palette at zero entries, as §6 requires |
+| `structure_full.pile` | 12 684 | `5e1f1c878ca0ef99` | a negative origin, an internal all-air cell layer, block entities, entities and user data; settings and markers empty and the biome palette at zero entries, as §6 requires |
 | `indexed_torn.pile` | 400 | `c62c88c4f7de5206` | an indexed file (§5) whose newest footer is destroyed. Opening it must fall back through `prevFooter` to the previous checkpoint; the content that survives is the one column stored before it |
-| `indexed_full.pile` | 24 081 | `732fef0b94bdf2fe` | an indexed file with a history: a meta frame, a trained dictionary frame, two block palette segments, a checkpoint chain reaching generation 3, superseded records the directory does not name, and a compaction in the middle of it. Its bytes are **not** claimed; see below |
+| `indexed_full.pile` | 24 081 | `11eb2fd39e143b79` | an indexed file with a history: a meta frame, a trained dictionary frame, two block palette segments, a checkpoint chain reaching generation 3, superseded records the directory does not name, and a compaction in the middle of it. Its bytes are **not** claimed; see below |
 
 The three dimension vectors are byte-identical apart from the header's flags
 word at offsets 8-11 and the checkpoint hash at offset 74, which covers it. A
@@ -198,13 +197,13 @@ must conclude, and nothing else about the file is claimed:
 | generation | 3 |
 | dimension | nether (§5.5: from the directory prologue, which compaction carried forward) |
 | columns | exactly 22, at (0,0)–(4,3) plus (0,4) and (1,4) |
-| metadata | a §7 settings compound (`name` "indexed vector", `time` 6000, `difficulty` 1), 23 bytes of world user data, one marker "hub", and a border of ±128 — carried in a **meta frame**, which is why `ReadMeta` on an indexed file tells a caller nothing about them |
+| metadata | a §7 settings compound (`name` "indexed vector", `time` 6000, `difficulty` 1), 23 bytes of world user data, and one marker "hub" — carried in a **meta frame**, which is why `ReadMeta` on an indexed file tells a caller nothing about them |
 | a dictionary | the directory names a dictionary frame and the record frames were written against it. A reader that ignores it decodes nothing at all |
 | palette segments | more than one. Segments are cumulative and a reader must concatenate them in directory order; a file with one segment cannot tell a correct reader from an incorrect one |
 | dead frames | the file contains records the newest directory does not name. A reader that located content by scanning frames rather than by reading the directory would find superseded ones and could not say which wins |
 | unresolved states | none |
 | a hand-checkable fact | the block at structure-local (0, 0, 0) of column (0,0) is `minecraft:bedrock` |
-| content identity | `732fef0b94bdf2fe`, computed by opening the file, re-encoding everything it yields as an uncompressed solid file, and taking `ContentHash` of that |
+| content identity | `11eb2fd39e143b79`, computed by opening the file, re-encoding everything it yields as an uncompressed solid file, and taking `ContentHash` of that |
 
 The last row is the load-bearing one: two implementations that agree on it agree
 about what the file means, whatever their readers did to get there.
@@ -349,7 +348,6 @@ walker deliberately does not do — it models the wire, not the game.
 | `neg_nbt_named_root` | the root compound carries a name. One canonical envelope: the root is unnamed |
 | `neg_settings_wrong_tag` **(reader only)** | `time` stored as an int rather than a long. Which §7 fields exist is a convention; how a field is spelled is a rule, because a decoder into a dynamically typed map cannot recover which tag a value came from. The walker checks NBT structure, and a wrong tag is structurally well-formed |
 | `neg_markers_not_sorted` **(reader only)** | the marker list is not sorted by name. The same marker collection would otherwise have as many encodings as it has permutations. Structurally well-formed, so only the §7.2 schema catches it |
-| `neg_border_wrong_tag` **(reader only)** | the border's `min` is a list of ints rather than an int array. Same reason |
 | `neg_stats_wrong_tag` **(reader only)** | a stats counter stored as an int rather than a long. A missing counter is valid; a mistyped one is not |
 
 ### Structures (§6)

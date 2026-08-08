@@ -93,43 +93,6 @@ func TestAutoSave(t *testing.T) {
 	}
 }
 
-func TestBorderRoundTripAndMove(t *testing.T) {
-	reg := testRegistry(t)
-	dir := t.TempDir()
-	p, _ := Open(dir)
-	_ = p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, testColumn(t, reg, world.ChunkPos{0, 0}))
-	if err := p.SetBorder(&Border{Min: [2]int32{-64, -64}, Max: [2]int32{64, 64}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	q, err := Open(dir, ReadOnly())
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := q.Border()
-	_ = q.Close()
-	if got == nil || got.Min != [2]int32{-64, -64} || got.Max != [2]int32{64, 64} {
-		t.Fatalf("border round trip: %+v", got)
-	}
-
-	// A world move translates the border.
-	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{16, 0, 32}, Backup: false}); err != nil {
-		t.Fatal(err)
-	}
-	r, err := Open(dir, ReadOnly())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	moved := r.Border()
-	if moved == nil || moved.Min != [2]int32{-48, -32} || moved.Max != [2]int32{80, 96} {
-		t.Fatalf("border not translated: %+v", moved)
-	}
-}
-
 func TestStructureLibrary(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()

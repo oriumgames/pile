@@ -327,13 +327,12 @@ func buildWorldCollections(t *testing.T, reg world.BlockRegistry) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	border, err := marshalNBT(map[string]any{"min": [2]int32{-512, -512}, "max": [2]int32{512, 512}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := &WorldData{
 		Settings: settings, UserData: []byte("world-user-data"),
-		Markers: markers, Border: border,
+		Markers: markers,
 		Columns: []Column{col},
 	}
 	return vecWrite(t, d, reg, vecPlain)
@@ -913,9 +912,9 @@ func checkStructureFull(t *testing.T, l *vecLayout, file []byte) {
 	if string(file[ud.off:ud.off+ud.size]) != "structure-user-data" {
 		t.Errorf("structure user data = %q", file[ud.off:ud.off+ud.size])
 	}
-	for _, name := range []string{"meta.settings", "meta.markers", "meta.border"} {
+	for _, name := range []string{"meta.settings", "meta.markers"} {
 		if s := vecField(t, l, name); s.size != 0 {
-			t.Errorf("%s is %d bytes; a structure's settings, markers and border are empty", name, s.size)
+			t.Errorf("%s is %d bytes; a structure's settings and markers are empty", name, s.size)
 		}
 	}
 }
@@ -1134,9 +1133,9 @@ func vectorIndexedIdentity(t *testing.T, file []byte, reg world.BlockRegistry) u
 		t.Fatalf("OpenIndexed on a torn file must recover: %v", err)
 	}
 	defer w.Close()
-	settings, userData, markers, border := w.Meta()
+	settings, userData, markers := w.Meta()
 	d := &WorldData{
-		Settings: settings, UserData: userData, Markers: markers, Border: border,
+		Settings: settings, UserData: userData, Markers: markers,
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])
