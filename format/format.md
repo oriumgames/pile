@@ -30,7 +30,7 @@ All fixed-width integers are **little-endian**.
 | `u8`, `u16`, `u32`, `u64`, `i32` | fixed-width little-endian |
 | `uvarint` | unsigned LEB128 (Go `binary.PutUvarint`): 7 bits per byte, high bit = continuation. MUST be minimal: decoders reject overlong encodings |
 | `svarint` | zigzag-encoded LEB128 (Go `binary.PutVarint`): value `v` maps to `uvarint((v << 1) ^ (v >> 63))`. MUST be minimal |
-| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 535, the largest an NBT string length can express, so one concept has one ceiling, and MUST reject bytes that are not valid UTF-8: strings are compared bytewise when ordering palettes, so arbitrary bytes would order differently under an implementation that decodes before comparing |
+| `string` | `uvarint` byte length + UTF-8 bytes. Decoders MUST reject lengths > 65 535, and MUST reject bytes that are not valid UTF-8: strings are compared bytewise when ordering palettes, so arbitrary bytes would order differently under an implementation that decodes before comparing |
 | `blob`   | `uvarint` byte length + raw bytes. Decoders MUST reject lengths > 16 777 216 (16 MiB) |
 | `bitset(n)` | `ceil(n/8)` bytes; bit `i` is bit `i%8` of byte `i/8` (LSB-first). Padding bits above `n` MUST be zero |
 
@@ -81,17 +81,15 @@ precisely what happened before it was written down.
 `TAG_List` of a numeric type and the corresponding array tag carry the same
 values but are different tags, and both occur in vanilla content. Decoders
 MUST keep them apart, and encoders MUST re-emit each value with the tag it was
-decoded from:
+decoded from. In opaque NBT -- entity and block-entity blobs, the only place
+either occurs -- `TAG_Byte_Array`, `TAG_Int_Array` and `TAG_Long_Array` round
+trip as themselves. Collapsing them into lists would be lossy in a way the game
+notices, since Bedrock stores UUIDs and similar fields as int arrays. A decoder
+that lowers every array into the same host-language value as a list cannot
+produce byte-identical output and is not conforming.
 
-- In **opaque** NBT (entity and block-entity blobs), `TAG_Byte_Array`,
-  `TAG_Int_Array` and `TAG_Long_Array` round trip as themselves. Collapsing them into lists would be lossy in a way the game
-  notices, since Bedrock stores UUIDs and similar fields as int arrays.
-  A decoder that lowers every array into the same host-language value as a
-  list cannot produce byte-identical output and is not conforming.
-- In the **metadata compounds this document specifies** (§7), the tag of each
-  field is fixed by that section and MUST be emitted exactly: a setting
-  declared a long is a long and not an int. Writers MUST reject a metadata blob
-  whose fields carry the wrong tag, because a reader cannot tell afterwards.
+The compounds this document specifies (§7) carry no array tags; the tag of each
+field they do carry is fixed by §7.1.
 
 World and chunk **user data are not NBT at all**: they are opaque byte strings
 that the format never parses, so no rule in this section applies to them and
@@ -489,6 +487,12 @@ trailing empty sections, and an empty chunk carries its dimension's full span
 with every presence bit clear. Trimming would give one chunk several encodings
 and leave the content outside the span undefined; the span costs two varints.
 
+The span binds the record's other contents too: every block-entity (§4.4) and
+scheduled-update position a record carries MUST lie inside the span that record
+declares, and decoders MUST reject one that does not. A reader that
+accepts a position outside the span hands its caller a coordinate the caller's
+own array cannot address.
+
 **Layer count.** A layer is selected by an 8-bit index, so 255 is the last one
 that can be addressed: with 256 layers present, no index names the last, and
 any length-versus-index comparison done in that same 8-bit type wraps to zero.
@@ -571,8 +575,9 @@ userData         blob             application-defined chunk metadata
 ```
 
 An air-only section is absent (one presence bit); a fully empty chunk record
-(all bits clear, zero counts) costs ~10 bytes and means "exists, is air", which is
-distinct from a chunk that was never stored.
+(all bits clear, zero counts) costs eleven bytes over a one-section span, a
+few more over a full one, and means "exists, is air", which is distinct from a
+chunk that was never stored.
 
 A section MUST be absent when **every** one of its layers is uniform air, and
 MUST be present otherwise. A layer holding a preserved unresolved state (§9)
@@ -1026,13 +1031,14 @@ remain, not from these ceilings.
 | section storages decoded per file | 4 194 304 |
 | checkpoint chain links followed during recovery | 256 |
 | directory entries parsed during one recovery, summed over every candidate tried | 16 777 216 |
-| string length | 65 535 |
+| string length (the §1 container primitive) | 65 535 |
+| NBT string length, value or compound key (§1) | 32 767 |
 | blob length | 16 MiB |
 | columns decoded per file: chunk records in a solid body, entries in an indexed directory | 67 108 864 |
 | decompressed size of a solid body | 512 MiB |
 | decompressed size of an indexed data frame (record, palette segment, metadata, dictionary) | 64 MiB |
 | decompressed size of an indexed directory frame | 512 MiB |
-| structure cells | 1 048 576 (binds first: it caps a cubic structure near 160 blocks per axis) |
+| structure cells | 1 048 576 (binds first: a cubic structure reaches it at about 101 cells, so near 1 600 blocks per axis) |
 | structure size per axis, in blocks | 1 048 576 (a ceiling on any one axis; only reachable when the others are small) |
 | global palette entries | 1 048 576 |
 | blob table entries | 16 777 216 |
@@ -1040,15 +1046,18 @@ remain, not from these ceilings.
 | state properties per palette entry | 64 |
 | sections per chunk | 4 096 (the full int16 block-Y domain), placed within section indices -2048..2047 |
 | layers per section | 255 (Bedrock encodes the storage count in a byte, but the 256th layer is not addressable, see §4.3) |
-| entities / block entities / ticks per chunk | 1 048 576 each |
+| entities / block entities / scheduled block updates per chunk | 1 048 576 each |
 | stored frame length (indexed) | 4 294 967 295 |
 
 Writers MUST additionally refuse content that their own readers would reject.
 This applies to the **aggregate** ceilings, not only the per-field ones: a
-solid body assembled from individually legal blobs can still pass 512 MiB, and
-an indexed metadata frame built from four legal 16 MiB blobs already exceeds
-the 64 MiB frame ceiling. Every completed body and every appended frame is
-therefore checked against its own limit before compression, along with the
+solid body assembled from individually legal blobs can still pass 512 MiB.
+No metadata frame can currently reach its own 64 MiB ceiling -- §4.1's two
+blobs at 16 MiB each total 32 -- but the frame check is a rule rather than an
+observation about today's fields, since the length prefixes count too and a
+third field would make it reachable again. Every completed body and every
+appended frame is therefore checked against its own limit before compression,
+along with the
 stored frame length against its own ceiling. That ceiling is a validity rule
 in its own right rather than the width of any field: a directory carries a
 frame length as a `uvarint` and the footer carries the directory's own as a
@@ -1107,7 +1116,7 @@ different: a world of sixty-seven million columns is a legitimate thing to
 store and an unusual thing to be handed by a stranger. This implementation
 defaults to the state a world of 4 194 304 columns costs, about 4.8 GB, and
 refuses beyond that with an error that names the option rather than calling the
-file invalid (§8's note on caller ceilings). A reader that follows the ceiling
+file invalid (see the note on caller ceilings below). A reader that follows the ceiling
 here instead is still conforming; it is simply cheaper to attack.
 
 **Recovery is bounded by its total work and not by its factors.** A reader
@@ -1118,10 +1127,10 @@ limit bound two factors of one product, and it is the product that costs: 256
 candidates over a directory at its ceiling is a billion entries, measured at
 roughly fourteen minutes from a file of about 20 KB, and forging candidates is
 free because a footer's hash is xxHash64 over bytes their author controls.
-The value above is four directories at the entry ceiling, which is more than a
-torn write needs — a damaged checkpoint's directory frame usually fails its own
-hash and costs nothing to skip — and it is also 256 times 65 536, so no world
-of 65 536 columns or fewer can ever be refused by it.
+The value above is a quarter of one directory at the column ceiling, which is
+far more than a torn write needs — a damaged checkpoint's directory frame
+usually fails its own hash and costs nothing to skip — and it is also 256 times
+65 536, so no world of 65 536 columns or fewer can ever be refused by it.
 
 **A caller may be given a stricter ceiling, and that is not a validity rule.**
 An implementation MAY let its caller set a lower limit than the decoded
@@ -1148,11 +1157,6 @@ charged for two columns. This is written down because it was got wrong here
 first, and the shape is easy to repeat -- the counts are bounded, the bound is
 per chunk, and the per-file consequence is somebody else's arithmetic.
 
-Positions are part of this: a record's declared span is validated, so every
-block-entity and scheduled-update position it carries MUST lie inside that
-span. A reader that accepts one outside it hands its caller a coordinate the
-caller's own array cannot address.
-
 ---
 
 ## 9. Implementation guidance
@@ -1170,12 +1174,13 @@ caller's own array cannot address.
   an **absolute** section Y so the entry stays valid if the column is re-based
   onto a different vertical range; scheduled block updates carry an equivalent
   sidecar.
-- **Bounded decompression**: a compressed frame declares its decompressed
-  size and decompressors typically preallocate it, so cap the accepted
-  decompressed size per payload type (the reference implementation uses
-  512 MiB for a solid body, 64 MiB for an indexed data frame and 512 MiB for
-  an indexed directory) rather than
-  relying on the input being small.
+- **Bounded decompression**: cap the accepted decompressed size per payload
+  type (the reference implementation uses 512 MiB for a solid body, 64 MiB for
+  an indexed data frame and 512 MiB for an indexed directory) rather than
+  relying on the input being small. A frame need not declare its decompressed
+  size (§2.5), so the cap has to bind a decode that streams: count the bytes
+  out and stop at the ceiling. Reading the declared size and trusting it is
+  not a substitute, since most indexed frames do not carry one.
 - **Writing**: always write to a temporary file and atomically rename; fsync
   before renaming.
 - The dedup + canonical-blob machinery is where solid mode's size wins come

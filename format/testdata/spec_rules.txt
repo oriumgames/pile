@@ -2,16 +2,14 @@
 078b2b7d That is deducible from the field order, but the whole table's identity depends on it, so writers MUST assign ids in exactly that sequence.
 0b740420 Readers MUST compute that rounding and the resulting product in at least 64 bits and check it against the cell ceiling of §8 **before** allocating anything:
 0f2361c9 **Who enforces a rule.** Every `MUST` below is one of two kinds, and which one is stated wherever it is not obvious.
-10bba397 Decoders MUST keep them apart, and encoders MUST re-emit each value with the tag it was decoded from:
 126cf2d4 Writers MUST additionally refuse content that their own readers would reject.
 12bc11b2 A section MUST be absent when **every** one of its layers is uniform air, and MUST be present otherwise.
 13221d37 Writers MUST set the flag whenever the file holds at least one section whose biomes are uniform and the chosen reference fits the 16 bits available; they MUST leave it clear otherwise, including when the reference does not fit.
+1870ce37 every block-entity (§4.4) and scheduled-update position a record carries MUST lie inside the span that record declares, and decoders MUST reject one that does not.
 1e589410 Identical bytes MUST share one entry, and decoders MUST reject a table that repeats a blob or that carries one no record references:
 2062adb1 Decoders MUST upgrade each entry from its own version when it has an override, and from the palette's version otherwise.
 230b214c one entry per biome, and decoders MUST reject a repeated name, for the reason §3.1 gives for block states.
-232fe73e - In the **metadata compounds this document specifies** (§7), the tag of each field is fixed by that section and MUST be emitted exactly:
 249dada6 every one MUST contain a namespace and a colon, and a bare name such as `plains` is invalid rather than a second spelling of `minecraft:plains`.
-27513eef Decoders MUST reject lengths > 65 535, the largest an NBT string length can express, so one concept has one ceiling, and MUST reject bytes that are not valid UTF-8:
 27ea7bc1 Counting first breaks the loop, and writers MUST count that way or two of them will disagree on the palette order, on `defaultBiomeRef` and therefore on every byte downstream.
 2811e0b4 Compound keys MUST be unique and in strictly ascending bytewise order, and the root compound MUST be unnamed:
 2a4c2ef2 The override indices MUST strictly ascend, and decoders MUST reject a table whose running index does not increase, including one whose accumulated sum wraps.
@@ -24,7 +22,6 @@
 398afbcf These are the values a conforming decoder MUST enforce.
 3bc3297f reference counts are not stored, so a reader cannot verify the order and MUST NOT try):
 43ff86c5 Decoders MUST NOT panic on any input; every violation is a clean error.
-4a44a61b Writers MUST reject a metadata blob whose fields carry the wrong tag, because a reader cannot tell afterwards.
 4e0f8a1e Writers MUST reject a world holding two columns at one position, and readers MUST reject a file whose record keys do not strictly ascend:
 51ab5d05 An NBT string -- a value or a compound key -- MUST NOT exceed 32 767 bytes, and decoders MUST reject a blob carrying a longer one.
 5240768e - References MUST ascend strictly, so a section has exactly one encoding and cannot carry duplicate or unused entries.
@@ -43,6 +40,7 @@
 70802cc1 Decoders MUST therefore bound the **result** as well as the input, and the decoded ceilings above exist for exactly that.
 718f271d MUST be non-zero, for the reason §3.1 gives for overrides:
 781a9694 Such a refusal MUST be reported distinguishably from a refusal for invalidity, because the file may be entirely conforming and another reader, or the same reader with a wider limit, will accept it.
+787dd1f6 Decoders MUST reject lengths > 65 535, and MUST reject bytes that are not valid UTF-8:
 7984f33b Sections whose biomes are uniformly that biome MUST be omitted from `biomePresence`, and decoders MUST fill absent sections with the default.
 7b480f2f Decoders MUST reject files that violate this, so one structure has exactly one valid envelope.
 7b6bfb2d Readers MUST refuse a frame that asks for more.
@@ -60,7 +58,6 @@
 9c7d6645 The narrowest sufficient width is the only valid one, so writers MUST select it and decoders MUST reject any other.
 a4590032 Readers MUST reject unknown versions and unknown flag bits (they may change payload meaning).
 a9ee3ac1 Writers MUST drop **trailing** all-air layers, since a layer past the last stored one already reads as air, and MUST keep internal ones, encoded as an ordinary uniform section blob referencing air.
-acfe3166 a record's declared span is validated, so every block-entity and scheduled-update position it carries MUST lie inside that span.
 ad7fe57e In **mode 0** — that is, in a solid world and in a structure alike — writers MUST sort the palette by (writer-only:
 af37ce22 In a **solid** file the directory, generation and previous-footer words carry no information and MUST be zero; readers MUST reject a non-zero value.
 af4b369f The ceiling is therefore 255, and decoders MUST reject a larger `layerN`.
@@ -79,6 +76,7 @@ cf48aa12 Readers MUST reject a directory whose prologue disagrees with the const
 cf8e4eb4 Padding bits above `n` MUST be zero
 d2702006 Flags `Stats` and `DefaultBiome` MUST be clear in an indexed file, and readers MUST reject one that sets either:
 d3997566 It is a name rather than a palette reference because the palette may legitimately be empty (a file written with biomes skipped), so a reference would be out of range in exactly the files that need it; and a name rather than a numeric id because ids are a property of the running game version, and one file MUST NOT decode to different biomes on two of them.
+dce0103c Decoders MUST keep them apart, and encoders MUST re-emit each value with the tag it was decoded from.
 ddf5c7be Decoders MUST reject a palette that carries both:
 e01f257a Decoders MUST reject blobs that violate them.
 e0479882 In **mode 0** it MUST be clear when no section carries any, since a solid file's flag and content are written together and setting it over a light-free world is a second encoding of that world.

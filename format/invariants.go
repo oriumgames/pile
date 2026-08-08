@@ -87,7 +87,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "strings are bounded UTF-8", Category: Normalisation, Enforce: Decoded,
-		Rules: []string{"27513eef"},
+		Rules: []string{"787dd1f6"},
 		Tests: []string{"TestRejectsNonUTF8Strings", "TestReaderRejectsBadStrings"},
 		Note:  "Palettes order strings bytewise, so arbitrary bytes would order differently under an implementation that decodes before comparing.",
 	},
@@ -111,13 +111,13 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "array tags are distinct from lists", Category: Normalisation, Enforce: Decoded,
-		Rules: []string{"10bba397"},
+		Rules: []string{"dce0103c"},
 		Tests: []string{"TestOpaqueNBTArraysSurvive"},
 		Note:  "Bedrock stores UUIDs as int arrays; folding them into lists is lossy.",
 	},
 	{
 		Name: "metadata field tags are exact", Category: Presence, Enforce: Decoded,
-		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "7f907b36", "bf4e7d6b"},
+		Rules: []string{"f1047fc4", "7f907b36", "bf4e7d6b"},
 		Tests: []string{"TestRejectsMetaSchemaViolations", "TestReaderEnforcesMetadataSchemas"},
 	},
 
@@ -522,7 +522,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "positions lie inside the declared span", Category: Bound, Enforce: Decoded,
-		Rules: []string{"acfe3166"},
+		Rules: []string{"1870ce37"},
 		Tests: []string{"TestRejectsOutOfSpanPositions"},
 		Note:  "The span is validated; its contents were not. A block-entity Y outside it is a coordinate the caller's own array cannot address.",
 	},
