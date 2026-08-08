@@ -32,7 +32,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	reg := testRegistry(t)
 	stone := reg.BlockRuntimeID(block.Stone{})
 
-	// Source world with negative coordinates, settings, marker, JSON user data.
+	// Source world with negative coordinates, settings and JSON user data.
 	srcDir := t.TempDir()
 	b := pile.NewBuilder(reg, cube.Range{-64, 319})
 	b.Fill(cube.Pos{-24, -10, -24}, cube.Pos{24, 6, 24}, block.Stone{})
@@ -41,7 +41,6 @@ func TestExportImportRoundTrip(t *testing.T) {
 		DefaultGameMode: world.GameModeAdventure, Difficulty: world.DifficultyHard,
 		Spawn: cube.Pos{1, 7, 2},
 	})
-	b.SetMarker(pile.Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{1, 7, 2}})
 	b.SetUserData([]byte(`{"game":"bedwars"}`))
 	if err := b.Save(srcDir); err != nil {
 		t.Fatal(err)
@@ -84,9 +83,6 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if got := p.Settings(); got.Name != "export-test" || got.Time != 1234 ||
 		got.TickRange != 8 || got.Spawn != (cube.Pos{1, 7, 2}) {
 		t.Fatalf("imported settings wrong: %+v", got)
-	}
-	if ms := p.Markers(); len(ms) != 1 || ms[0].Name != "spawn" {
-		t.Fatalf("imported markers wrong: %+v", ms)
 	}
 	if !jsonEqual(t, p.UserData(), []byte(`{"game":"bedwars"}`)) {
 		t.Fatalf("imported user data wrong: %q", p.UserData())

@@ -14,6 +14,18 @@ import (
 // outside the dimension's vertical range and MoveOptions.Clip is false.
 var ErrWouldClip = errors.New("pile: move would clip content outside the world's vertical range")
 
+// ErrUnmovableUserData is returned by MoveWorld when the world carries
+// application metadata and MoveOptions.KeepUserData is false.
+//
+// User data is opaque to pile: whatever coordinates it holds -- spawn points,
+// regions, NPC positions -- cannot be found, let alone translated. Moving the
+// blocks and leaving them behind is a silent failure, and the coordinates go
+// on resolving to whatever now occupies their old positions, so it is one that
+// surfaces long after the move as a map that is subtly wrong rather than as an
+// error. The move refuses instead, and KeepUserData is how a caller says it
+// will re-anchor the data itself.
+var ErrUnmovableUserData = errors.New("pile: world carries user data, which pile cannot translate")
+
 // MoveOptions configures MoveWorld.
 type MoveOptions struct {
 	// Offset is the block translation applied to everything in the world.
@@ -25,6 +37,10 @@ type MoveOptions struct {
 	DryRun bool
 	// Backup copies the current files into snapshots/pre-move before writing.
 	Backup bool
+	// KeepUserData permits moving a world that carries application metadata,
+	// which pile copies through untranslated. Without it such a move fails
+	// with ErrUnmovableUserData.
+	KeepUserData bool
 	// Registry used for block resolution; nil uses world.DefaultBlockRegistry.
 	Registry world.BlockRegistry
 	// MaxDecoded bounds the live decoded state the world's files may produce,
@@ -55,9 +71,14 @@ func (r *MoveReport) ClippedTotal() int {
 }
 
 // MoveWorld translates a pile world on disk: all blocks, biomes, entities,
-// block entities, scheduled ticks, chunk metadata, plus spawn, markers and
-// markers. Files keep their mode (solid or indexed) and are replaced
-// atomically. The move is all-or-nothing across dimensions.
+// block entities, scheduled ticks and the spawn position. Files keep their
+// mode (solid or indexed) and are replaced atomically. The move is
+// all-or-nothing across dimensions.
+//
+// What it does not translate is user data, world-level or per-chunk, because
+// the format stores it as an opaque blob and has no way to find a coordinate
+// inside one. A world carrying any is refused unless MoveOptions.KeepUserData
+// says the caller will re-anchor it: see ErrUnmovableUserData.
 func MoveWorld(dir string, opt MoveOptions) (*MoveReport, error) {
 	reg := opt.Registry
 	if reg == nil {
@@ -83,15 +104,18 @@ func MoveWorld(dir string, opt MoveOptions) (*MoveReport, error) {
 	if report.ClippedTotal() > 0 && !opt.Clip {
 		return report, ErrWouldClip
 	}
+	// Checked before the dry run returns, so --dry-run reports the refusal
+	// rather than promising a move that would not happen.
+	if !opt.KeepUserData && hasUserData(wf) {
+		return report, ErrUnmovableUserData
+	}
 	if opt.DryRun {
 		return report, nil
 	}
 
-	// Translate metadata.
+	// Translate metadata. Only the spawn: everything else pile can find a
+	// coordinate in has already moved with its column.
 	if wf.Settings, err = moveSettings(wf.Settings, opt.Offset); err != nil {
-		return nil, err
-	}
-	if wf.Markers, err = moveMarkers(wf.Markers, opt.Offset); err != nil {
 		return nil, err
 	}
 
@@ -431,36 +455,18 @@ func moveSettings(blob []byte, off cube.Pos) ([]byte, error) {
 	return settingsToNBT(s, extra)
 }
 
-// moveMarkers translates all marker positions.
-func moveMarkers(blob []byte, off cube.Pos) ([]byte, error) {
-	ms, err := markersFromNBT(blob)
-	if err != nil {
-		return nil, err
+// hasUserData reports whether a world carries any application metadata, at
+// the world level or on any chunk.
+func hasUserData(wf *WorldFiles) bool {
+	if len(wf.UserData) > 0 {
+		return true
 	}
-	d := [3]float64{float64(off.X()), float64(off.Y()), float64(off.Z())}
-	shift := func(t *[3]float64) {
-		for i := range t {
-			t[i] += d[i]
-			// A translation must not turn a legal marker into one the codec
-			// refuses: -1 + 1 is negative zero on no platform, but 0 + -0.0 is,
-			// and a world moved to the origin is the ordinary case.
-			if t[i] == 0 {
-				t[i] = 0
+	for i := range wf.Dims {
+		for _, c := range wf.Dims[i].Columns {
+			if len(c.UserData) > 0 {
+				return true
 			}
 		}
 	}
-	for i := range ms {
-		if ms[i].Pos != nil {
-			shift(ms[i].Pos)
-		}
-		// Areas move with the world. Translating the points and leaving the
-		// regions behind would be worse than refusing to move at all: every
-		// region would silently point at whatever now occupies its old
-		// coordinates.
-		if b := ms[i].Bounds; b != nil {
-			shift(&b.Min)
-			shift(&b.Max)
-		}
-	}
-	return markersToNBT(ms)
+	return false
 }

@@ -52,11 +52,6 @@ func (t *Template) Instance(opts ...Option) *Provider {
 	t.p.mu.Lock()
 	p.settings = cloneSettings(t.p.settings)
 	p.userData = cloneBytes(t.p.userData)
-	p.markers = make([]Marker, len(t.p.markers))
-	for i, m := range t.p.markers {
-		m.Extra = deepCopyCompound(m.Extra)
-		p.markers[i] = m
-	}
 	t.p.mu.Unlock()
 	return p
 }

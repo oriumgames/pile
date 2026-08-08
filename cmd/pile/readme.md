@@ -56,7 +56,7 @@ corruption, not tampering.
 
 | command | |
 |---------|---|
-| `pile inspect <file.pile>` | Header, flags, decoded settings/markers, sizes; no chunk decode. Indexed files additionally show generation, chunk count and garbage ratio. |
+| `pile inspect <file.pile>` | Header, flags, decoded settings, sizes; no chunk decode. Indexed files additionally show generation, chunk count and garbage ratio. |
 | `pile verify <dir\|file>` | Full decode with checksum verification; per-record verification for indexed files. On a world directory it also compares the metadata each dimension file carries and warns when they disagree. |
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
 | `pile check [--allow ns,ns] <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow hive` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
@@ -87,8 +87,8 @@ before touching it. These are how you reach those, and your own.
 
 ### Why the metadata is checked across files
 
-Every dimension file carries its own copy of the world's settings, markers,
-and user data, so that a single `.pile` is self-describing — you can hand
+Every dimension file carries its own copy of the world's settings and user
+data, so that a single `.pile` is self-describing — you can hand
 somebody `nether.pile` and it still knows its name and spawn. The provider reads
 the **overworld's** copy and ignores the rest.
 
@@ -103,32 +103,49 @@ dimension's copy together.
 
 | command | |
 |---------|---|
-| `pile edit [--print] [--apply file.json] [--no-backup] <world>` | Open the world's settings, markers and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
+| `pile edit [--print] [--apply file.json] [--no-backup] <world>` | Open the world's settings and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
 
-Chunks are not in the file. This is for moving a spawn point, renaming a marker
-or adjusting an area — editing blocks as JSON would be a worse tool than the
-game.
+Chunks are not in the file. This is for moving a spawn point or adjusting an
+application's own configuration — editing blocks as JSON would be a worse tool
+than the game.
 
-The list you are shown is the whole list, so deleting a marker there deletes the
-marker. Settings and markers go through typed fields rather than raw NBT, so an
-`int32` does not come back a `float64` — the failure that took a server down
-earlier in this project. A user data blob that you do not change is written back
-as the same bytes it went in as, rather than reflowed by the marshaller, so
-renaming a marker does not move the world's `ContentHash`.
+Settings go through typed fields rather than raw NBT, so an `int32` does not
+come back a `float64` — the failure that took a server down earlier in this
+project. A user data blob that you do not change is written back as the same
+bytes it went in as, rather than reflowed by the marshaller, so changing the
+spawn does not move the world's `ContentHash`. A blob that is not JSON is shown
+as base64 and restored from it.
 
-An edit that breaks a §7 rule — an area whose corners are the wrong way round, a
-marker with neither a position nor bounds — is refused when the world is
-written, which means nothing is written. A JSON syntax error keeps your edit in
-a temp file and tells you the path, so the cost of a typo is fixing the typo.
+Everything an edit can get wrong is checked before the world is opened, so a
+refusal means nothing was written. A JSON syntax error keeps your edit in a temp
+file and tells you the path, so the cost of a typo is fixing the typo.
 
 ## Map surgery
 
 | command | |
 |---------|---|
-| `pile move (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup] <world>` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks, chunk metadata, spawn and markers move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
+| `pile move (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup] [--keep-user-data] <world>` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks and spawn move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. A world carrying user data is refused unless `--keep-user-data`, because pile cannot find a coordinate in an opaque blob and would leave every position it holds behind — see below. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
 | `pile extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>` | Cut a region into a structure file (blocks, block entities, entities). |
 | `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
 | `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |
+
+### Why moving refuses a world with user data
+
+`pile move` translates everything it understands: blocks, biomes, entities,
+block entities, scheduled ticks and the spawn point. User data is the one thing
+it cannot, because the format stores it as an opaque blob and pile has no way to
+find a coordinate inside one.
+
+So a move would shift every block while every position your application stored —
+spawn points, region corners, NPC locations — stayed exactly where it was, all
+of them now pointing at whatever occupies the old coordinates. Nothing would
+report it. You would find out when somebody stood in an arena that had moved out
+from under its own boundary.
+
+`--keep-user-data` is you saying you will re-anchor it yourself. The blob is
+copied through untouched. `--dry-run` reports the refusal too, since a dry run
+promising a move that would in fact be refused is the same silent failure one
+step earlier.
 
 ## Distribution
 
@@ -137,7 +154,7 @@ a temp file and tells you the path, so the cost of a typo is fixing the typo.
 | `pile diff <world-a> <world-b>` | Chunk-level change report (added/removed/modified per dimension, metadata changes) using exact canonical comparison. |
 | `pile patch -o file.pilepatch <old> <new>` | Binary update containing only changed/added chunks, removals and new metadata. |
 | `pile apply [--force] [--no-backup] <world> <file.pilepatch>` | Apply a patch: `apply(old, patch(old→new)) == new`, chunk-for-chunk. Refuses a target whose content does not match the patch's base world (override with `--force`); backs up to `snapshots/pre-apply` first. |
-| `pile export [--dim d] <world> <out-dir>` | Unpack a world into `structure.pile` + human-editable `data.json` (settings, markers, origin; user data inlined when it is JSON). |
+| `pile export [--dim d] <world> <out-dir>` | Unpack a world into `structure.pile` + human-editable `data.json` (settings, origin; user data inlined when it is JSON). |
 | `pile import <export-dir> <world-dir>` | Rebuild a world from an export. Refuses an existing destination. |
 
 ## Examples

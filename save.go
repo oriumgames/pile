@@ -112,11 +112,6 @@ func (p *Provider) saveHeld() error {
 		p.mu.Unlock()
 		return fmt.Errorf("pile: encode settings: %w", err)
 	}
-	markers, err := markersToNBT(p.markers)
-	if err != nil {
-		p.mu.Unlock()
-		return err
-	}
 	userData := cloneBytes(p.userData)
 
 	if p.conf.appendMode {
@@ -131,7 +126,7 @@ func (p *Provider) saveHeld() error {
 			}
 			if p.metaDirty || ds.dirty {
 				if p.metaDirty {
-					if err := ds.iw.SetMeta(settings, userData, markers); err != nil {
+					if err := ds.iw.SetMeta(settings, userData); err != nil {
 						p.mu.Unlock()
 						return err
 					}
@@ -172,7 +167,7 @@ func (p *Provider) saveHeld() error {
 			ds:   ds,
 			path: p.dimPath(ds.dim),
 			data: &format.WorldData{
-				Settings: settings, UserData: userData, Markers: markers, Columns: cols,
+				Settings: settings, UserData: userData, Columns: cols,
 			},
 		})
 		ds.dirty = false
@@ -230,11 +225,6 @@ func (p *Provider) SaveAs(dir string) error {
 		p.mu.Unlock()
 		return fmt.Errorf("pile: encode settings: %w", err)
 	}
-	markers, err := markersToNBT(p.markers)
-	if err != nil {
-		p.mu.Unlock()
-		return err
-	}
 	userData := cloneBytes(p.userData)
 	dims := make([]world.Dimension, 0, len(p.dims))
 	for _, ds := range p.dims {
@@ -262,7 +252,7 @@ func (p *Provider) SaveAs(dir string) error {
 		}
 		wrote = true
 		d := &format.WorldData{
-			Settings: settings, UserData: userData, Markers: markers, Columns: cols,
+			Settings: settings, UserData: userData, Columns: cols,
 		}
 		id, _ := world.DimensionID(dim)
 		name := fmt.Sprintf("dim%d.pile", id)
@@ -282,7 +272,7 @@ func (p *Provider) SaveAs(dir string) error {
 		// A world with metadata but no columns must still be representable,
 		// or SaveAs would silently produce nothing to reopen.
 		return p.writeFile(filepath.Join(dir, "overworld.pile"), &format.WorldData{
-			Settings: settings, UserData: userData, Markers: markers})
+			Settings: settings, UserData: userData})
 	}
 	return nil
 }

@@ -340,11 +340,8 @@ func TestHostileWriteShapes(t *testing.T) {
 		{name: "settings blob that is not NBT", mustRefuse: true, build: func(*testing.T, world.BlockRegistry) *WorldData {
 			return &WorldData{Settings: []byte{0xFF, 0xFF, 0xFF}}
 		}},
-		{name: "markers out of order", mustRefuse: true, build: func(t *testing.T, reg world.BlockRegistry) *WorldData {
-			return &WorldData{Markers: mustNBT(t, map[string]any{"markers": []map[string]any{
-				{"name": "b", "kind": "spawn", "pos": []float64{0, 0, 0}},
-				{"name": "a", "kind": "spawn", "pos": []float64{0, 0, 0}},
-			}})}
+		{name: "settings with time as an int", mustRefuse: true, build: func(t *testing.T, reg world.BlockRegistry) *WorldData {
+			return &WorldData{Settings: mustNBT(t, map[string]any{"time": int32(6000)})}
 		}},
 		{name: "user data one byte past the blob limit", mustRefuse: true, build: func(*testing.T, world.BlockRegistry) *WorldData {
 			return &WorldData{UserData: make([]byte, maxBlobLen+1)}
@@ -1149,7 +1146,7 @@ func TestHostileIndexedWriteSurface(t *testing.T) {
 	if err := w.Store(good(1, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta(mustNBT(t, map[string]any{"name": "hostile"}), []byte("u"), nil); err != nil {
+	if err := w.SetMeta(mustNBT(t, map[string]any{"name": "hostile"}), []byte("u")); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Compact(); err != nil {

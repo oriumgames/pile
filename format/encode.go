@@ -74,7 +74,6 @@ const WholeStorage = 0xFFFF
 type WorldData struct {
 	Settings []byte
 	UserData []byte
-	Markers  []byte
 	Columns  []Column
 }
 
@@ -292,7 +291,6 @@ func WriteWorld(out io.Writer, d *WorldData, reg world.BlockRegistry, opts Optio
 	body := &writer{b: make([]byte, 0, 128<<10)}
 	body.blob(d.Settings)
 	body.blob(d.UserData)
-	body.blob(d.Markers)
 	if opts.Stats {
 		var filled int
 		for i := range inter {
@@ -389,7 +387,6 @@ func validateWorldData(d *WorldData) error {
 	}{
 		{d.Settings, "world settings blob", true},
 		{d.UserData, "world user data", false},
-		{d.Markers, "markers blob", true},
 	} {
 		if err := checkBlob(b.p, b.what); err != nil {
 			return err
@@ -404,7 +401,7 @@ func validateWorldData(d *WorldData) error {
 			}
 		}
 	}
-	if err := checkMetaSchemas(d.Settings, d.Markers); err != nil {
+	if err := checkSettingsBlob(d.Settings); err != nil {
 		return err
 	}
 	// The reader bounds how many section storages a file decodes into; the
@@ -442,16 +439,6 @@ func validateWorldData(d *WorldData) error {
 	return nil
 }
 
-// checkMetaSchemas applies every §7 schema. The tag of each specified field is
-// fixed, and a dynamically typed decoder cannot tell afterwards which one a
-// value came from, so the blobs have to be right on the way in.
-func checkMetaSchemas(settings, markers []byte) error {
-	if err := checkSettingsBlob(settings); err != nil {
-		return err
-	}
-	return checkMarkersBlob(markers)
-}
-
 // settingsSchema fixes the tag of every field §7.1 names. Unlisted keys are
 // preserved verbatim and unconstrained, but a listed one carrying the wrong
 // tag makes the same settings expressible two ways.
@@ -464,7 +451,10 @@ var settingsSchema = map[string]string{
 	"defaultGameMode": "int32", "difficulty": "int32", "tickRange": "int32",
 }
 
-// checkSettingsBlob enforces the settings schema of §7.1.
+// checkSettingsBlob enforces the settings schema of §7.1, which is the whole
+// of §7. The tag of each specified field is fixed, and a dynamically typed
+// decoder cannot tell afterwards which one a value came from, so the blob has
+// to be right on the way in.
 func checkSettingsBlob(b []byte) error {
 	if len(b) == 0 {
 		return nil
@@ -512,154 +502,6 @@ func checkStatsBlob(b []byte) error {
 		}
 	}
 	return nil
-}
-
-// checkMarkersBlob enforces the marker schema of §7.2, including the list
-// order. Two blobs listing the same markers in different orders would
-// otherwise both be accepted and copied through verbatim.
-func checkMarkersBlob(b []byte) error {
-	if len(b) == 0 {
-		return nil
-	}
-	m, err := unmarshalNBT(b)
-	if err != nil {
-		return fmt.Errorf("pile: markers blob: %w", err)
-	}
-	raw, ok := m["markers"]
-	if !ok {
-		return nil // no markers is not a malformed marker list
-	}
-	list, err := compoundList(raw)
-	if err != nil {
-		return fmt.Errorf("pile: markers blob: %w", err)
-	}
-	prev := ""
-	for i, mk := range list {
-		name, ok := mk["name"].(string)
-		if !ok {
-			return fmt.Errorf("pile: markers blob: marker %d has no string name", i)
-		}
-		if _, ok := mk["kind"].(string); !ok {
-			return fmt.Errorf("pile: markers blob: marker %q has no string kind", name)
-		}
-		_, hasPos := mk["pos"]
-		if hasPos {
-			if _, err := finiteTriple(mk["pos"]); err != nil {
-				return fmt.Errorf("pile: markers blob: marker %q pos: %w", name, err)
-			}
-		}
-		// Bounds make the marker an area (§7.4). Both or neither: a marker
-		// carrying one corner describes nothing, and which corner it is would
-		// have no answer.
-		rawMin, hasMin := mk["min"]
-		rawMax, hasMax := mk["max"]
-		if hasMin != hasMax {
-			return fmt.Errorf("pile: markers blob: marker %q carries one of min/max, want both or neither", name)
-		}
-		if hasMin {
-			lo, err := finiteTriple(rawMin)
-			if err != nil {
-				return fmt.Errorf("pile: markers blob: marker %q min: %w", name, err)
-			}
-			hi, err := finiteTriple(rawMax)
-			if err != nil {
-				return fmt.Errorf("pile: markers blob: marker %q max: %w", name, err)
-			}
-			for axis := range lo {
-				if lo[axis] > hi[axis] {
-					// Refused rather than normalised by swapping: swapping
-					// would give one area two encodings, and a reader that
-					// repaired the file would disagree with one that did not.
-					return fmt.Errorf("pile: markers blob: marker %q min[%d] %v exceeds max[%d] %v",
-						name, axis, lo[axis], axis, hi[axis])
-				}
-			}
-		}
-		if !hasPos && !hasMin {
-			return fmt.Errorf("pile: markers blob: marker %q has neither pos nor min/max, so it marks nothing", name)
-		}
-		if i > 0 && name <= prev {
-			return fmt.Errorf("pile: markers blob: marker %q follows %q, want ascending unique names", name, prev)
-		}
-		prev = name
-	}
-	return nil
-}
-
-// finiteTriple is doubleTriple plus §7.4's rules on the doubles themselves.
-//
-// A double admits values that are equal but not identical, and a format whose
-// whole doctrine is one content one encoding cannot carry them. NaN has many
-// bit patterns and makes every comparison false, so an inverted-box check
-// would silently pass over one. Negative zero is a second spelling of zero.
-// Infinities describe a bound no reader can act on.
-//
-// These apply to pos as well, which carried none of them until areas arrived
-// and the question had to be answered: a marker at -0.0 and one at +0.0 are
-// the same point stored as different bytes, and that has been true since
-// markers existed.
-func finiteTriple(v any) ([3]float64, error) {
-	out, err := doubleTriple(v)
-	if err != nil {
-		return out, err
-	}
-	for i, f := range out {
-		switch {
-		case math.IsNaN(f):
-			return out, fmt.Errorf("element %d is NaN", i)
-		case math.IsInf(f, 0):
-			return out, fmt.Errorf("element %d is infinite", i)
-		case f == 0 && math.Signbit(f):
-			return out, fmt.Errorf("element %d is negative zero, which is a second spelling of zero", i)
-		}
-	}
-	return out, nil
-}
-
-// compoundList normalises a decoded NBT list of compounds, which arrives as a
-// typed slice or a slice of any depending on how it was built.
-func compoundList(v any) ([]map[string]any, error) {
-	switch l := v.(type) {
-	case []map[string]any:
-		return l, nil
-	case []any:
-		out := make([]map[string]any, len(l))
-		for i, e := range l {
-			c, ok := e.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("element %d is %T, want a compound", i, e)
-			}
-			out[i] = c
-		}
-		return out, nil
-	}
-	return nil, fmt.Errorf("value is %T, want a list of compounds", v)
-}
-
-// doubleTriple normalises a decoded list of exactly three doubles.
-func doubleTriple(v any) ([3]float64, error) {
-	var out [3]float64
-	switch l := v.(type) {
-	case []float64:
-		if len(l) != 3 {
-			return out, fmt.Errorf("has %d elements, want 3", len(l))
-		}
-		copy(out[:], l)
-		return out, nil
-	case []any:
-		if len(l) != 3 {
-			return out, fmt.Errorf("has %d elements, want 3", len(l))
-		}
-		for i, e := range l {
-			d, ok := e.(float64)
-			if !ok {
-				return out, fmt.Errorf("element %d is %T, want a double", i, e)
-			}
-			out[i] = d
-		}
-		return out, nil
-	}
-	return out, fmt.Errorf("is %T, want a list of three doubles", v)
 }
 
 // compareNBT orders two compounds by their canonical encodings, giving a

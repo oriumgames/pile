@@ -1,9 +1,8 @@
 package pile
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -270,15 +269,15 @@ func TestProviderAdaptsAColumnWithAForeignVerticalRange(t *testing.T) {
 	}
 }
 
-// TestProviderSurvivesAbsurdMetadataBlobs: settings and markers are NBT written
-// by whoever made the file, and the provider decodes them into Go values it
-// then hands to a server.
+// TestProviderSurvivesAbsurdMetadataBlobs: settings are NBT written by whoever
+// made the file, and the provider decodes them into Go values it then hands to
+// a server.
 //
 // §7.1 fixes the tag of every settings key, so a wrongly typed one is an
-// invalid file the decoder already refuses. What it does not fix is the values,
-// and it fixes nothing at all about markers, whose schema is this package's.
-// Every field there may be the wrong type or missing, and none of it may panic
-// or stop the world from being saved back.
+// invalid file the decoder already refuses. What it does not fix is the
+// values: a game mode id no build knows, a spawn at the far corner of the
+// world, a key from a later version. None of it may panic or stop the world
+// from being saved back.
 func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 	reg := testRegistry(t)
 	settings, err := format.MarshalNBT(map[string]any{
@@ -294,31 +293,12 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// §7.2 fixes the markers schema too, so the interesting hostile marker list
-	// is one that satisfies it and is still absurd: extreme positions, empty
-	// strings, and far more markers than any map has.
-	//
-	// The positions used to be NaN and the infinities. §7.2 refuses those now,
-	// because a double that compares false against everything walks straight
-	// through the area bounds rule -- so the hostile-but-legal version is the
-	// largest finite doubles instead.
-	const markerN = 20000
-	list := make([]map[string]any, 0, markerN)
-	list = append(list, map[string]any{"name": "", "kind": "", "pos": []any{0.0, 0.0, 0.0}})
-	list = append(list, map[string]any{
-		"name": "\x01nan", "kind": "spawn",
-		"pos":   []any{math.MaxFloat64, -math.MaxFloat64, math.SmallestNonzeroFloat64},
-		"extra": int64(1),
-	})
-	for i := range markerN - 2 {
-		list = append(list, map[string]any{
-			"name": fmt.Sprintf("m%08d", i), "kind": "npc",
-			"pos": []any{float64(i), 0.0, 0.0},
-		})
-	}
-	markers, err := format.MarshalNBT(map[string]any{"markers": list})
-	if err != nil {
-		t.Fatal(err)
+	// User data is opaque, so the hostile version of it is simply a large one
+	// carrying bytes no decoder will look at: it must survive untouched, and
+	// it must not stop the world being written back.
+	userData := make([]byte, 1<<20)
+	for i := range userData {
+		userData[i] = byte(i)
 	}
 	dir := t.TempDir()
 	f, err := os.Create(filepath.Join(dir, "overworld.pile"))
@@ -326,7 +306,7 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &format.WorldData{
-		Settings: settings, Markers: markers,
+		Settings: settings, UserData: userData,
 		Columns: emptyColumns(t, 1),
 	}
 	if err := format.WriteWorld(f, d, reg, format.Options{}); err != nil {
@@ -347,10 +327,6 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 	if s.DefaultGameMode == nil || s.Difficulty == nil {
 		t.Fatalf("an out-of-range game mode or difficulty produced a nil value: %v, %v",
 			s.DefaultGameMode, s.Difficulty)
-	}
-	ms := p.Markers()
-	if len(ms) != markerN {
-		t.Fatalf("got %d markers, want %d", len(ms), markerN)
 	}
 	// It must save and reopen: absurd metadata must not become an unwritable
 	// world. SaveSettings is what makes the save a real one — a provider whose
@@ -373,8 +349,8 @@ func TestProviderSurvivesAbsurdMetadataBlobs(t *testing.T) {
 	if got := q.Settings().Spawn; got != s.Spawn {
 		t.Fatalf("spawn changed across the round trip: %v, was %v", got, s.Spawn)
 	}
-	if got := len(q.Markers()); got != markerN {
-		t.Fatalf("got %d markers after the round trip, want %d", got, markerN)
+	if !bytes.Equal(q.UserData(), userData) {
+		t.Fatal("the user data blob did not survive the round trip")
 	}
 }
 
@@ -783,11 +759,10 @@ func TestConcurrentAccessToAHostileWorld(t *testing.T) {
 // value, so at 32,768 the length wraps negative and format.UnmarshalNBT refuses
 // the blob the marshaller just produced.
 //
-// The block entity is the case that loses data: settings and markers are
-// re-decoded by the writer's own §7.1/§7.2 schema checks, so those fail at
-// Close, while a block entity's NBT goes to the wire straight from the
-// marshaller — StoreColumn and Close both report success and the world never
-// opens again.
+// The block entity is the case that loses data: settings are re-decoded by the
+// writer's own §7.1 schema check, so that fails at Close, while a block
+// entity's NBT goes to the wire straight from the marshaller — StoreColumn and
+// Close both report success and the world never opens again.
 //
 // This test holds the boundary that works. The half above it is recorded in
 // The fix belongs in
@@ -805,7 +780,7 @@ func TestLongNBTStringsRoundTrip(t *testing.T) {
 	if err := p.StoreColumn(world.ChunkPos{0, 0}, world.Overworld, col); err != nil {
 		t.Fatal(err)
 	}
-	p.SetMarker(Marker{Name: long, Kind: "spawn", Pos: &[3]float64{}})
+	p.SaveSettings(&world.Settings{Name: long})
 	if err := p.Close(); err != nil {
 		t.Fatalf("a world holding %d-byte strings did not save: %v", len(long), err)
 	}
@@ -814,9 +789,8 @@ func TestLongNBTStringsRoundTrip(t *testing.T) {
 		t.Fatalf("a world holding %d-byte strings does not reopen: %v", len(long), err)
 	}
 	defer q.Close()
-	ms := q.Markers()
-	if len(ms) != 1 || ms[0].Name != long {
-		t.Fatalf("the marker did not survive: %d markers", len(ms))
+	if got := q.Settings().Name; got != long {
+		t.Fatalf("the settings name did not survive: %d bytes", len(got))
 	}
 	got, err := q.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
 	if err != nil {

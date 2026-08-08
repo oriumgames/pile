@@ -137,7 +137,7 @@ func solidToIndexed(src, dst string, reg world.BlockRegistry, limit decodeLimit)
 			return err
 		}
 	}
-	if err := w.SetMeta(d.Settings, d.UserData, d.Markers); err != nil {
+	if err := w.SetMeta(d.Settings, d.UserData); err != nil {
 		_ = w.Close()
 		return err
 	}
@@ -151,7 +151,7 @@ func indexedToSolid(src, dst string, reg world.BlockRegistry, limit decodeLimit)
 	}
 	defer w.Close()
 	d := &format.WorldData{}
-	d.Settings, d.UserData, d.Markers = w.Meta()
+	d.Settings, d.UserData = w.Meta()
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])
 		if err != nil {

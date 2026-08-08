@@ -98,7 +98,6 @@ type WorldFiles struct {
 
 	Settings []byte
 	UserData []byte
-	Markers  []byte
 }
 
 // LoadWorldFiles loads all dimension files of a world directory, regardless
@@ -151,7 +150,7 @@ func LoadWorldFiles(dir string, reg world.BlockRegistry, opts ...Option) (*World
 				df.Columns = append(df.Columns, c)
 			}
 			if !haveMeta {
-				wf.Settings, wf.UserData, wf.Markers = iw.Meta()
+				wf.Settings, wf.UserData = iw.Meta()
 				haveMeta = true
 			}
 			_ = iw.Close()
@@ -166,7 +165,7 @@ func LoadWorldFiles(dir string, reg world.BlockRegistry, opts ...Option) (*World
 			}
 			df.Columns = d.Columns
 			if !haveMeta {
-				wf.Settings, wf.UserData, wf.Markers = d.Settings, d.UserData, d.Markers
+				wf.Settings, wf.UserData = d.Settings, d.UserData
 				haveMeta = true
 			}
 		}
@@ -239,7 +238,7 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 				return err
 			}
 		}
-		if err := iw.SetMeta(wf.Settings, wf.UserData, wf.Markers); err != nil {
+		if err := iw.SetMeta(wf.Settings, wf.UserData); err != nil {
 			_ = iw.Close()
 			_ = os.Remove(tmp)
 			return err
@@ -251,7 +250,7 @@ func (wf *WorldFiles) writeDimTemp(tmp string, df DimFile, reg world.BlockRegist
 		return nil
 	} else {
 		d := &format.WorldData{
-			Settings: wf.Settings, UserData: wf.UserData, Markers: wf.Markers,
+			Settings: wf.Settings, UserData: wf.UserData,
 			Columns: df.Columns,
 		}
 		f, err := createExclusive(tmp)

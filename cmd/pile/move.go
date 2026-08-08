@@ -21,6 +21,7 @@ func cmdMove(args []string) error {
 	clip := fs.Bool("clip", false, "allow cutting content that leaves the vertical range")
 	dryRun := fs.Bool("dry-run", false, "report what would happen without writing")
 	noBackup := fs.Bool("no-backup", false, "skip the automatic snapshots/pre-move backup")
+	keepUserData := fs.Bool("keep-user-data", false, "move a world carrying user data, copying it through untranslated")
 	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -32,7 +33,7 @@ func cmdMove(args []string) error {
 		}
 	}
 	if fs.NArg() != 1 || modes != 1 {
-		return errors.New("usage: pile move (--by dx,dy,dz | --spawn-to x,y,z | --center) [--clip] [--dry-run] [--no-backup] <world-dir>")
+		return errors.New("usage: pile move (--by dx,dy,dz | --spawn-to x,y,z | --center) [--clip] [--dry-run] [--no-backup] [--keep-user-data] <world-dir>")
 	}
 	dir := fs.Arg(0)
 
@@ -75,9 +76,16 @@ func cmdMove(args []string) error {
 
 	report, err := pile.MoveWorld(dir, pile.MoveOptions{
 		Offset: offset, Clip: *clip, DryRun: *dryRun, Backup: !*noBackup,
-		MaxDecoded: limit.value(),
+		KeepUserData: *keepUserData, MaxDecoded: limit.value(),
 	})
-	if errors.Is(err, pile.ErrWouldClip) {
+	if errors.Is(err, pile.ErrUnmovableUserData) {
+		fmt.Println("refused: this world carries user data, and pile cannot translate it")
+		fmt.Println("whatever coordinates it holds -- spawn points, regions, NPC positions -- would stay")
+		fmt.Printf("where they are while the blocks move by (%d,%d,%d), and nothing would report it\n",
+			offset.X(), offset.Y(), offset.Z())
+		fmt.Println("re-run with --keep-user-data to move anyway and re-anchor the data yourself")
+		os.Exit(1)
+	} else if errors.Is(err, pile.ErrWouldClip) {
 		fmt.Printf("refused: moving by (%d,%d,%d) would clip %d blocks, %d block entities, %d entities, %d scheduled ticks outside the vertical range\n",
 			offset.X(), offset.Y(), offset.Z(),
 			report.ClippedBlocks, report.ClippedBlockEntities, report.ClippedEntities, report.ClippedTicks)

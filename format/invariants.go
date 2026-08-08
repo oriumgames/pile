@@ -117,7 +117,7 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "metadata field tags are exact", Category: Presence, Enforce: Decoded,
-		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "e6b20330", "5bb2554d", "bf4e7d6b"},
+		Rules: []string{"232fe73e", "4a44a61b", "f1047fc4", "7f907b36", "bf4e7d6b"},
 		Tests: []string{"TestRejectsMetaSchemaViolations", "TestReaderEnforcesMetadataSchemas"},
 	},
 
@@ -149,31 +149,6 @@ var invariants = []Invariant{
 		Rules: []string{"62b04284"},
 		Tests: []string{"TestRejectsIndexedStructureKind", "TestIndexedRejectsStructureKindInDirectory", "TestRejectsUndefinedKind"},
 		Note:  "A structure is always solid, so an indexed structure names a layout that does not exist. The sentence also covers every value of either field the table does not list, which is a separate check from the pairing and needs its own fixture.",
-	},
-	{
-		Name: "a marker marks something", Category: Presence, Enforce: Decoded,
-		Rules: []string{"df794981"},
-		Tests: []string{"TestRejectsMalformedAreaMarkers"},
-		Note:  "pos stopped being mandatory when areas arrived, because an area has no distinguished point in it and writing one would raise the question of whether it meant the centre or a corner. What replaces it is weaker but is still a rule: a marker with neither a point nor bounds names nothing, and nothing is not a thing a map can describe.",
-	},
-	{
-		Name: "marker doubles are finite and unsigned-zero", Category: Normalisation, Enforce: Decoded,
-		Rules: []string{"e7fb3300"},
-		Tests: []string{"TestRejectsMalformedAreaMarkers"},
-		Note: "A double admits values that are equal without being identical, which a format built on one content one encoding cannot carry: negative zero is a second spelling of zero, and NaN has many bit patterns. NaN also makes every comparison false, so it would walk straight through the min<=max rule below. " +
-			"pos carried none of this until areas arrived and the question had to be answered for min and max; it had been true of pos since markers existed, and a marker at -0.0 had always been the same point as one at +0.0 stored as different bytes.",
-	},
-	{
-		Name: "an area carries both corners", Category: Presence, Enforce: Decoded,
-		Rules: []string{"5d1cf830"},
-		Tests: []string{"TestRejectsMalformedAreaMarkers"},
-		Note:  "One corner describes nothing, and which corner it was would have no answer.",
-	},
-	{
-		Name: "an area's corners are ordered", Category: Ordering, Enforce: Decoded,
-		Rules: []string{"4c12487a"},
-		Tests: []string{"TestRejectsMalformedAreaMarkers"},
-		Note:  "Refused rather than normalised by swapping. Swapping would give one region two encodings, and a reader that repaired the file would disagree with one that did not -- the same reason every other rule here rejects instead of repairing. The Go API orders the corners for a caller (pile.Area), which is where repairing belongs: before the bytes exist.",
 	},
 	{
 		Name: "an NBT string fits what a Bedrock reader can address", Category: Bound, Enforce: Decoded,
@@ -410,9 +385,9 @@ var invariants = []Invariant{
 	},
 	{
 		Name: "a structure has one envelope", Category: Presence, Enforce: Decoded,
-		Rules: []string{"4e47554a", "7b480f2f"},
+		Rules: []string{"658096bb", "7b480f2f"},
 		Tests: []string{"TestStructureOriginExtremes", "TestRejectsStructureEnvelopeViolations"},
-		Note:  "The envelope is the header flags, the three metadata blobs, the empty biome palette, the size components and the origin range. The size and origin bounds are stated in §6's layout table rather than a sentence of their own, and a round trip of a legal structure cannot show either going.",
+		Note:  "The envelope is the header flags, the empty settings blob, the empty biome palette, the size components and the origin range. The size and origin bounds are stated in §6's layout table rather than a sentence of their own, and a round trip of a legal structure cannot show either going.",
 	},
 	{
 		Name: "cell padding is air", Category: Normalisation, Enforce: WriterOnly,

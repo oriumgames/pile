@@ -53,13 +53,12 @@ is what your reader must compute after decoding the vector and re-encoding it.
 Two things it deliberately does **not** cover, both visible in the table:
 
 - **Derived and advisory content.** `world_stats` holds a §4.2 stats compound
-  and `world_minimal` does not, and both hash to `c62c88c4f7de5206`. Stats are a
+  and `world_minimal` does not, and both hash to `91e8c6cec870044e`. Stats are a
   summary of the payload; light is a cache. Neither changes what the world is.
-- **The dimension.** `world_minimal`, `world_dim_nether` and `world_dim_end`
-  hold identical chunks in three different dimensions and all hash to
-  `c62c88c4f7de5206`, because the dimension lives in the header flags and
-  `ContentHash` covers only the body. If you use `ContentHash` as a map
-  identity, key it by dimension as well; the reference CLI does.
+- **The dimension.** A file does not record which dimension it is -- that is
+  its name in the world directory -- so two dimensions holding identical chunks
+  hash the same. If you use `ContentHash` as a map identity, key it by dimension
+  as well; the reference CLI does.
 
 The manifests `vectors_manifest.txt` and `vectors_negative_manifest.txt` record
 an `xxhash64` of each file's stored bytes alongside its content hash. Those are
@@ -71,9 +70,9 @@ compresses differently.
 
 ## The minimal world, byte for byte
 
-`world_minimal.pile` is 118 bytes: one column at (0, 0) holding one 16-block
-section of solid stone, in the overworld, with no metadata, no entities and no
-scheduled updates. Nothing in it is optional.
+`world_minimal.pile` is 116 bytes: one column at (0, 0) holding one 16-block
+section of solid stone, with no metadata, no entities and no scheduled updates.
+Nothing in it is optional.
 
 ```
 off  bytes                            field                            value
@@ -85,39 +84,38 @@ off  bytes                            field                            value
  12  0f 46 13 01                      header.blockVersion              18040335
  16  00                               meta.settings (blob, len 0)      empty
  17  00                               meta.userData (blob, len 0)      empty
- 18  00                               meta.markers  (blob, len 0)      empty
- 20  01                               blockPalette.count               1
- 21  0f                               entry[0].name.len                15
- 22  6d 69 6e ... 6e 65               entry[0].name                    "minecraft:stone"
- 37  00                               entry[0].propN                   0
- 38  00                               blockPalette.overrideN           0
- 39  01                               biomePalette.count               1
- 40  0f                               name[0].len                      15
- 41  6d 69 6e ... 61 6e               name[0]                          "minecraft:ocean"
- 56  01                               blobTable.count                  1
- 57  01                               blob[0].paletteN                 1
- 58  00                               blob[0].ref[0]                   0
- 59  00                               blob[0].width                    0 = uniform
- 60  01                               chunkN                           1
- 61  00                               record[0].dx                     0
- 62  00                               record[0].dz                     0
- 63  07                               record[0].minSection             -4
- 64  01                               record[0].sectionN               1
- 65  01                               record[0].blockPresence          bitset(1): section 0 present
- 66  01                               section[0].layerN                1
- 67  00                               section[0].blobRef[0]            0
- 68  00                               record[0].biomePresence          bitset(1): none stored
- 69  00                               record[0].beN                    0
- 70  00                               record[0].entN                   0
- 71  00                               record[0].tick                   0
- 72  00                               record[0].stN                    0
- 73  00                               record[0].userData (blob, len 0) empty
- 74  d2 7c 1d bf 99 4a 95 9b          footer.hash                      xxHash64, §2.4
- 82  00 × 8                           footer.dirOffset                 0
- 90  00 × 8                           footer.dirLength                 0
- 98  00 × 8                           footer.generation                0
-106  00 × 8                           footer.prevFooter                0
-114  45 4c 49 50                      footer.magic                     "ELIP"
+ 18  01                               blockPalette.count               1
+ 19  0f                               entry[0].name.len                15
+ 20  6d 69 6e ... 6e 65               entry[0].name                    "minecraft:stone"
+ 35  00                               entry[0].propN                   0
+ 36  00                               blockPalette.overrideN           0
+ 37  01                               biomePalette.count               1
+ 38  0f                               name[0].len                      15
+ 39  6d 69 6e ... 61 6e               name[0]                          "minecraft:ocean"
+ 54  01                               blobTable.count                  1
+ 55  01                               blob[0].paletteN                 1
+ 56  00                               blob[0].ref[0]                   0
+ 57  00                               blob[0].width                    0 = uniform
+ 58  01                               chunkN                           1
+ 59  00                               record[0].dx                     0
+ 60  00                               record[0].dz                     0
+ 61  07                               record[0].minSection             -4
+ 62  01                               record[0].sectionN               1
+ 63  01                               record[0].blockPresence          bitset(1): section 0 present
+ 64  01                               section[0].layerN                1
+ 65  00                               section[0].blobRef[0]            0
+ 66  00                               record[0].biomePresence          bitset(1): none stored
+ 67  00                               record[0].beN                    0
+ 68  00                               record[0].entN                   0
+ 69  00                               record[0].tick                   0
+ 70  00                               record[0].stN                    0
+ 71  00                               record[0].userData (blob, len 0) empty
+ 72  34 6d a7 8b 53 f5 a5 f7          footer.hash                      xxHash64, §2.4
+ 80  00 × 8                           footer.dirOffset                 0
+ 88  00 × 8                           footer.dirLength                 0
+ 96  00 × 8                           footer.generation                0
+104  00 × 8                           footer.prevFooter                0
+112  45 4c 49 50                      footer.magic                     "ELIP"
 ```
 
 Things worth noticing, because each is a rule and not a coincidence:
@@ -147,28 +145,22 @@ looks like, which is a different thing from a column that was never stored.
 
 | file | bytes | `ContentHash` | what it fixes |
 |------|-------|---------------|----------------|
-| `world_minimal.pile` | 118 | `c62c88c4f7de5206` | the smallest world with a block in it; uniform section blob (§3.3), mandatory default-biome flag (§4.7), overworld dimension bits |
-| `world_empty_chunk.pile` | 100 | `30e4341db2f6a9f3` | an empty chunk carries its dimension's full span with every presence bit clear; leading and trailing empty sections are never trimmed (§4.3) |
-| `world_waterlogged.pile` | 4 252 | `1469c8cd54f56ed8` | layer 1 holds water over a **uniform-air layer 0**, which is stored. A reader that treats a uniform-air layer 0 as an absent section loses the water above it (§4.3) |
-| `world_palette_256.pile` | 9 446 | `05a71f611f82d3aa` | a section-local palette of exactly 256 entries: `width` 1, 4 096 index bytes. 256 is the widest a u8 index can address (§3.3) |
-| `world_palette_257.pile` | 13 563 | `746f16fb4d6b0b43` | 257 entries: `width` 2, 8 192 index bytes. The narrowest sufficient width is the only valid one, so this file may not use width 1 and the previous one may not use width 2 |
-| `world_layers.pile` | 8 370 | `9e19d79c2ee3c64d` | layer numbering (§4.3): layer 0 stone, layer 1 **all air and stored**, layer 2 water, nothing above. Internal all-air layers are kept because layer numbers are semantic; trailing ones are dropped |
-| `world_default_biome.pile` | 8 354 | `91fa77118171bce3` | §4.7 elision with a **tie**: two biomes each hold two uniform sections, so only the stated tie-break (lowest global biome palette reference) decides `defaultBiomeRef` |
-| `world_dedup_morton.pile` | 4 269 | `39f6ab8ab0bc3913` | four identical columns share one blob-table entry (§3.4), and records come out in Morton order, not in the order the columns were handed over (§4) |
-| `world_collections.pile` | 4 777 | `806c15590275b24d` | block entities, entities, scheduled updates, a column tick, world and chunk user data, and §7 metadata. Pins the total orders of §4.8 |
-| `world_light.pile` | 16 522 | `2f1e597784d4fcdd` | flag `StoreLight` (§4.6). Light presence is independent of block presence: sections with no blocks carry sky light, and the flags byte is never zero for a present entry |
-| `world_stats.pile` | 226 | `c62c88c4f7de5206` | flag `Stats` and the §4.2 compound. Note the hash: stats are derived, so they do not change content identity |
-| `world_preserved.pile` | 4 302 | `4c57686fe436d2d1` | the preserved-state sidecar (§9). Two unresolved block states at two different block versions, so the §3.1 sparse override table has two entries; a scheduled update naming one of them; a two-property state; and an unresolved **biome** name that becomes the file's default biome |
-| `world_dim_nether.pile` | 118 | `c62c88c4f7de5206` | `world_minimal`'s content with dimension bits 5-7 = 1 |
-| `world_dim_end.pile` | 118 | `c62c88c4f7de5206` | the same with dimension bits 5-7 = 2 |
-| `structure_edge_padding.pile` | 12 431 | `f55d6c695c07baab` | a 17×3×18 structure: the box is not a multiple of 16, so its four cells have padding outside it. Padding is air in every layer (§6) |
-| `structure_full.pile` | 12 684 | `5e1f1c878ca0ef99` | a negative origin, an internal all-air cell layer, block entities, entities and user data; settings and markers empty and the biome palette at zero entries, as §6 requires |
-| `indexed_torn.pile` | 400 | `c62c88c4f7de5206` | an indexed file (§5) whose newest footer is destroyed. Opening it must fall back through `prevFooter` to the previous checkpoint; the content that survives is the one column stored before it |
-| `indexed_full.pile` | 24 081 | `11eb2fd39e143b79` | an indexed file with a history: a meta frame, a trained dictionary frame, two block palette segments, a checkpoint chain reaching generation 3, superseded records the directory does not name, and a compaction in the middle of it. Its bytes are **not** claimed; see below |
-
-The three dimension vectors are byte-identical apart from the header's flags
-word at offsets 8-11 and the checkpoint hash at offset 74, which covers it. A
-test asserts exactly that, so you can diff them to locate the field.
+| `world_minimal.pile` | 116 | `91e8c6cec870044e` | the smallest world with a block in it; uniform section blob (§3.3), mandatory default-biome flag (§4.7) |
+| `world_empty_chunk.pile` | 98 | `4fefb9dd3629f90e` | an empty chunk carries its dimension's full span with every presence bit clear; leading and trailing empty sections are never trimmed (§4.3) |
+| `world_waterlogged.pile` | 4 250 | `28e89decf80b9b4a` | layer 1 holds water over a **uniform-air layer 0**, which is stored. A reader that treats a uniform-air layer 0 as an absent section loses the water above it (§4.3) |
+| `world_palette_256.pile` | 9 444 | `fb4a4515dab10a31` | a section-local palette of exactly 256 entries: `width` 1, 4 096 index bytes. 256 is the widest a u8 index can address (§3.3) |
+| `world_palette_257.pile` | 13 561 | `95ba142a490128d1` | 257 entries: `width` 2, 8 192 index bytes. The narrowest sufficient width is the only valid one, so this file may not use width 1 and the previous one may not use width 2 |
+| `world_layers.pile` | 8 368 | `d5108c2981343ead` | layer numbering (§4.3): layer 0 stone, layer 1 **all air and stored**, layer 2 water, nothing above. Internal all-air layers are kept because layer numbers are semantic; trailing ones are dropped |
+| `world_default_biome.pile` | 8 352 | `6f3a8027be5b4bda` | §4.7 elision with a **tie**: two biomes each hold two uniform sections, so only the stated tie-break (lowest global biome palette reference) decides `defaultBiomeRef` |
+| `world_dedup_morton.pile` | 4 267 | `ef62ac7b019e49be` | four identical columns share one blob-table entry (§3.4), and records come out in Morton order, not in the order the columns were handed over (§4) |
+| `world_collections.pile` | 4 586 | `b7008cb59ec12d52` | block entities, entities, scheduled updates, a column tick, world and chunk user data, and §7 metadata. Pins the total orders of §4.8 |
+| `world_light.pile` | 16 520 | `1113eb0c82dab5d4` | flag `StoreLight` (§4.6). Light presence is independent of block presence: sections with no blocks carry sky light, and the flags byte is never zero for a present entry |
+| `world_stats.pile` | 224 | `91e8c6cec870044e` | flag `Stats` and the §4.2 compound. Note the hash: stats are derived, so they do not change content identity |
+| `world_preserved.pile` | 4 300 | `6e69516ad3f7e38d` | the preserved-state sidecar (§9). Two unresolved block states at two different block versions, so the §3.1 sparse override table has two entries; a scheduled update naming one of them; a two-property state; and an unresolved **biome** name that becomes the file's default biome |
+| `structure_edge_padding.pile` | 12 429 | `112eca7e745f2230` | a 17×3×18 structure: the box is not a multiple of 16, so its four cells have padding outside it. Padding is air in every layer (§6) |
+| `structure_full.pile` | 12 682 | `d9013d50fa9825cf` | a negative origin, an internal all-air cell layer, block entities, entities and user data; the settings blob empty and the biome palette at zero entries, as §6 requires |
+| `indexed_torn.pile` | 400 | `91e8c6cec870044e` | an indexed file (§5) whose newest footer is destroyed. Opening it must fall back through `prevFooter` to the previous checkpoint; the content that survives is the one column stored before it |
+| `indexed_full.pile` | 24 036 | `138060de51114925` | an indexed file with a history: a meta frame, a trained dictionary frame, two block palette segments, a checkpoint chain reaching generation 3, superseded records the directory does not name, and a compaction in the middle of it. Its bytes are **not** claimed; see below |
 
 ### The indexed vectors
 
@@ -197,13 +189,13 @@ must conclude, and nothing else about the file is claimed:
 | generation | 3 |
 | dimension | nether (§5.5: from the directory prologue, which compaction carried forward) |
 | columns | exactly 22, at (0,0)–(4,3) plus (0,4) and (1,4) |
-| metadata | a §7 settings compound (`name` "indexed vector", `time` 6000, `difficulty` 1), 23 bytes of world user data, and one marker "hub" — carried in a **meta frame**, which is why `ReadMeta` on an indexed file tells a caller nothing about them |
+| metadata | a §7 settings compound (`name` "indexed vector", `time` 6000, `difficulty` 1) and 23 bytes of world user data — carried in a **meta frame**, which is why `ReadMeta` on an indexed file tells a caller nothing about them |
 | a dictionary | the directory names a dictionary frame and the record frames were written against it. A reader that ignores it decodes nothing at all |
 | palette segments | more than one. Segments are cumulative and a reader must concatenate them in directory order; a file with one segment cannot tell a correct reader from an incorrect one |
 | dead frames | the file contains records the newest directory does not name. A reader that located content by scanning frames rather than by reading the directory would find superseded ones and could not say which wins |
 | unresolved states | none |
 | a hand-checkable fact | the block at structure-local (0, 0, 0) of column (0,0) is `minecraft:bedrock` |
-| content identity | `11eb2fd39e143b79`, computed by opening the file, re-encoding everything it yields as an uncompressed solid file, and taking `ContentHash` of that |
+| content identity | `138060de51114925`, computed by opening the file, re-encoding everything it yields as an uncompressed solid file, and taking `ContentHash` of that |
 
 The last row is the load-bearing one: two implementations that agree on it agree
 about what the file means, whatever their readers did to get there.
@@ -347,7 +339,6 @@ walker deliberately does not do — it models the wire, not the game.
 | `neg_nbt_duplicate_keys` | an NBT compound with a repeated key |
 | `neg_nbt_named_root` | the root compound carries a name. One canonical envelope: the root is unnamed |
 | `neg_settings_wrong_tag` **(reader only)** | `time` stored as an int rather than a long. Which §7 fields exist is a convention; how a field is spelled is a rule, because a decoder into a dynamically typed map cannot recover which tag a value came from. The walker checks NBT structure, and a wrong tag is structurally well-formed |
-| `neg_markers_not_sorted` **(reader only)** | the marker list is not sorted by name. The same marker collection would otherwise have as many encodings as it has permutations. Structurally well-formed, so only the §7.2 schema catches it |
 | `neg_stats_wrong_tag` **(reader only)** | a stats counter stored as an int rather than a long. A missing counter is valid; a mistyped one is not |
 
 ### Structures (§6)

@@ -518,7 +518,6 @@ resolves to: dropping it discards the state it was preserving.
 ```
 settings         blob             NBT; world settings (§7.1); may be empty
 userData         blob             application-defined; may be empty
-markers          blob             NBT (§7.2); may be empty
 stats            blob             present iff flag Stats; NBT (§4.2)
 ```
 
@@ -790,8 +789,7 @@ MUST reject duplicate segment references (both are allocation amplifiers).
 
 ### 5.4 Meta frame
 
-`settings`, `userData` and `markers` blobs, §4.1 layout without the
-stats field. A new meta frame is appended when metadata changes; the directory
+`settings` and `userData` blobs, §4.1 layout without the stats field. A new meta frame is appended when metadata changes; the directory
 points at the latest.
 
 Indexed mode therefore has nowhere to put a stats compound, and no section to
@@ -907,7 +905,7 @@ A structure is a free-standing box of blocks with a paste anchor. The body is
 a single unit like solid mode:
 
 ```
-meta block       §4.1 (settings and markers empty; userData usable; no stats)
+meta block       §4.1 (settings empty; userData usable; no stats)
 block palette    §3.1
 biome palette    §3.2 with count = 0   (structures store no biomes)
 blob table       §3.4
@@ -934,8 +932,7 @@ anchor has one encoding and a reader is never handed a coordinate its own
 array cannot address.
 
 A structure header MUST set no flags other than `Uncompressed`, its settings
-and markers blobs MUST be empty, and its biome palette MUST have zero
-entries. Decoders MUST reject files that violate this, so one structure has
+blob MUST be empty, and its biome palette MUST have zero entries. Decoders MUST reject files that violate this, so one structure has
 exactly one valid envelope.
 
 **Cell canonicalisation.** The §4.3 rules for chunk sections apply to cells
@@ -982,12 +979,10 @@ reader and a lenient one end up disagreeing about what is a valid file:
   ignore ones they do not know, and a compound carrying none of them is valid.
   Nothing here is required to be present.
 - **How a field is spelled is a rule.** When one of these fields *is* present
-  it MUST carry the tag and shape stated below, and the marker list MUST be
-  ordered as stated. Readers MUST enforce this exactly as writers do: an
-  unsorted marker list is a second encoding of one marker collection, so a
-  reader that accepts what a writer refuses to produce disagrees with it about
-  what a valid file is. A writer that emits `time` as an int, or an unsorted
-  marker list, produces an invalid file even though the field itself was
+  it MUST carry the tag and shape stated below. Readers MUST enforce this
+  exactly as writers do: a reader that accepts what a writer refuses to
+  produce disagrees with it about what a valid file is. A writer that emits
+  `time` as an int produces an invalid file even though the field itself was
   optional.
 
 The reason for the split is that a decoder into a dynamically typed map cannot
@@ -1006,53 +1001,6 @@ The tag of each listed field is fixed and writers MUST reject a blob carrying
 the wrong one: `time` as an int rather than a long is a different encoding of
 the same setting, and no decoder can tell afterwards. Keys not listed here are
 preserved verbatim and unconstrained.
-
-### 7.2 Markers
-
-Compound `{markers: [compound]}`; each marker has `name` (string), `kind`
-(string), an optional `pos` (list of 3 doubles), an optional `min` and `max`
-(each a list of 3 doubles, §7.3), plus arbitrary extra keys. The list is
-sorted by `name`, **strictly** ascending: names are unique, since two markers
-with one name would have no defined order and no way to be told apart.
-Writers MUST reject an unsorted list rather than copy it through, because the
-same marker collection would otherwise have as many encodings as it has
-permutations.
-
-A marker MUST carry `pos`, or `min` and `max`, or both, and decoders MUST
-reject one carrying neither: a marker that is neither a point nor a region
-marks nothing.
-
-Every double in `pos`, `min` and `max` MUST be finite, and MUST NOT be negative
-zero; decoders MUST reject a marker carrying NaN, an infinity or a negative
-zero in any of them. A double admits values that are equal without being
-identical, and a format whose whole rule is that one content has one encoding
-cannot carry them: negative zero is a second spelling of zero, and NaN makes
-every comparison false, so the bounds rule below would silently pass over one.
-
-### 7.3 Areas
-
-A marker carrying `min` and `max` describes a region rather than a point. Both
-MUST be present or both absent, and decoders MUST reject a marker carrying one
-without the other: a single corner describes nothing, and which corner it was
-would have no answer.
-
-Each component of `min` MUST be less than or equal to the same component of
-`max`, and decoders MUST reject a marker where it is not. An inverted box is
-refused rather than normalised by swapping the corners, because swapping would
-give one region two encodings and a reader that repaired the file would
-disagree with one that did not.
-
-The bounds are doubles rather than block coordinates so that a region can have
-a margin, or sit at sub-block precision, or describe something that is not a
-box of whole blocks. Whether they are inclusive is the application's business:
-the format stores two corners and orders them, and says nothing about what
-lies between.
-
-What makes an area an area is that it carries bounds, not its `kind`. `kind`
-stays the application's own category — `spawn_region`, `no_pvp`, whatever the
-map means — because a field that has to say `"area"` to be understood is a
-field doing two jobs, and the second one is already answered by the bounds
-being there.
 
 ---
 

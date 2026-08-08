@@ -895,24 +895,6 @@ func negCases() []negCase {
 			// is well-formed NBT and only the schema says otherwise.
 			walkerBlind: true,
 		},
-		{
-			name: "markers_not_sorted", base: "world_collections", rule: "§7.2: the marker list is sorted by name, strictly ascending",
-			wantErr: "ascending unique names",
-			mutate: func(t *testing.T, l *vecLayout, b []byte) []byte {
-				marker := func(name string) []byte {
-					return append(append(
-						vecNBTEntry(tagString, "kind", append([]byte{4, 0}, "test"...)),
-						vecNBTEntry(tagString, "name", append([]byte{byte(len(name)), 0}, name...))...),
-						append(vecNBTEntry(tagList, "pos", append(append([]byte{tagDouble}, vecNBTI32(3)...),
-							make([]byte, 24)...)), tagEnd)...)
-				}
-				list := append([]byte{tagCompound}, vecNBTI32(2)...)
-				list = append(list, marker("spawn")...)
-				list = append(list, marker("arena")...)
-				return vecReplaceMeta(t, l, b, "meta.markers", vecNBTRoot("", vecNBTEntry(tagList, "markers", list)))
-			},
-			walkerBlind: true,
-		},
 		// -- §4.2 stats -----------------------------------------------------
 		{
 			name: "stats_wrong_tag", base: "world_stats", rule: "§4.2: a stats counter that is present carries a long",

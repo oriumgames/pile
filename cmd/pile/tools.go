@@ -110,14 +110,13 @@ func cmdDiff(args []string) error {
 	if err != nil {
 		return err
 	}
-	metaChanged := !bytes.Equal(a.Settings, b.Settings) || !bytes.Equal(a.UserData, b.UserData) ||
-		!bytes.Equal(a.Markers, b.Markers)
+	metaChanged := !bytes.Equal(a.Settings, b.Settings) || !bytes.Equal(a.UserData, b.UserData)
 	if len(diffs) == 0 && !metaChanged {
 		fmt.Println("worlds are identical")
 		return nil
 	}
 	if metaChanged {
-		fmt.Println("metadata differs (settings, markers or user data)")
+		fmt.Println("metadata differs (settings or user data)")
 	}
 	printPos := func(label string, s [][2]int32) {
 		if len(s) == 0 {

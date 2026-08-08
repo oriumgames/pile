@@ -102,15 +102,16 @@ commands:
                         build a structure file into a pile world
   export  [--dim d] <world> <out-dir>
                         unpack a world into structure.pile + editable data.json
-                        (settings, markers, user data, origin)
+                        (settings, user data, origin)
   import  <export-dir> <world-dir>
                         rebuild a world from structure.pile + data.json
   compact <dir|file>    rewrite indexed files without garbage
   mode    <dir|file> <solid|indexed>
                         convert between solid and indexed file modes
   move    (--by dx,dy,dz | --spawn-to x,y,z | --center) <world>
-                        translate a whole world (blocks, entities, spawn,
-                        markers); refuses lossy moves unless --clip;
+                        translate a whole world (blocks, entities, spawn);
+                        refuses lossy moves unless --clip, and refuses a world
+                        carrying user data unless --keep-user-data;
                         --dry-run previews, auto-backup to snapshots/pre-move
   origin  (--set x,y,z | --zero | --center) <structure.pile>
                         change a structure's paste anchor (pure metadata)
@@ -127,9 +128,9 @@ commands:
                         current registry (exit 1 if any)
   prune   --bounds x1,z1,x2,z2 <world>
                         drop chunks outside a block box
-  edit    <world>       edit the world's settings, markers and user
-                        data as JSON in $EDITOR; --print dumps it, --apply
-                        reads it back from a file
+  edit    <world>       edit the world's settings and user data as JSON in
+                        $EDITOR; --print dumps it, --apply reads it back from
+                        a file
   blocks  <mcdb-world>  list the block identifiers a leveldb world uses and the
                         property values each takes, without needing a registry:
                         what a server must register before converting a world

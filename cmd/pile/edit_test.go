@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -42,8 +43,8 @@ func editRead(t *testing.T, dir string) editData {
 // The typed structs are the point. NBT distinguishes an int32 from an int64 and
 // JSON has one number type, so a round trip through a raw NBT map turns every
 // integer property into a float64 -- which is how a custom block with a numeric
-// property crashed a server earlier in this project's life. Settings and markers
-// go through fields with declared types, so the types survive.
+// property crashed a server earlier in this project's life. Settings go
+// through fields with declared types, so the types survive.
 func TestEditRoundTrip(t *testing.T) {
 	reg := testRegistry(t)
 	dir := t.TempDir()
@@ -59,10 +60,6 @@ func TestEditRoundTrip(t *testing.T) {
 	d.Settings.Spawn = [3]int{10, 70, -20}
 	d.Settings.Time = 12345
 	d.Settings.TickRange = 9
-	d.Markers = []exportMarker{
-		{Name: "arena", Kind: "pvp", Min: &[3]float64{-10, 60, -10}, Max: &[3]float64{10, 70, 10}},
-		{Name: "hub", Kind: "spawn", Pos: &[3]float64{1, 65, 2}},
-	}
 	d.UserData = json.RawMessage(`{"stage":"beta"}`)
 
 	if err := editRoundTrip(t, dir, d); err != nil {
@@ -79,20 +76,6 @@ func TestEditRoundTrip(t *testing.T) {
 	if !sameJSON(after.UserData, []byte(`{"stage":"beta"}`)) {
 		t.Errorf("user data did not round trip: %s", after.UserData)
 	}
-	byName := map[string]exportMarker{}
-	for _, m := range after.Markers {
-		byName[m.Name] = m
-	}
-	if len(byName) != 2 {
-		t.Fatalf("markers did not round trip: %+v", after.Markers)
-	}
-	if a := byName["arena"]; a.Min == nil || a.Max == nil || *a.Min != [3]float64{-10, 60, -10} {
-		t.Errorf("the area marker came back as %+v", a)
-	}
-	if h := byName["hub"]; h.Pos == nil || *h.Pos != [3]float64{1, 65, 2} || h.Min != nil || h.Max != nil {
-		t.Errorf("the point marker came back as %+v", h)
-	}
-
 	// The chunks are not this command's business and must be untouched.
 	q, err := pile.Open(dir, pile.Registry(reg), pile.ReadOnly())
 	if err != nil {
@@ -108,37 +91,14 @@ func TestEditRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEditRemovesWhatTheEditorRemoved: the editor is shown the whole list, so
-// deleting a marker there has to delete the marker. Merging instead would make
-// removal impossible through the one interface the command offers.
-func TestEditRemovesWhatTheEditorRemoved(t *testing.T) {
-	dir := t.TempDir()
-	buildWorldA(t, dir)
-
-	d := editRead(t, dir)
-	d.Markers = []exportMarker{
-		{Name: "a", Kind: "x", Pos: &[3]float64{0, 0, 0}},
-		{Name: "b", Kind: "x", Pos: &[3]float64{1, 1, 1}},
-	}
-	if err := editRoundTrip(t, dir, d); err != nil {
-		t.Fatal(err)
-	}
-
-	d = editRead(t, dir)
-	d.Markers = d.Markers[:1]
-	if err := editRoundTrip(t, dir, d); err != nil {
-		t.Fatal(err)
-	}
-
-	after := editRead(t, dir)
-	if len(after.Markers) != 1 {
-		t.Errorf("removing a marker from the JSON left %d behind", len(after.Markers))
-	}
-}
-
-// TestEditRefusedLeavesTheWorldAlone: the §7 schemas are checked when the world
-// is written, so a bad edit has to fail with nothing changed rather than half
-// applied.
+// TestEditRefusedLeavesTheWorldAlone: a bad edit has to fail with nothing
+// changed rather than half applied.
+//
+// The settings go through typed fields, so the JSON cannot express a value the
+// §7.1 schema refuses. What it can express is a malformed userDataBase64, and
+// that used to be caught after the settings had already been handed to the
+// provider -- where the error path's Close is itself a save, so the refusal
+// wrote half the edit and then reported failure.
 func TestEditRefusedLeavesTheWorldAlone(t *testing.T) {
 	dir := t.TempDir()
 	buildWorldA(t, dir)
@@ -151,28 +111,19 @@ func TestEditRefusedLeavesTheWorldAlone(t *testing.T) {
 
 	bad := editRead(t, dir)
 	bad.Settings.Name = "should not survive"
-	// An area whose corners are the wrong way round: one region with two
-	// encodings, which §7.3 refuses rather than repairs.
-	bad.Markers = append(bad.Markers, exportMarker{
-		Name: "inverted", Kind: "x",
-		Min: &[3]float64{10, 10, 10}, Max: &[3]float64{0, 0, 0},
-	})
+	bad.UserData = nil
+	bad.UserDataBase64 = "not!valid!base64"
 	err := editRoundTrip(t, dir, bad, "--no-backup")
 	if err == nil {
-		t.Fatal("an inverted area was accepted")
+		t.Fatal("malformed base64 user data was accepted")
 	}
-	if !strings.Contains(err.Error(), "exceeds max") {
+	if !strings.Contains(err.Error(), "userDataBase64") {
 		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 
 	after := editRead(t, dir)
 	if after.Settings.Name != "before the bad edit" {
 		t.Errorf("a refused edit changed the world: name is %q", after.Settings.Name)
-	}
-	for _, m := range after.Markers {
-		if m.Name == "inverted" {
-			t.Error("a refused edit left its marker behind")
-		}
 	}
 }
 
@@ -231,7 +182,7 @@ func TestEditorCommand(t *testing.T) {
 //
 // It is shown inline so it can be edited, and marshalling reflows it, so the
 // naive implementation rewrites an application's own bytes -- and moves the
-// world's ContentHash -- because somebody renamed a marker. The blob is
+// world's ContentHash -- because somebody changed the spawn. The blob is
 // therefore written back only when its content actually changed.
 func TestEditLeavesUntouchedUserDataAlone(t *testing.T) {
 	dir := t.TempDir()
@@ -296,8 +247,8 @@ func TestEditWritesChangedUserData(t *testing.T) {
 // divergence is valid, loads, and silently ignores every copy but one. verify
 // is the only place that sees all of them at once.
 func TestMetadataDivergence(t *testing.T) {
-	meta := func(settings, markers string) *format.Meta {
-		return &format.Meta{Settings: []byte(settings), Markers: []byte(markers)}
+	meta := func(settings, userData string) *format.Meta {
+		return &format.Meta{Settings: []byte(settings), UserData: []byte(userData)}
 	}
 	for _, c := range []struct {
 		name  string
@@ -328,7 +279,7 @@ func TestMetadataDivergence(t *testing.T) {
 				"overworld.pile": meta("a", "b"),
 				"nether.pile":    meta("x", "y"),
 			},
-			[]string{"nether.pile differs from overworld.pile: settings, markers"},
+			[]string{"nether.pile differs from overworld.pile: settings, user data"},
 		},
 		{
 			"with no overworld the first file is the reference",
@@ -350,5 +301,49 @@ func TestMetadataDivergence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEditPreservesNonJSONUserData: a user data blob that is not JSON is shown
+// as a base64 string alongside `"userData": null` -- null being what the always
+// present empty field renders as, not a claim that the world has none.
+//
+// Applying that back unchanged has to leave the blob alone. Reading the JSON
+// field first instead made the null win, so opening the editor on any world
+// whose user data was not JSON and saving without typing anything destroyed it.
+func TestEditPreservesNonJSONUserData(t *testing.T) {
+	dir := t.TempDir()
+	buildWorldA(t, dir)
+
+	blob := []byte{0x00, 0xFF, 0x01, 0xFE, 'n', 'o', 't', ' ', 'j', 's', 'o', 'n'}
+	p, err := pile.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetUserData(blob)
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d := editRead(t, dir)
+	if d.UserDataBase64 == "" {
+		t.Fatal("a non-JSON blob was not offered as base64")
+	}
+	if !isJSONNull(d.UserData) {
+		t.Fatalf("userData is %s, want the empty field's null", d.UserData)
+	}
+	// An edit that changes something else entirely, applied verbatim.
+	d.Settings.Name = "renamed"
+	if err := editRoundTrip(t, dir, d); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := pile.Open(dir, pile.ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.Close() }()
+	if got := q.UserData(); !bytes.Equal(got, blob) {
+		t.Fatalf("the user data blob came back as %x, want %x", got, blob)
 	}
 }

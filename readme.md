@@ -127,27 +127,24 @@ lib, _ := pile.LoadStructureLibrary("structures/") // name → structure
 ```go
 b := pile.NewBuilder(nil, cube.Range{-64, 319})
 b.Fill(lo, hi, block.Stone{})
-b.SetMarker(pile.Point("spawn", "spawn", [3]float64{0, 65, 0}))
 p := b.Provider()          // in-memory world
 _ = b.Save("maps/arena")   // or straight to disk
 ```
 
 ## Self-describing maps
 
-Settings, named markers and arbitrary world/chunk metadata
-travel inside the file. A marker is a point, a region, or both:
+Settings and arbitrary world/chunk metadata travel inside the file. The
+metadata is an opaque blob: spawn points, regions, NPC positions, whatever
+shape your game wants, in whatever encoding you already use.
 
 ```go
-p.SetMarker(pile.Point("spawn", "spawn", [3]float64{0, 65, 0}))
-p.SetMarker(pile.Area("arena", "pvp", [3]float64{-10, 60, -10}, [3]float64{10, 70, 10}))
-```
-
-
-```go
-p.Markers() / p.SetMarker(m)
 p.UserData() / p.SetUserData(b)
 p.ChunkUserData(pos, dim) / p.SetChunkUserData(pos, dim, b)
 ```
+
+pile does not look inside it, which is also why `pile move` refuses a world
+carrying any unless you pass `--keep-user-data`: it can translate every block
+and entity, and it cannot find a coordinate in a blob it does not understand.
 
 Snapshots for versions and grief rollback: `p.Snapshot("clean")`,
 `p.Rollback("clean")`, `p.Snapshots()`. Autosave: `stop := p.AutoSave(5*time.Minute)`.

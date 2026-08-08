@@ -211,17 +211,8 @@ func goldenWorld(t *testing.T, reg world.BlockRegistry) *WorldData {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Ascending by name, as §7.2 requires.
-	markers, err := marshalNBT(map[string]any{"markers": []map[string]any{
-		{"name": "arena", "kind": "region", "pos": []any{0.0, 0.0, 0.0}, "radius": int32(12)},
-		{"name": "spawn", "kind": "spawn", "pos": []any{1.5, 65.0, -2.5}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	d := &WorldData{
 		Settings: settings, UserData: []byte("golden-user-data"),
-		Markers: markers,
 	}
 	for _, pos := range [][2]int32{{0, 0}, {-1, 2}} {
 		ch := chunk.New(reg, cube.Range{-64, 319})
@@ -636,7 +627,7 @@ func buildGoldenIndexedCompact(t *testing.T, reg world.BlockRegistry) []byte {
 			t.Fatal(err)
 		}
 	}
-	if err := w.SetMeta(d.Settings, d.UserData, nil); err != nil {
+	if err := w.SetMeta(d.Settings, d.UserData); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Compact(); err != nil {
@@ -683,7 +674,7 @@ func buildGoldenIndexedWith(t *testing.T, reg world.BlockRegistry, opts Options)
 	if err := w.Store(d.Columns[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.SetMeta(d.Settings, d.UserData, d.Markers); err != nil {
+	if err := w.SetMeta(d.Settings, d.UserData); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -814,9 +805,8 @@ func TestGoldenFormatReadable(t *testing.T) {
 				build = goldenWorld
 			}
 			want := build(t, reg)
-			if len(d.Markers) != len(want.Markers) {
-				t.Fatalf("golden metadata changed: markers %d bytes, want %d",
-					len(d.Markers), len(want.Markers))
+			if !bytes.Equal(d.Settings, want.Settings) {
+				t.Fatalf("golden metadata changed: settings %x, want %x", d.Settings, want.Settings)
 			}
 			if v.opts.SkipBiomes {
 				return // biome comparison would fail by design
@@ -1015,8 +1005,8 @@ func TestGoldenFormatReadable(t *testing.T) {
 			}
 			want := goldenWorld(t, reg)
 			canonicaliseColumns(want)
-			_, _, markers := w.Meta()
-			if !bytes.Equal(markers, want.Markers) {
+			_, userData := w.Meta()
+			if !bytes.Equal(userData, want.UserData) {
 				t.Fatal("golden indexed world lost its metadata")
 			}
 			for _, c := range want.Columns {

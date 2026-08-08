@@ -125,7 +125,6 @@ type IndexedWorld struct {
 	// Metadata blobs, duplicated into a meta frame on checkpoint.
 	metaRef            frameRef
 	settings, userData []byte
-	markers            []byte
 	// paletteErr holds the first rejected palette entry seen while resolving
 	// a column, since the palette callbacks cannot return an error.
 	paletteErr error
@@ -591,7 +590,7 @@ func (w *IndexedWorld) resetLoadedState() {
 	w.footerPending = false
 	w.checkpointPending = false
 	w.recovered = false
-	w.settings, w.userData, w.markers = nil, nil, nil
+	w.settings, w.userData = nil, nil
 	// The codecs are shared process-wide and keyed by the dictionary, so this
 	// handle only drops its reference: closing them would break every other
 	// handle that borrowed the same dictionary.
@@ -946,19 +945,18 @@ func (w *IndexedWorld) loadDirectory(ref frameRef) error {
 			return fmt.Errorf("pile: read meta frame: %w", err)
 		}
 		mr := &reader{b: mb}
-		s, u, m, _, err := readMetaBlobs(mr, 0)
+		s, u, _, err := readMetaBlobs(mr, 0)
 		if err != nil {
 			return err
 		}
 		// §5.1: a frame ends where its structure ends. The record and directory
 		// frames were the only two that checked; a meta frame padded with
-		// anything at all decoded to the same three blobs and was a second
-		// encoding of them, with its own length and hash in the directory.
+		// anything at all decoded to the same blobs and was a second encoding
+		// of them, with its own length and hash in the directory.
 		if mr.remaining() != 0 {
 			return corruptf("%d trailing bytes in the meta frame", mr.remaining())
 		}
 		w.settings, w.userData = cloneBytes(s), cloneBytes(u)
-		w.markers = cloneBytes(m)
 	}
 
 	readSegs := func(what string) ([]frameRef, error) {
@@ -1819,10 +1817,10 @@ func (w *IndexedWorld) ChunkCount() int {
 }
 
 // Meta returns the metadata blobs.
-func (w *IndexedWorld) Meta() (settings, userData, markers []byte) {
+func (w *IndexedWorld) Meta() (settings, userData []byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return cloneBytes(w.settings), cloneBytes(w.userData), cloneBytes(w.markers)
+	return cloneBytes(w.settings), cloneBytes(w.userData)
 }
 
 // metaFrameLen returns the encoded size of a metadata frame, so the aggregate
@@ -1839,7 +1837,7 @@ func metaFrameLen(blobs ...[]byte) int {
 // rejects blobs the decoder would refuse, so a checkpoint can never write a
 // file that fails to reopen (which would silently roll back to an older
 // checkpoint, losing chunks stored since).
-func (w *IndexedWorld) SetMeta(settings, userData, markers []byte) error {
+func (w *IndexedWorld) SetMeta(settings, userData []byte) error {
 	// Refuse where a store would. Reporting success on a world that can never
 	// persist the change leaves Meta answering with something no reader will
 	// ever see.
@@ -1859,7 +1857,6 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers []byte) error {
 	}{
 		{settings, "world settings blob", true},
 		{userData, "world user data", false},
-		{markers, "markers blob", true},
 	} {
 		if err := checkBlob(b.p, b.what); err != nil {
 			return err
@@ -1874,20 +1871,22 @@ func (w *IndexedWorld) SetMeta(settings, userData, markers []byte) error {
 			}
 		}
 	}
-	if err := checkMetaSchemas(settings, markers); err != nil {
+	if err := checkSettingsBlob(settings); err != nil {
 		return err
 	}
-	// The four blobs go into one frame, and the frame has its own ceiling: four
-	// individually legal 16 MiB blobs already exceed it. Checking only the
-	// parts leaves SetMeta reporting success and every later checkpoint
-	// failing, which is the rollback this call exists to prevent.
-	if n := metaFrameLen(settings, userData, markers); n > maxDecodedFrame {
+	// The blobs go into one frame, and the frame has its own ceiling. Two
+	// individually legal 16 MiB blobs no longer reach it -- four did, before
+	// the border and the markers left -- so this cannot currently fire. It
+	// stays because metaFrameLen also counts the length prefixes and a third
+	// blob would make it live again, and because checking only the parts is
+	// how SetMeta would report success while every later checkpoint failed,
+	// which is the rollback this call exists to prevent.
+	if n := metaFrameLen(settings, userData); n > maxDecodedFrame {
 		return fmt.Errorf("pile: metadata frame is %d bytes, limit %d", n, maxDecodedFrame)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.settings, w.userData = cloneBytes(settings), cloneBytes(userData)
-	w.markers = cloneBytes(markers)
 	w.metaDirty = true
 	return nil
 }
@@ -2006,11 +2005,10 @@ func (w *IndexedWorld) checkpointLocked() error {
 		w.pendingBiome = writer{}
 		w.pendingBioN = 0
 	}
-	if w.metaDirty || (w.metaRef.length == 0 && (len(w.settings) > 0 || len(w.userData) > 0 || len(w.markers) > 0)) {
+	if w.metaDirty || (w.metaRef.length == 0 && (len(w.settings) > 0 || len(w.userData) > 0)) {
 		mb := &writer{}
 		mb.blob(w.settings)
 		mb.blob(w.userData)
-		mb.blob(w.markers)
 		ref, _, err := w.appendFrame(mb.bytes())
 		if err != nil {
 			return err
@@ -2204,7 +2202,7 @@ func (w *IndexedWorld) Compact() error {
 			return fail(err)
 		}
 	}
-	if err := nw.SetMeta(w.settings, w.userData, w.markers); err != nil {
+	if err := nw.SetMeta(w.settings, w.userData); err != nil {
 		return fail(err)
 	}
 	if err := nw.Checkpoint(); err != nil {

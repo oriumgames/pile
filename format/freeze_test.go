@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -196,7 +195,7 @@ func TestRejectsUnusedLocalPaletteEntry(t *testing.T) {
 	reg := testRegistry(t)
 	body := func(pad bool) []byte {
 		w := &writer{}
-		for range 3 {
+		for range 2 {
 			w.blob(nil)
 		}
 		w.uvarint(2) // global block palette
@@ -254,7 +253,6 @@ func TestRejectsOutOfRangePaletteIndex(t *testing.T) {
 	// to show an out-of-range index survives every earlier check.
 	body := func(idx byte) []byte {
 		w := &writer{}
-		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
 		w.uvarint(2) // block palette: stone, dirt, so no layer is all air
@@ -382,7 +380,7 @@ func TestIndexedDetectsFrameCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings, _ := marshalNBT(map[string]any{"name": "abc"})
-	if err := w.SetMeta(settings, []byte("abc"), nil); err != nil {
+	if err := w.SetMeta(settings, []byte("abc")); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -411,7 +409,7 @@ func TestIndexedDetectsFrameCorruption(t *testing.T) {
 		return // refused outright: also acceptable
 	}
 	defer r.Close()
-	_, ud, _ := r.Meta()
+	_, ud := r.Meta()
 	if string(ud) == "zbc" {
 		t.Fatal("a corrupted metadata frame was served as valid")
 	}
@@ -699,13 +697,13 @@ func TestIndexedSetMetaRejectsNonCanonical(t *testing.T) {
 		0x01, 1, 0, 'b', 1,
 		0x01, 1, 0, 'a', 1,
 		0x00}
-	if err := w.SetMeta(bad, nil, nil); err == nil {
+	if err := w.SetMeta(bad, nil); err == nil {
 		t.Fatal("SetMeta accepted a settings blob the reader rejects")
 	}
 	// An empty compound is valid: §7 makes every metadata field optional and
 	// fixes only the spelling of the ones that are present.
-	if err := w.SetMeta(nil, nil, []byte{0x0a, 0, 0, 0x00}); err != nil {
-		t.Fatalf("SetMeta rejected an empty markers compound: %v", err)
+	if err := w.SetMeta([]byte{0x0a, 0, 0, 0x00}, nil); err != nil {
+		t.Fatalf("SetMeta rejected an empty settings compound: %v", err)
 	}
 }
 
@@ -1161,33 +1159,6 @@ func TestRejectsMetaSchemaViolations(t *testing.T) {
 	d.Settings = bad
 	if err := write(d); err == nil {
 		t.Fatal("settings with time as an int were accepted")
-	}
-
-	// Markers must be sorted by name, strictly.
-	d = testWorld(t, reg)
-	unsorted, err := marshalNBT(map[string]any{"markers": []map[string]any{
-		{"name": "b", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
-		{"name": "a", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.Markers = unsorted
-	if err := write(d); err == nil {
-		t.Fatal("an unsorted marker list was accepted")
-	}
-
-	// A marker position is three doubles.
-	d = testWorld(t, reg)
-	badPos, err := marshalNBT(map[string]any{"markers": []map[string]any{
-		{"name": "a", "kind": "region", "pos": []any{float32(0), float32(0), float32(0)}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.Markers = badPos
-	if err := write(d); err == nil {
-		t.Fatal("a marker position of floats was accepted")
 	}
 }
 
@@ -2150,7 +2121,6 @@ func TestMetadataFieldsAreOptional(t *testing.T) {
 		set  func(*WorldData)
 	}{
 		{"settings", func(d *WorldData) { d.Settings = empty }},
-		{"markers", func(d *WorldData) { d.Markers = empty }},
 	} {
 		d := testWorld(t, reg)
 		blob.set(d)
@@ -2495,49 +2465,47 @@ func TestRejectsDuplicatePaletteEntries(t *testing.T) {
 	}
 }
 
-// TestReaderEnforcesMetadataSchemas: the schemas were checked when a file was
+// TestReaderEnforcesMetadataSchemas: the schema was checked when a file was
 // written and not when one was read, so the two halves of this package
 // disagreed about what a valid file is.
 func TestReaderEnforcesMetadataSchemas(t *testing.T) {
 	reg := testRegistry(t)
 	file := encode(t, testWorld(t, reg), reg, CompressionNone)
 
-	// Splice an unsorted marker list into the meta block by rewriting the
+	// Splice a mis-tagged settings blob into the meta block by rewriting the
 	// whole body: the blob lengths change, so patching in place will not do.
 	d, err := ReadWorld(file, reg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	unsorted, err := marshalNBT(map[string]any{"markers": []map[string]any{
-		{"name": "b", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
-		{"name": "a", "kind": "region", "pos": []any{0.0, 0.0, 0.0}},
-	}})
+	// time is a long (§7.1). An int is a second encoding of the same setting,
+	// and no decoder into a dynamically typed map can tell afterwards.
+	bad, err := marshalNBT(map[string]any{"time": int32(6000)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The writer refuses it, which is why the file has to be assembled by
 	// hand to test the reader at all.
-	d.Markers = unsorted
+	d.Settings = bad
 	var buf bytes.Buffer
 	if err := WriteWorld(&buf, d, reg, Options{Compression: CompressionNone}); err == nil {
-		t.Fatal("the writer accepted an unsorted marker list")
+		t.Fatal("the writer accepted time as an int")
 	}
 	// And the reader refuses the same bytes when they arrive from elsewhere.
-	if err := checkMarkersBlob(unsorted); err == nil {
-		t.Fatal("the shared schema check accepts an unsorted marker list")
+	if err := checkSettingsBlob(bad); err == nil {
+		t.Fatal("the shared schema check accepts time as an int")
 	}
-	if _, _, _, _, err := readMetaBlobs(&reader{b: metaBody(t, unsorted)}, 0); err == nil {
-		t.Fatal("the reader accepted an unsorted marker list")
+	if _, _, _, err := readMetaBlobs(&reader{b: metaBody(t, bad)}, 0); err == nil {
+		t.Fatal("the reader accepted time as an int")
 	}
 }
 
-// metaBody lays out a meta block carrying the given markers blob.
-func metaBody(t *testing.T, markers []byte) []byte {
+// metaBody lays out a meta block carrying the given settings blob.
+func metaBody(t *testing.T, settings []byte) []byte {
 	t.Helper()
 	w := &writer{}
-	w.blob(nil) // settings
+	w.blob(settings)
 	w.blob(nil) // user data
-	w.blob(markers)
 	return w.bytes()
 }
 
@@ -2806,20 +2774,20 @@ func TestSetMetaChecksAggregateFrame(t *testing.T) {
 	}
 	big := pad()
 	// Every blob at its ceiling, which is the largest metadata a caller can
-	// hand SetMeta at all: three times 16 MiB is 48, under the 64 MiB frame
-	// ceiling, so it has to be accepted.
+	// hand SetMeta at all: twice 16 MiB is 32, under the 64 MiB frame ceiling,
+	// so it has to be accepted.
 	//
 	// This used to be the case that proved the frame ceiling rejects what the
-	// per-blob rules let through -- with four blobs, 64 MiB was reachable. The
-	// border blob's removal took the maximum to 48 MiB and left the frame check
-	// in SetMeta with no input that can reach it. It is kept as a bound rather
-	// than deleted as enforcement, because metaFrameLen also counts the length
-	// prefixes and a later field would make it live again; what is gone is any
-	// way to test it from here.
-	if err := w.SetMeta(big, make([]byte, maxBlobLen), big); err != nil {
+	// per-blob rules let through -- with four blobs, 64 MiB was reachable.
+	// Removing the border took the maximum to 48 MiB and removing the markers
+	// took it to 32, leaving the frame check in SetMeta with no input that can
+	// reach it. It is kept as a bound rather than deleted as enforcement,
+	// because metaFrameLen also counts the length prefixes and a later field
+	// would make it live again; what is gone is any way to test it from here.
+	if err := w.SetMeta(big, make([]byte, maxBlobLen)); err != nil {
 		t.Fatalf("metadata at the per-blob ceiling was rejected: %v", err)
 	}
-	if err := w.SetMeta(big, nil, nil); err != nil {
+	if err := w.SetMeta(big, nil); err != nil {
 		t.Fatalf("a single legal blob was rejected: %v", err)
 	}
 }
@@ -2926,7 +2894,7 @@ func TestRejectsLayerCountInCells(t *testing.T) {
 	// so the read ran out of bytes and the ceiling was never consulted: it
 	// stayed green with the bound deleted.
 	file := func(layerN uint64) []byte {
-		var noMeta [3][]byte
+		var noMeta [2][]byte
 		body := &writer{}
 		for _, b := range noMeta {
 			body.blob(b)
@@ -3044,7 +3012,7 @@ func TestRejectsRedundantVersionOverride(t *testing.T) {
 func TestRejectsOverLimitCounts(t *testing.T) {
 	reg := testRegistry(t)
 	// A structure whose first dimension is one past the ceiling.
-	var noMeta [3][]byte
+	var noMeta [2][]byte
 	body := structBody(noMeta, func(w *writer) {
 		w.uvarint(0) // biome palette
 		w.uvarint(0) // blob table
@@ -3142,7 +3110,7 @@ func TestRejectsOverLimitCounts(t *testing.T) {
 func TestRejectsStructureCellOverflow(t *testing.T) {
 	reg := testRegistry(t)
 	file := func(size [3]uint64, presence int) []byte {
-		var noMeta [3][]byte
+		var noMeta [2][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table
@@ -3190,7 +3158,6 @@ func TestReaderRejectsUnorderedRecords(t *testing.T) {
 	body := &writer{}
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.uvarint(0) // block palette
 	body.uvarint(0) // overrides
 	body.uvarint(0) // biome palette
@@ -3221,7 +3188,6 @@ func TestRejectsTrailingBytesAfterBody(t *testing.T) {
 	worldBody := &writer{}
 	worldBody.blob(nil)  // settings
 	worldBody.blob(nil)  // userData
-	worldBody.blob(nil)  // markers
 	worldBody.uvarint(0) // block palette
 	worldBody.uvarint(0) // version overrides
 	worldBody.uvarint(0) // biome palette
@@ -3231,7 +3197,7 @@ func TestRejectsTrailingBytesAfterBody(t *testing.T) {
 	worldBody.svarint(0)
 	worldBody.raw(recordBody(recordFields{}))
 
-	var noMeta [3][]byte
+	var noMeta [2][]byte
 	structureBody := structBody(noMeta, func(w *writer) {
 		w.uvarint(0) // biome palette
 		w.uvarint(0) // blob table
@@ -3477,7 +3443,6 @@ func TestStatsPreservesUnknownKeys(t *testing.T) {
 	body := &writer{}
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.blob(stats)
 	body.uvarint(0) // block palette
 	body.uvarint(0) // version overrides
@@ -3578,7 +3543,7 @@ func TestRejectsZeroBlockVersion(t *testing.T) {
 	// whether the file is accepted.
 	empty := func() []byte {
 		w := &writer{}
-		for range 3 {
+		for range 2 {
 			w.blob(nil)
 		}
 		w.uvarint(0) // block palette
@@ -3749,10 +3714,10 @@ func structureFile(flags uint32, body []byte) []byte {
 }
 
 // structBody prefixes what the caller writes with the part of a structure body
-// that precedes the biome palette: four metadata blobs, an empty block palette
-// and no version overrides. meta supplies the four blobs, so a test that needs
-// one non-empty can say so.
-func structBody(meta [3][]byte, rest func(*writer)) []byte {
+// that precedes the biome palette: the metadata blobs, an empty block palette
+// and no version overrides. meta supplies the blobs, so a test that needs one
+// non-empty can say so.
+func structBody(meta [2][]byte, rest func(*writer)) []byte {
 	w := &writer{}
 	for _, b := range meta {
 		w.blob(b)
@@ -3767,7 +3732,7 @@ func structBody(meta [3][]byte, rest func(*writer)) []byte {
 // envelope. Round-tripping a legal one cannot show the rejections going.
 func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	reg := testRegistry(t)
-	var noMeta [3][]byte
+	var noMeta [2][]byte
 	// tail writes everything from the blob table to the end of the body, with
 	// the size and origin the caller chooses.
 	tail := func(size [3]uint64, origin [3]int64) func(*writer) {
@@ -3807,13 +3772,12 @@ func TestRejectsStructureEnvelopeViolations(t *testing.T) {
 	}), reg); err == nil {
 		t.Error("a structure with a biome palette was accepted")
 	}
-	// Non-empty settings. The reader tests settings and markers in
-	// one condition, so one of the three drives it.
+	// Non-empty settings: a structure's settings blob must be empty.
 	settings, err := marshalNBT(map[string]any{"name": "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	withSettings := structBody([3][]byte{settings, nil, nil}, rest)
+	withSettings := structBody([2][]byte{settings, nil}, rest)
 	if _, err := ReadStructure(structureFile(FlagUncompressed, withSettings), reg); err == nil {
 		t.Error("a structure carrying settings was accepted")
 	}
@@ -3969,7 +3933,6 @@ func TestStatsMissingKeyAccepted(t *testing.T) {
 	body := &writer{}
 	body.blob(nil)
 	body.blob(nil)
-	body.blob(nil)
 	body.blob(partial)
 	body.uvarint(0)
 	body.uvarint(0)
@@ -4083,7 +4046,6 @@ func TestRejectsUnreferencedBlob(t *testing.T) {
 		w := &writer{}
 		w.blob(nil) // settings
 		w.blob(nil) // user data
-		w.blob(nil) // markers
 		w.uvarint(1)
 		w.str("minecraft:stone")
 		w.uvarint(0) // no properties
@@ -4170,7 +4132,6 @@ func oneRecordBody(rec []byte) []byte {
 	w := &writer{}
 	w.blob(nil)  // settings
 	w.blob(nil)  // user data
-	w.blob(nil)  // markers
 	w.uvarint(0) // block palette
 	w.uvarint(0) // version overrides
 	w.uvarint(0) // biome palette
@@ -4264,7 +4225,7 @@ func TestStructureRejectsBlockEntityOutsideBox(t *testing.T) {
 	// A 2x2x2 box, so a coordinate of 1 is the last legal one and 2 is past
 	// the end on every axis.
 	file := func(pos [3]uint64) []byte {
-		var noMeta [3][]byte
+		var noMeta [2][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table
@@ -4359,7 +4320,6 @@ func collectionBody(bes, ticks []func(*writer)) []byte {
 	w := &writer{}
 	w.blob(nil) // settings
 	w.blob(nil) // user data
-	w.blob(nil) // markers
 	w.uvarint(1)
 	w.str("minecraft:stone")
 	w.uvarint(0)
@@ -4451,7 +4411,6 @@ func TestReaderEnforcesBlobFirstUseOrder(t *testing.T) {
 	// Two distinct uniform blobs, referenced by one record's two sections.
 	body := func(first, second uint64) []byte {
 		w := &writer{}
-		w.blob(nil)
 		w.blob(nil)
 		w.blob(nil)
 		w.uvarint(2) // block palette: stone, dirt, so neither blob is air
@@ -4883,7 +4842,7 @@ func (p parityShape) table(w *writer) {
 // sections 0..0, so a block entity's Y lies in 0..15 as it does in the cell.
 func (p parityShape) worldBody() []byte {
 	w := &writer{}
-	for range 3 {
+	for range 2 {
 		w.blob(nil)
 	}
 	p.palette(w)
@@ -4919,7 +4878,7 @@ func (p parityShape) worldBody() []byte {
 // holding the same layers and the same block entities.
 func (p parityShape) structureBody() []byte {
 	w := &writer{}
-	for range 3 {
+	for range 2 {
 		w.blob(nil)
 	}
 	p.palette(w)
@@ -5027,7 +4986,7 @@ func TestRejectsStoredDefaultBiomeSection(t *testing.T) {
 	// the default and stay legal.
 	body := func(secRef uint64) []byte {
 		w := &writer{}
-		for range 3 {
+		for range 2 {
 			w.blob(nil)
 		}
 		w.uvarint(0) // block palette
@@ -5287,7 +5246,7 @@ func TestRejectsTrailingBytesInFrames(t *testing.T) {
 	}
 	meta := func() []byte {
 		w := &writer{}
-		for range 3 {
+		for range 2 {
 			w.blob(nil)
 		}
 		return w.bytes()
@@ -5388,7 +5347,7 @@ func TestRejectsTrailingBytesInFrames(t *testing.T) {
 func TestRejectsStructureOriginOutsideInt32(t *testing.T) {
 	reg := testRegistry(t)
 	file := func(origin [3]int64) []byte {
-		var noMeta [3][]byte
+		var noMeta [2][]byte
 		return structureFile(FlagUncompressed, structBody(noMeta, func(w *writer) {
 			w.uvarint(0) // biome palette
 			w.uvarint(0) // blob table
@@ -5471,73 +5430,6 @@ func TestRejectsOversizedNBTString(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("an oversized NBT string was accepted")
-			}
-			if !strings.Contains(err.Error(), c.want) {
-				t.Fatalf("refused for the wrong reason: %v", err)
-			}
-		})
-	}
-}
-
-// TestRejectsMalformedAreaMarkers drives §7.3 and the float rules of §7.2.
-//
-// Every case is a marker blob a caller could hand the writer, so the check has
-// to run on the way in: §7's own reasoning is that a dynamically typed decoder
-// cannot recover which tag a value came from, and the same is true of a double
-// that arrived as a negative zero.
-func TestRejectsMalformedAreaMarkers(t *testing.T) {
-	blob := func(t *testing.T, mk map[string]any) []byte {
-		t.Helper()
-		full := map[string]any{"name": "a", "kind": "k"}
-		maps.Copy(full, mk)
-		return mustNBT(t, map[string]any{"markers": []map[string]any{full}})
-	}
-	negZero := math.Copysign(0, -1)
-	for _, c := range []struct {
-		name string
-		mk   map[string]any
-		want string // "" means it must be accepted
-	}{
-		{"a point", map[string]any{"pos": []float64{1, 2, 3}}, ""},
-		{"an area", map[string]any{"min": []float64{-1, -2, -3}, "max": []float64{1, 2, 3}}, ""},
-		{"an area with a point", map[string]any{
-			"pos": []float64{0, 0, 0},
-			"min": []float64{-1, -1, -1}, "max": []float64{1, 1, 1},
-		}, ""},
-		{"a degenerate area is legal", map[string]any{
-			"min": []float64{1, 2, 3}, "max": []float64{1, 2, 3},
-		}, ""},
-
-		{"neither point nor area", map[string]any{}, "marks nothing"},
-		{"min without max", map[string]any{"min": []float64{0, 0, 0}}, "one of min/max"},
-		{"max without min", map[string]any{"max": []float64{0, 0, 0}}, "one of min/max"},
-		{"inverted on one axis", map[string]any{
-			"min": []float64{0, 5, 0}, "max": []float64{1, 1, 1},
-		}, "exceeds max"},
-		{"min is NaN", map[string]any{
-			"min": []float64{math.NaN(), 0, 0}, "max": []float64{1, 1, 1},
-		}, "NaN"},
-		{"max is infinite", map[string]any{
-			"min": []float64{0, 0, 0}, "max": []float64{math.Inf(1), 1, 1},
-		}, "infinite"},
-		{"pos is negative zero", map[string]any{"pos": []float64{negZero, 0, 0}}, "negative zero"},
-		{"min is negative zero", map[string]any{
-			"min": []float64{negZero, 0, 0}, "max": []float64{1, 1, 1},
-		}, "negative zero"},
-		{"min has two elements", map[string]any{
-			"min": []float64{0, 0}, "max": []float64{1, 1, 1},
-		}, "want 3"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			err := checkMarkersBlob(blob(t, c.mk))
-			if c.want == "" {
-				if err != nil {
-					t.Fatalf("a conforming marker was refused: %v", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatal("a malformed marker was accepted")
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("refused for the wrong reason: %v", err)

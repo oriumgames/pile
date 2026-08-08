@@ -3,6 +3,7 @@ package pile
 import (
 	"bytes"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ import (
 )
 
 // buildMoveWorld creates a small on-disk world with a platform, block entity,
-// entity, marker and spawn for move tests.
+// entity and spawn for move tests.
 func buildMoveWorld(t *testing.T, dir string) {
 	t.Helper()
 	reg := testRegistry(t)
@@ -26,7 +27,6 @@ func buildMoveWorld(t *testing.T, dir string) {
 		"identifier": "minecraft:armor_stand",
 		"Pos":        []any{float32(6.5), float32(4), float32(6.5)},
 	})
-	b.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{6, 4, 6}})
 	b.Settings(&world.Settings{Name: "move-test", Spawn: cube.Pos{6, 4, 6}, TickRange: 6})
 	if err := b.Save(dir); err != nil {
 		t.Fatal(err)
@@ -73,9 +73,6 @@ func TestMoveFastPath(t *testing.T) {
 	}
 	if got := p.Settings().Spawn; got != (cube.Pos{38, 4, -10}) {
 		t.Fatalf("spawn not translated: %v", got)
-	}
-	if ms := p.Markers(); len(ms) != 1 || ms[0].Pos == nil || *ms[0].Pos != [3]float64{38, 4, -10} {
-		t.Fatalf("marker not translated: %+v", ms)
 	}
 	// Backup exists and holds the pre-move world.
 	if _, err := os.Stat(filepath.Join(dir, "snapshots", "pre-move", "overworld.pile")); err != nil {
@@ -509,7 +506,12 @@ func TestMoveCarriesChunkMetadata(t *testing.T) {
 	_ = p.Close()
 
 	// Unaligned, so the slow path runs; blocks at X 0..2 all land in chunk 1.
-	if _, err := MoveWorld(dir, MoveOptions{Offset: cube.Pos{20, 0, 0}, Backup: false}); err != nil {
+	// KeepUserData because the chunk metadata under test is exactly what the
+	// move refuses to carry silently: it travels with its column, but pile
+	// cannot look inside it, so the caller is the one saying it is safe.
+	if _, err := MoveWorld(dir, MoveOptions{
+		Offset: cube.Pos{20, 0, 0}, Backup: false, KeepUserData: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	q, err := Open(dir, ReadOnly())
@@ -705,5 +707,76 @@ func TestMoveKeepsUnknownBlocksWithAirPlaceholder(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the move dropped an unresolved block whose placeholder is air")
+	}
+}
+
+// TestMoveRefusesUserData: user data is an opaque blob, so pile cannot find a
+// coordinate in one, let alone translate it. Moving the blocks and copying the
+// blob through leaves every spawn point and region the application stored
+// pointing at whatever now occupies its old position, and nothing reports it.
+//
+// The refusal is what makes that visible. It is also why the check runs before
+// the dry run returns: --dry-run promising a move that would in fact be refused
+// is the same silent failure one step earlier.
+func TestMoveRefusesUserData(t *testing.T) {
+	reg := testRegistry(t)
+	for _, c := range []struct {
+		name string
+		set  func(t *testing.T, dir string)
+	}{
+		{"world user data", func(t *testing.T, dir string) {
+			p, err := Open(dir, Registry(reg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.SetUserData([]byte(`{"spawn":[6,4,6]}`))
+			if err := p.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"chunk user data", func(t *testing.T, dir string) {
+			p, err := Open(dir, Registry(reg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("cud")); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			buildMoveWorld(t, dir)
+			c.set(t, dir)
+			before := worldFingerprint(t, dir)
+
+			opt := MoveOptions{Offset: cube.Pos{32, 0, -16}, Registry: reg}
+			if _, err := MoveWorld(dir, opt); !errors.Is(err, ErrUnmovableUserData) {
+				t.Fatalf("MoveWorld = %v, want ErrUnmovableUserData", err)
+			}
+			if got := worldFingerprint(t, dir); !maps.Equal(got, before) {
+				t.Fatal("a refused move changed the world")
+			}
+			// A dry run refuses too: it exists to report what a real move would
+			// do, and "it would be refused" is that report.
+			dry := opt
+			dry.DryRun = true
+			if _, err := MoveWorld(dir, dry); !errors.Is(err, ErrUnmovableUserData) {
+				t.Fatalf("a dry run reported %v, want ErrUnmovableUserData", err)
+			}
+
+			// And KeepUserData is the way through.
+			keep := opt
+			keep.KeepUserData = true
+			if _, err := MoveWorld(dir, keep); err != nil {
+				t.Fatalf("KeepUserData did not permit the move: %v", err)
+			}
+			if got := worldFingerprint(t, dir); maps.Equal(got, before) {
+				t.Fatal("the permitted move changed nothing")
+			}
+		})
 	}
 }

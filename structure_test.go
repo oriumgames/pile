@@ -144,7 +144,7 @@ func TestTemplateInstancesCOW(t *testing.T) {
 
 	dir := t.TempDir()
 	src := buildArena(t)
-	src.SetMarker(Marker{Name: "spawn", Kind: "spawn", Pos: &[3]float64{10, 5, 10}})
+	src.SetUserData([]byte("arena-config"))
 	if err := src.SaveAs(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -160,8 +160,8 @@ func TestTemplateInstancesCOW(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 
-	if got := a.Markers(); len(got) != 1 || got[0].Name != "spawn" {
-		t.Fatalf("instance markers = %+v", got)
+	if got := a.UserData(); !bytes.Equal(got, []byte("arena-config")) {
+		t.Fatalf("instance user data = %q", got)
 	}
 	baseCount := a.ChunkCount(world.Overworld)
 	if baseCount == 0 {
@@ -214,8 +214,8 @@ func TestTemplateInstancesCOW(t *testing.T) {
 	if rid := sCol.Chunk.Block(1, 1, 1, 0); rid != dirt {
 		t.Fatal("persisted instance lost the modification")
 	}
-	if got := saved.Markers(); len(got) != 1 || got[0].Name != "spawn" {
-		t.Fatalf("persisted markers = %+v", got)
+	if got := saved.UserData(); !bytes.Equal(got, []byte("arena-config")) {
+		t.Fatalf("persisted user data = %q", got)
 	}
 }
 
@@ -225,7 +225,6 @@ func TestBuilderFill(t *testing.T) {
 
 	b := NewBuilder(reg, cube.Range{-64, 319})
 	b.Fill(cube.Pos{-20, 0, -20}, cube.Pos{20, 5, 20}, block.Stone{})
-	b.SetMarker(Marker{Name: "mid", Kind: "poi", Pos: &[3]float64{0, 6, 0}})
 
 	dir := t.TempDir()
 	if err := b.Save(dir); err != nil {
@@ -249,9 +248,6 @@ func TestBuilderFill(t *testing.T) {
 	}
 	if rid := col.Chunk.Block(uint8(-21&15), 3, uint8(-21&15), 0); rid == stone {
 		t.Fatal("fill overshot the box")
-	}
-	if got := p.Markers(); len(got) != 1 || got[0].Name != "mid" {
-		t.Fatalf("markers = %+v", got)
 	}
 }
 

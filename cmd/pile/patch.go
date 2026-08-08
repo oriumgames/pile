@@ -113,7 +113,6 @@ func cmdPatch(args []string) error {
 		}
 		wd := &format.WorldData{
 			Settings: newW.Settings, UserData: newW.UserData,
-			Markers: newW.Markers,
 		}
 		if ndf := newW.Dim(d.dim); ndf != nil {
 			for _, c := range ndf.Columns {
@@ -260,7 +259,6 @@ func cmdApply(args []string) error {
 		}
 		df.Columns = kept
 		wf.Settings, wf.UserData = wd.Settings, wd.UserData
-		wf.Markers = wd.Markers
 	}
 	if !*noBackup {
 		if err := wf.Backup(dir, "pre-apply"); err != nil {

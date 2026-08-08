@@ -27,7 +27,7 @@ func TestAppendProviderRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.SaveSettings(&world.Settings{Name: "append-world", Time: 99, TickRange: 5})
-	p.SetMarker(Marker{Name: "hub", Kind: "poi", Pos: &[3]float64{0, 64, 0}})
+	p.SetUserData([]byte("hub"))
 	_ = p.SetChunkUserData(world.ChunkPos{0, 0}, world.Overworld, []byte("cud"))
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
@@ -41,8 +41,8 @@ func TestAppendProviderRoundTrip(t *testing.T) {
 	if got := q.Settings(); got.Name != "append-world" || got.Time != 99 || got.TickRange != 5 {
 		t.Fatalf("settings did not round trip: %+v", got)
 	}
-	if ms := q.Markers(); len(ms) != 1 || ms[0].Name != "hub" {
-		t.Fatalf("markers did not round trip: %+v", ms)
+	if !bytes.Equal(q.UserData(), []byte("hub")) {
+		t.Fatalf("user data did not round trip: %q", q.UserData())
 	}
 	col, err := q.LoadColumn(world.ChunkPos{0, 0}, world.Overworld)
 	if err != nil {

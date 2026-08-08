@@ -18,7 +18,7 @@ import (
 // ErrReadOnly is returned by the mutating operations that can report an error
 // at all — Save, SetChunkUserData, Snapshot, DeleteSnapshot and
 // Rollback — when the provider was opened with ReadOnly. The mutators with no
-// error to return (StoreColumn, SaveSettings, SetUserData, SetMarker) are
+// error to return (StoreColumn, SaveSettings, SetUserData) are
 // silent no-ops instead, as ReadOnly's own documentation says; IsReadOnly is
 // how a caller tells the two situations apart before it relies on a write.
 var ErrReadOnly = errors.New("pile: provider is read-only")
@@ -64,7 +64,6 @@ type Provider struct {
 	// verbatim so an older server cannot erase a newer one's fields.
 	settingsExtra map[string]any
 	userData      []byte
-	markers       []Marker
 	dims          map[int]*dimState
 
 	metaDirty bool
@@ -138,7 +137,7 @@ func Open(dir string, opts ...Option) (*Provider, error) {
 func (p *Provider) loadFromDisk() error {
 	p.dims = make(map[int]*dimState)
 	p.settings = defaultSettings()
-	p.userData, p.markers = nil, nil
+	p.userData = nil
 
 	dims, err := worldDimensions(p.dir)
 	if err != nil {
@@ -165,8 +164,8 @@ func (p *Provider) loadFromDisk() error {
 			ds.iw = iw
 			ds.onDisk = true
 			if id == 0 || meta == nil {
-				s, u, m := iw.Meta()
-				meta = &format.Meta{Settings: s, UserData: u, Markers: m}
+				s, u := iw.Meta()
+				meta = &format.Meta{Settings: s, UserData: u}
 			}
 			continue
 		}
@@ -188,7 +187,7 @@ func (p *Provider) loadFromDisk() error {
 		// World metadata is duplicated in every dimension file; the overworld
 		// wins, otherwise the first file found.
 		if id == 0 || meta == nil {
-			meta = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers}
+			meta = &format.Meta{Settings: d.Settings, UserData: d.UserData}
 		}
 	}
 	if meta != nil {
@@ -197,11 +196,7 @@ func (p *Provider) loadFromDisk() error {
 			return fmt.Errorf("pile: decode settings: %w", err)
 		}
 		p.settingsExtra = extra
-		m, err := markersFromNBT(meta.Markers)
-		if err != nil {
-			return fmt.Errorf("pile: decode markers: %w", err)
-		}
-		p.settings, p.userData, p.markers = s, meta.UserData, m
+		p.settings, p.userData = s, meta.UserData
 	}
 	return nil
 }

@@ -532,9 +532,9 @@ func indexedContentHash(t *testing.T, path string, reg world.BlockRegistry) uint
 		t.Fatal(err)
 	}
 	defer w.Close()
-	settings, userData, markers := w.Meta()
+	settings, userData := w.Meta()
 	d := &WorldData{
-		Settings: settings, UserData: userData, Markers: markers,
+		Settings: settings, UserData: userData,
 	}
 	for _, k := range w.Positions() {
 		c, err := w.Column(k[0], k[1])

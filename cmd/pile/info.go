@@ -75,7 +75,6 @@ func cmdInspect(args []string) error {
 		fmt.Printf("  block version %d\n", m.BlockVersion)
 		printNBTBlob("settings", m.Settings)
 		fmt.Printf("  user data     %d bytes\n", len(m.UserData))
-		printNBTBlob("markers", m.Markers)
 	}
 	return nil
 }
@@ -88,7 +87,7 @@ func inspectIndexed(f string, limit decodeLimit) error {
 	}
 	defer w.Close()
 	st, _ := os.Stat(f)
-	settings, userData, markers := w.Meta()
+	settings, userData := w.Meta()
 	fmt.Printf("%s:\n", f)
 	fmt.Printf("  size          %d bytes\n", st.Size())
 	fmt.Printf("  kind          world\n")
@@ -98,7 +97,6 @@ func inspectIndexed(f string, limit decodeLimit) error {
 	fmt.Printf("  garbage       %.0f%%\n", w.GarbageRatio()*100)
 	printNBTBlob("settings", settings)
 	fmt.Printf("  user data     %d bytes\n", len(userData))
-	printNBTBlob("markers", markers)
 	return nil
 }
 
@@ -175,8 +173,8 @@ func cmdVerify(args []string) error {
 				}
 				n++
 			}
-			set, ud, mk := w.Meta()
-			meta[f] = &format.Meta{Settings: set, UserData: ud, Markers: mk}
+			set, ud := w.Meta()
+			meta[f] = &format.Meta{Settings: set, UserData: ud}
 			_ = w.Close()
 			fmt.Printf("%s: ok (%d chunks, indexed)\n", f, n)
 			continue
@@ -189,7 +187,7 @@ func cmdVerify(args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
-		meta[f] = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers}
+		meta[f] = &format.Meta{Settings: d.Settings, UserData: d.UserData}
 		fmt.Printf("%s: ok (%d chunks)\n", f, len(d.Columns))
 	}
 	if diffs := metadataDivergence(meta); len(diffs) > 0 {
@@ -296,7 +294,6 @@ func metadataDivergence(meta map[string]*format.Meta) []string {
 			a, b []byte
 		}{
 			{"settings", meta[ref].Settings, meta[n].Settings},
-			{"markers", meta[ref].Markers, meta[n].Markers},
 			{"user data", meta[ref].UserData, meta[n].UserData},
 		} {
 			if !bytes.Equal(f.a, f.b) {

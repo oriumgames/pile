@@ -21,7 +21,6 @@ type Builder struct {
 
 	cols     map[[2]int32]*builderCol
 	settings *world.Settings
-	markers  []Marker
 	userData []byte
 	nextID   int64
 	// usedIDs tracks every entity ID handed out or supplied explicitly, so
@@ -161,17 +160,6 @@ func (b *Builder) AddBlockEntity(pos cube.Pos, data map[string]any) {
 // Settings sets the world settings.
 func (b *Builder) Settings(s *world.Settings) { b.settings = s }
 
-// SetMarker adds or replaces a marker by name.
-func (b *Builder) SetMarker(m Marker) {
-	for i := range b.markers {
-		if b.markers[i].Name == m.Name {
-			b.markers[i] = m
-			return
-		}
-	}
-	b.markers = append(b.markers, m)
-}
-
 // SetUserData sets the world's application metadata blob.
 func (b *Builder) SetUserData(data []byte) { b.userData = cloneBytes(data) }
 
@@ -180,7 +168,6 @@ func (b *Builder) SetUserData(data []byte) { b.userData = cloneBytes(data) }
 func (b *Builder) Provider(opts ...Option) *Provider {
 	p := NewMemory(opts...)
 	p.settings = b.settings
-	p.markers = b.markers
 	p.userData = b.userData
 	for k, c := range b.cols {
 		p.insertColumn(world.Overworld, format.Column{
@@ -189,7 +176,6 @@ func (b *Builder) Provider(opts ...Option) *Provider {
 		})
 	}
 	b.cols = map[[2]int32]*builderCol{}
-	b.markers = nil
 	b.userData = nil
 	b.settings = defaultSettings()
 	b.usedIDs = map[int64]bool{}

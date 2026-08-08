@@ -21,20 +21,19 @@ import (
 // editData is everything pile edit puts in front of the editor: a world's
 // metadata, and nothing that would make the file enormous.
 //
-// Chunks are deliberately absent. This is for changing a spawn point, renaming
-// a marker or moving an area -- the things that are a nuisance to do any other
-// way. Editing blocks as JSON would be a worse tool than the game.
+// Chunks are deliberately absent. This is for changing a spawn point or a
+// world's own user data -- the things that are a nuisance to do any other way.
+// Editing blocks as JSON would be a worse tool than the game.
 // Every field is always present, including the empty ones. An editor is the
 // only place a reader finds out what this command can change, and a key that
-// vanishes when it holds nothing teaches that the world has no markers rather
-// than that markers exist and this world has none. `null` and `[]` say the
-// second, which is the true one.
+// vanishes when it holds nothing teaches that the command cannot change it
+// rather than that this world has none. `null` says the second, which is the
+// true one.
 //
 // UserDataBase64 is the exception: it appears only when the blob is not JSON,
 // because two keys for one value would invite setting both.
 type editData struct {
 	Settings exportSettings `json:"settings"`
-	Markers  []exportMarker `json:"markers"`
 
 	// UserData is the world's metadata blob: inline when it is valid JSON,
 	// base64 otherwise, so an editor shows something readable when it can.
@@ -104,16 +103,7 @@ func cmdEdit(args []string) error {
 
 // readEditData collects a world's metadata into the editable form.
 func readEditData(p *pile.Provider) editData {
-	// Markers start as an empty slice rather than nil so the JSON shows [].
-	d := editData{Settings: exportSettingsOf(p.Settings()), Markers: []exportMarker{}}
-	for _, m := range p.Markers() {
-		em := exportMarker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
-		if m.Bounds != nil {
-			lo, hi := m.Bounds.Min, m.Bounds.Max
-			em.Min, em.Max = &lo, &hi
-		}
-		d.Markers = append(d.Markers, em)
-	}
+	d := editData{Settings: exportSettingsOf(p.Settings())}
 	if ud := p.UserData(); len(ud) > 0 {
 		if json.Valid(ud) {
 			d.UserData = ud
@@ -134,6 +124,16 @@ func readEditData(p *pile.Provider) editData {
 // applyEditData writes the edited metadata back. Chunks are never read or
 // rewritten by this: the provider is opened, the metadata replaced, and saved.
 func applyEditData(dir string, d, before editData, noBackup bool, limit decodeLimit) error {
+	// Everything that can be rejected is resolved before the world is opened.
+	// Rejecting afterwards would not undo the fields already applied, and
+	// Close is a save: a malformed userDataBase64 used to write the settings
+	// change and then report failure, which is the one outcome this command
+	// promises cannot happen.
+	userData, err := editUserData(d, before)
+	if err != nil {
+		return err
+	}
+
 	p, err := pile.Open(dir, limit.providerOpts()...)
 	if err != nil {
 		return err
@@ -150,53 +150,44 @@ func applyEditData(dir string, d, before editData, noBackup bool, limit decodeLi
 	s := p.Settings()
 	applyExportSettings(s, d.Settings)
 	p.SaveSettings(s)
+	p.SetUserData(userData)
 
-	// Markers are replaced wholesale rather than merged: the editor showed the
-	// whole list, so deleting a line has to mean deleting a marker.
-	for _, existing := range p.Markers() {
-		p.RemoveMarker(existing.Name)
-	}
-	for _, m := range d.Markers {
-		mk := pile.Marker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
-		if m.Min != nil && m.Max != nil {
-			mk.Bounds = &pile.Bounds{Min: *m.Min, Max: *m.Max}
-		}
-		p.SetMarker(mk)
-	}
-
-	switch {
-	case isJSONNull(d.UserData):
-		p.SetUserData(nil)
-	case len(d.UserData) > 0:
-		// Write the bytes that were there if the edit did not change them.
-		// MarshalIndent reformats an embedded RawMessage, so a user data blob
-		// makes a round trip through this command as re-indented JSON -- which
-		// would rewrite an application's own bytes, and move the world's
-		// ContentHash, because somebody renamed a marker.
-		if sameJSON(before.UserData, d.UserData) {
-			p.SetUserData(before.UserData)
-			break
-		}
-		p.SetUserData(d.UserData)
-	case d.UserDataBase64 != "":
-		b, err := base64.StdEncoding.DecodeString(d.UserDataBase64)
-		if err != nil {
-			_ = p.Close()
-			return fmt.Errorf("userDataBase64: %w", err)
-		}
-		p.SetUserData(b)
-	default:
-		p.SetUserData(nil)
-	}
-
-	// Close is where the write happens, and where the §7 schemas are checked:
-	// a marker with no position, an area whose corners are the wrong way round,
-	// a double that is NaN. A refusal here means nothing was written.
+	// Close is where the write happens, and where the §7.1 settings schema is
+	// checked. A refusal here means nothing was written.
 	if err := p.Close(); err != nil {
 		return fmt.Errorf("the edit was refused and the world is unchanged: %w", err)
 	}
 	fmt.Printf("%s updated\n", dir)
 	return nil
+}
+
+// editUserData resolves the edited form's user data to the bytes to store.
+//
+// The base64 field is consulted first, and that ordering is load-bearing. A
+// blob that is not JSON is shown as `"userData": null` plus a base64 string --
+// null is what the empty field renders as, not a statement that the world has
+// no user data -- so testing the JSON field first read the null, stored
+// nothing, and destroyed the blob of every world whose user data was not JSON.
+func editUserData(d, before editData) ([]byte, error) {
+	if d.UserDataBase64 != "" {
+		b, err := base64.StdEncoding.DecodeString(d.UserDataBase64)
+		if err != nil {
+			return nil, fmt.Errorf("userDataBase64: %w", err)
+		}
+		return b, nil
+	}
+	if isJSONNull(d.UserData) || len(d.UserData) == 0 {
+		return nil, nil
+	}
+	// Write the bytes that were there if the edit did not change them.
+	// MarshalIndent reformats an embedded RawMessage, so a user data blob
+	// makes a round trip through this command as re-indented JSON -- which
+	// would rewrite an application's own bytes, and move the world's
+	// ContentHash, because somebody changed the spawn.
+	if sameJSON(before.UserData, d.UserData) {
+		return before.UserData, nil
+	}
+	return d.UserData, nil
 }
 
 // editInEditor writes the JSON to a temporary file, opens it in the user's

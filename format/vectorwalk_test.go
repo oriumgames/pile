@@ -484,7 +484,7 @@ func vecCheckCoverage(l *vecLayout) error {
 
 func vecWalkBody(r *vecReader, l *vecLayout) error {
 	// §4.1 meta block.
-	for _, name := range []string{"settings", "userData", "markers"} {
+	for _, name := range []string{"settings", "userData"} {
 		b, err := r.blob("meta." + name)
 		if err != nil {
 			return err
