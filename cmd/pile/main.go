@@ -87,17 +87,20 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: pile <command> [arguments]
 
+flags come before the paths: "pile prune --dry-run world", not
+"pile prune world --dry-run", which leaves the flag unread
+
 commands:
   convert <src> <dst>   convert between mcdb (leveldb) and pile world
                         directories; direction is detected from src
   inspect <file.pile>   print header and metadata without decoding chunks
   verify  <dir|file>    fully decode and validate pile files
   stats   <dir|file>    print content statistics of pile files
-  extract <world> <out.pile> --min x,y,z --max x,y,z [--dim d] [--skip-air]
+  extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>
                         cut a region of a pile world into a structure file
-  paste   <structure.pile> <world> --at x,y,z [--dim d] [--skip-air]
+  paste   --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>
                         build a structure file into a pile world
-  export  <world> <out-dir> [--dim d]
+  export  [--dim d] <world> <out-dir>
                         unpack a world into structure.pile + editable data.json
                         (settings, markers, user data, origin)
   import  <export-dir> <world-dir>
@@ -105,24 +108,24 @@ commands:
   compact <dir|file>    rewrite indexed files without garbage
   mode    <dir|file> <solid|indexed>
                         convert between solid and indexed file modes
-  move    <world> (--by dx,dy,dz | --spawn-to x,y,z | --center)
+  move    (--by dx,dy,dz | --spawn-to x,y,z | --center) <world>
                         translate a whole world (blocks, entities, spawn,
                         markers, border); refuses lossy moves unless --clip;
                         --dry-run previews, auto-backup to snapshots/pre-move
-  origin  <structure.pile> (--set x,y,z | --zero | --center)
+  origin  (--set x,y,z | --zero | --center) <structure.pile>
                         change a structure's paste anchor (pure metadata)
   diff    <world-a> <world-b>
                         chunk-level change report between two worlds
-  patch   <old> <new> -o file.pilepatch
+  patch   -o file.pilepatch <old> <new>
                         build a binary update from old to new
   apply   <world> <file.pilepatch>
                         apply a patch to a world
-  render  <world> [-o map.png] [--dim d] [--bg #rrggbb]
+  render  [-o map.png] [--dim d] [--bg #rrggbb] <world>
                         top-down PNG preview (transparent background unless --bg)
   upgrade <dir|file>    re-encode at the current Minecraft block version
   check   <dir|file>    list block states that do not resolve against the
                         current registry (exit 1 if any)
-  prune   <world> --bounds x1,z1,x2,z2
+  prune   --bounds x1,z1,x2,z2 <world>
                         drop chunks outside a block box
   edit    <world>       edit the world's settings, markers, border and user
                         data as JSON in $EDITOR; --print dumps it, --apply

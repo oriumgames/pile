@@ -66,7 +66,7 @@ func cmdPatch(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 || *out == "" {
-		return errors.New("usage: pile patch <old-world> <new-world> -o <file.pilepatch>")
+		return errors.New("usage: pile patch -o <file.pilepatch> <old-world> <new-world>")
 	}
 	reg := world.DefaultBlockRegistry
 	reg.Finalize()
@@ -149,7 +149,7 @@ func cmdApply(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("usage: pile apply <world> <file.pilepatch> [--force] [--no-backup]")
+		return errors.New("usage: pile apply [--force] [--no-backup] <world> <file.pilepatch>")
 	}
 	dir, patchPath := fs.Arg(0), fs.Arg(1)
 	reg := world.DefaultBlockRegistry

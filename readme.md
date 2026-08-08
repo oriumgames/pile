@@ -38,7 +38,7 @@ defer p.Close() // saves
 
 Options: `pile.ReadOnly()`, `pile.Compression(...)`, `pile.AppendMode()`,
 `pile.Skip(pile.SkipEntities|...)`, `pile.FilterEntity(...)`,
-`pile.LoadSkip(...)`, `pile.CacheColumns(n)`, `pile.FastSaves()`,
+`pile.FilterBlockEntity(...)`, `pile.FilterColumn(...)`, `pile.LoadSkip(...)`, `pile.CacheColumns(n)`, `pile.FastSaves()`,
 `pile.StoreLight()`, `pile.Registry(...)`, `pile.WithSpawnStore(...)`,
 `pile.MaxDecodedBytes(n)`. Player data never lives in pile files.
 
@@ -72,6 +72,15 @@ not to keep it out of memory.
 And the integrity hashes detect corruption, not tampering: xxHash64 is keyless,
 so anyone who can author a file can make its checksums agree. A file that
 verifies is well-formed, never trustworthy.
+
+Converting to and from dragonfly's leveldb format is API too, not only a CLI
+command — which matters when your server registers blocks the `pile` binary
+cannot know about, since the conversion has to happen where that registry is:
+
+```go
+n, err := pile.ImportMCDB("./mcdb-world", "./maps/lobby", pile.Registry(myRegistry))
+n, err := pile.ExportMCDB("./maps/lobby", "./mcdb-world")
+```
 
 ## Two file modes
 
@@ -118,15 +127,21 @@ lib, _ := pile.LoadStructureLibrary("structures/") // name → structure
 ```go
 b := pile.NewBuilder(nil, cube.Range{-64, 319})
 b.Fill(lo, hi, block.Stone{})
-b.SetMarker(pile.Marker{Name: "spawn", Kind: "spawn", Pos: [3]float64{0, 65, 0}})
+b.SetMarker(pile.Point("spawn", "spawn", [3]float64{0, 65, 0}))
 p := b.Provider()          // in-memory world
 _ = b.Save("maps/arena")   // or straight to disk
 ```
 
 ## Self-describing maps
 
-Settings, named markers (spawn points, NPC spots, regions), a world border
-and arbitrary world/chunk metadata travel inside the file:
+Settings, named markers, a world border and arbitrary world/chunk metadata
+travel inside the file. A marker is a point, a region, or both:
+
+```go
+p.SetMarker(pile.Point("spawn", "spawn", [3]float64{0, 65, 0}))
+p.SetMarker(pile.Area("arena", "pvp", [3]float64{-10, 60, -10}, [3]float64{10, 70, 10}))
+```
+
 
 ```go
 p.Markers() / p.SetMarker(m)
@@ -141,8 +156,9 @@ Snapshots for versions and grief rollback: `p.Snapshot("clean")`,
 ## CLI
 
 `go install github.com/oriumgames/pile/cmd/pile@latest` installs: convert (mcdb ⇄
-pile), inspect, verify, stats, check, render, compact, mode, upgrade, prune,
-move, extract, paste, origin, diff, patch/apply, export/import. Every command
+pile), inspect, verify, stats, check, blocks, hash, edit, render, compact, mode,
+upgrade, prune, move, extract, paste, origin, diff, patch/apply, export/import,
+snapshot/snapshots/rollback/unsnapshot, version. Every command
 that decodes chunk content takes `--max-decoded n`, the CLI's
 `pile.MaxDecodedBytes`. See [cmd/pile/readme.md](cmd/pile/readme.md).
 

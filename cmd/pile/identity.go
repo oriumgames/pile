@@ -28,7 +28,7 @@ func cmdHash(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return errors.New("usage: pile hash <dir|file> [<dir|file>...] [--quiet] [--max-decoded n]")
+		return errors.New("usage: pile hash [--quiet] [--max-decoded n] <dir|file> [<dir|file>...]")
 	}
 	world.DefaultBlockRegistry.Finalize()
 	reg := world.DefaultBlockRegistry

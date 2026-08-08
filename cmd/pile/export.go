@@ -67,7 +67,7 @@ func cmdExport(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("usage: pile export <world-dir> <out-dir> [--dim overworld]")
+		return errors.New("usage: pile export [--dim overworld] <world-dir> <out-dir>")
 	}
 	dim, err := parseDim(*dimFlag)
 	if err != nil {

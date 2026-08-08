@@ -52,7 +52,7 @@ func cmdExtract(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 || *minFlag == "" || *maxFlag == "" {
-		return errors.New("usage: pile extract <world-dir> <out.pile> --min x,y,z --max x,y,z [--dim overworld] [--skip-air]")
+		return errors.New("usage: pile extract --min x,y,z --max x,y,z [--dim overworld] [--skip-air] <world-dir> <out.pile>")
 	}
 	minPos, err := parsePos(*minFlag)
 	if err != nil {
@@ -98,7 +98,7 @@ func cmdPaste(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 || *atFlag == "" {
-		return errors.New("usage: pile paste <structure.pile> <world-dir> --at x,y,z [--dim overworld] [--skip-air]")
+		return errors.New("usage: pile paste --at x,y,z [--dim overworld] [--skip-air] <structure.pile> <world-dir>")
 	}
 	at, err := parsePos(*atFlag)
 	if err != nil {

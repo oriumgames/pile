@@ -13,6 +13,12 @@ A "world" argument is a directory holding `overworld.pile` (plus optional
 (temp file + rename); destructive commands make automatic backups unless told
 otherwise.
 
+**Flags come before the paths.** Go's flag package stops reading flags at the
+first argument that is not one, so `pile prune world --dry-run` silently leaves
+`--dry-run` unset and fails on its argument count, while
+`pile prune --dry-run world` works. Every signature below is written in the
+order that works.
+
 ## `--max-decoded`
 
 Every command that decodes chunk content takes `--max-decoded n`: the ceiling,
@@ -51,12 +57,12 @@ corruption, not tampering.
 | command | |
 |---------|---|
 | `pile inspect <file.pile>` | Header, flags, decoded settings/markers, sizes; no chunk decode. Indexed files additionally show generation, chunk count and garbage ratio. |
-| `pile verify <dir\|file>` | Full decode with checksum verification; per-record verification for indexed files. |
+| `pile verify <dir\|file>` | Full decode with checksum verification; per-record verification for indexed files. On a world directory it also compares the metadata each dimension file carries and warns when they disagree. |
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
-| `pile check <dir\|file> [--allow ns,ns]` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow hive` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
-| `pile render <world> [-o map.png] [--dim d] [--bg #rrggbb]` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
-| `pile blocks <mcdb-world\|dir\|file>` | List the block identifiers a world uses and the property values each takes. Needs **no registry**, because it reads the palettes without decoding a chunk — so it works on the worlds `pile convert` cannot open. Takes an mcdb world or a pile one. `--custom` lists only what is outside `minecraft:`; `--quiet` prints bare identifiers. |
-| `pile hash <dir\|file>...` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
+| `pile check [--allow ns,ns] <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow hive` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
+| `pile render [-o map.png] [--dim d] [--bg #rrggbb] <world>` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
+| `pile blocks [--custom] [--quiet] <mcdb-world\|dir\|file>` | List the block identifiers a world uses and the property values each takes. Needs **no registry**, because it reads the palettes without decoding a chunk — so it works on the worlds `pile convert` cannot open. Takes an mcdb world or a pile one. `--custom` lists only what is outside `minecraft:`; `--quiet` prints bare identifiers. |
+| `pile hash [--quiet] <dir\|file> [<dir\|file>...]` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
 | `pile version` | pile, wire format and dragonfly versions. The first three lines of any bug report. |
 
 ## Maintenance
@@ -65,7 +71,7 @@ corruption, not tampering.
 |---------|---|
 | `pile compact <dir\|file>` | Rewrite indexed files without garbage (also retrains the shared compression dictionary). Solid files are always canonical already. |
 | `pile upgrade <dir\|file>` | Re-encode at the current Minecraft block version so servers never pay state-upgrade cost at load. |
-| `pile prune <world> --bounds x1,z1,x2,z2 [--dry-run] [--no-backup]` | Drop chunks outside a block box (e.g. stray chunks created while flying around during map creation). Backup in `snapshots/pre-prune`. |
+| `pile prune --bounds x1,z1,x2,z2 [--dry-run] [--no-backup] <world>` | Drop chunks outside a block box (e.g. stray chunks created while flying around during map creation). Backup in `snapshots/pre-prune`. |
 
 ## Snapshots
 
@@ -76,14 +82,28 @@ before touching it. These are how you reach those, and your own.
 |---------|---|
 | `pile snapshot <world> <name>` | Save the current state into `snapshots/<name>`. |
 | `pile snapshots <world>` | List them. |
-| `pile rollback <world> <name> [--backup name]` | Restore one. The current state is kept as `pre-rollback` first, so picking the wrong snapshot is itself recoverable; `--backup ""` skips that. |
+| `pile rollback [--backup name] <world> <name>` | Restore one. The current state is kept as `pre-rollback` first, so picking the wrong snapshot is itself recoverable; `--backup ""` skips that. |
 | `pile unsnapshot <world> <name>` | Delete one. |
+
+### Why the metadata is checked across files
+
+Every dimension file carries its own copy of the world's settings, markers,
+border and user data, so that a single `.pile` is self-describing — you can hand
+somebody `nether.pile` and it still knows its name and spawn. The provider reads
+the **overworld's** copy and ignores the rest.
+
+Nothing in the format requires the copies to agree, and no reader could enforce
+it, because a reader only ever sees one file. So a world whose files disagree is
+valid, loads, and silently uses one copy. `pile verify` is the only place that
+sees all of them at once, which is why the check lives there — and why
+`pile edit` takes a world directory rather than a single file: it rewrites every
+dimension's copy together.
 
 ## Editing a world's metadata
 
 | command | |
 |---------|---|
-| `pile edit <world> [--print] [--apply file.json] [--no-backup]` | Open the world's settings, markers, border and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
+| `pile edit [--print] [--apply file.json] [--no-backup] <world>` | Open the world's settings, markers, border and user data as JSON in `$VISUAL`/`$EDITOR`, and write back what you save. `--print` dumps the JSON and changes nothing; `--apply` reads it from a file instead of opening an editor, which is what a script wants. Backs up to `snapshots/pre-edit` first. |
 
 Chunks are not in the file. This is for moving a spawn point, renaming a marker
 or adjusting an area — editing blocks as JSON would be a worse tool than the
@@ -105,19 +125,19 @@ a temp file and tells you the path, so the cost of a typo is fixing the typo.
 
 | command | |
 |---------|---|
-| `pile move <world> (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup]` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks, chunk metadata, spawn, markers and border move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
-| `pile extract <world> <out.pile> --min x,y,z --max x,y,z [--dim d] [--skip-air]` | Cut a region into a structure file (blocks, block entities, entities). |
-| `pile paste <structure.pile> <world> --at x,y,z [--dim d] [--skip-air]` | Build a structure file into a world. |
-| `pile origin <structure.pile> (--set x,y,z \| --zero \| --center)` | Change a structure's paste anchor. Pure metadata, content untouched. |
+| `pile move (--by dx,dy,dz \| --spawn-to x,y,z \| --center) [--clip] [--dry-run] [--no-backup] <world>` | Translate a whole world: blocks, biomes, entities, block entities, scheduled ticks, chunk metadata, spawn, markers and border move as one unit. Lossless by default: a move that would push content outside the vertical range is refused with exact counts unless `--clip`. Chunk-aligned horizontal moves take a re-key fast path. Backup in `snapshots/pre-move`. |
+| `pile extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>` | Cut a region into a structure file (blocks, block entities, entities). |
+| `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
+| `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |
 
 ## Distribution
 
 | command | |
 |---------|---|
 | `pile diff <world-a> <world-b>` | Chunk-level change report (added/removed/modified per dimension, metadata changes) using exact canonical comparison. |
-| `pile patch <old> <new> -o file.pilepatch` | Binary update containing only changed/added chunks, removals and new metadata. |
-| `pile apply <world> <file.pilepatch> [--force] [--no-backup]` | Apply a patch: `apply(old, patch(old→new)) == new`, chunk-for-chunk. Refuses a target whose content does not match the patch's base world (override with `--force`); backs up to `snapshots/pre-apply` first. |
-| `pile export <world> <out-dir> [--dim d]` | Unpack a world into `structure.pile` + human-editable `data.json` (settings, markers, origin; user data inlined when it is JSON). |
+| `pile patch -o file.pilepatch <old> <new>` | Binary update containing only changed/added chunks, removals and new metadata. |
+| `pile apply [--force] [--no-backup] <world> <file.pilepatch>` | Apply a patch: `apply(old, patch(old→new)) == new`, chunk-for-chunk. Refuses a target whose content does not match the patch's base world (override with `--force`); backs up to `snapshots/pre-apply` first. |
+| `pile export [--dim d] <world> <out-dir>` | Unpack a world into `structure.pile` + human-editable `data.json` (settings, markers, origin; user data inlined when it is JSON). |
 | `pile import <export-dir> <world-dir>` | Rebuild a world from an export. Refuses an existing destination. |
 
 ## Examples

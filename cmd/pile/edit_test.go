@@ -9,6 +9,7 @@ import (
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/oriumgames/pile"
+	"github.com/oriumgames/pile/format"
 )
 
 // editRoundTrip writes d as JSON and applies it, the way --apply does.
@@ -295,5 +296,68 @@ func TestEditWritesChangedUserData(t *testing.T) {
 	}
 	if got := editRead(t, dir).UserData; !sameJSON(got, []byte(`{"stage":"beta"}`)) {
 		t.Errorf("a changed user data blob was not written: %s", got)
+	}
+}
+
+// TestMetadataDivergence: a world's dimension files each carry a copy of the
+// metadata, and the provider reads the overworld's. Nothing in the format
+// requires the copies to agree -- a reader only ever sees one file -- so a
+// divergence is valid, loads, and silently ignores every copy but one. verify
+// is the only place that sees all of them at once.
+func TestMetadataDivergence(t *testing.T) {
+	meta := func(settings, markers string) *format.Meta {
+		return &format.Meta{Settings: []byte(settings), Markers: []byte(markers)}
+	}
+	for _, c := range []struct {
+		name  string
+		files map[string]*format.Meta
+		want  []string
+	}{
+		{"a lone file cannot diverge", map[string]*format.Meta{"overworld.pile": meta("a", "b")}, nil},
+		{
+			"identical copies are silent",
+			map[string]*format.Meta{
+				"overworld.pile": meta("a", "b"),
+				"nether.pile":    meta("a", "b"),
+			},
+			nil,
+		},
+		{
+			"compared against the overworld, not the first alphabetically",
+			map[string]*format.Meta{
+				"overworld.pile": meta("a", "b"),
+				"end.pile":       meta("a", "b"),
+				"nether.pile":    meta("CHANGED", "b"),
+			},
+			[]string{"nether.pile differs from overworld.pile: settings"},
+		},
+		{
+			"every differing field is named",
+			map[string]*format.Meta{
+				"overworld.pile": meta("a", "b"),
+				"nether.pile":    meta("x", "y"),
+			},
+			[]string{"nether.pile differs from overworld.pile: settings, markers"},
+		},
+		{
+			"with no overworld the first file is the reference",
+			map[string]*format.Meta{
+				"end.pile":    meta("a", "b"),
+				"nether.pile": meta("x", "b"),
+			},
+			[]string{"nether.pile differs from end.pile: settings"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := metadataDivergence(c.files)
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("got %q, want %q", got[i], c.want[i])
+				}
+			}
+		})
 	}
 }

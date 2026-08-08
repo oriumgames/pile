@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/oriumgames/pile"
@@ -145,6 +149,14 @@ func cmdVerify(args []string) error {
 		return err
 	}
 	world.DefaultBlockRegistry.Finalize()
+	// Metadata is duplicated into every dimension file so that each is
+	// self-describing, and the provider reads the overworld's copy in
+	// preference to the others. Nothing in the format requires the copies to
+	// agree -- a reader only ever sees one file -- so a world whose files
+	// disagree is valid, loads, and quietly ignores whichever copy is not the
+	// overworld's. That is worth reporting, and this is the command that
+	// already walks every file.
+	meta := map[string]*format.Meta{}
 	for _, f := range files {
 		mode, err := pile.FileMode(f)
 		if err != nil {
@@ -163,6 +175,8 @@ func cmdVerify(args []string) error {
 				}
 				n++
 			}
+			set, ud, mk, bd := w.Meta()
+			meta[f] = &format.Meta{Settings: set, UserData: ud, Markers: mk, Border: bd}
 			_ = w.Close()
 			fmt.Printf("%s: ok (%d chunks, indexed)\n", f, n)
 			continue
@@ -175,7 +189,17 @@ func cmdVerify(args []string) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
 		}
+		meta[f] = &format.Meta{Settings: d.Settings, UserData: d.UserData, Markers: d.Markers, Border: d.Border}
 		fmt.Printf("%s: ok (%d chunks)\n", f, len(d.Columns))
+	}
+	if diffs := metadataDivergence(meta); len(diffs) > 0 {
+		fmt.Println()
+		fmt.Println("warning: this world's files carry different metadata.")
+		fmt.Println("The provider reads the overworld's copy, so the others are ignored;")
+		fmt.Println("`pile edit` rewrites all of them together and will resolve this.")
+		for _, d := range diffs {
+			fmt.Printf("  %s\n", d)
+		}
 	}
 	return nil
 }
@@ -243,4 +267,47 @@ func cmdStats(args []string) error {
 		}
 	}
 	return nil
+}
+
+// metadataDivergence reports which metadata blobs differ between a world's
+// dimension files, comparing every file against the overworld's -- or against
+// the first file seen when there is no overworld, since that is the copy the
+// provider would then use.
+func metadataDivergence(meta map[string]*format.Meta) []string {
+	if len(meta) < 2 {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(meta))
+	ref := names[0]
+	for _, n := range names {
+		if strings.HasSuffix(n, "overworld.pile") {
+			ref = n
+			break
+		}
+	}
+	var out []string
+	for _, n := range names {
+		if n == ref {
+			continue
+		}
+		var fields []string
+		for _, f := range []struct {
+			name string
+			a, b []byte
+		}{
+			{"settings", meta[ref].Settings, meta[n].Settings},
+			{"markers", meta[ref].Markers, meta[n].Markers},
+			{"border", meta[ref].Border, meta[n].Border},
+			{"user data", meta[ref].UserData, meta[n].UserData},
+		} {
+			if !bytes.Equal(f.a, f.b) {
+				fields = append(fields, f.name)
+			}
+		}
+		if len(fields) > 0 {
+			out = append(out, fmt.Sprintf("%s differs from %s: %s",
+				filepath.Base(n), filepath.Base(ref), strings.Join(fields, ", ")))
+		}
+	}
+	return out
 }

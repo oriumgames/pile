@@ -153,7 +153,7 @@ func cmdPrune(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 || *boundsFlag == "" {
-		return errors.New("usage: pile prune <world> --bounds x1,z1,x2,z2 [--dry-run] [--no-backup]")
+		return errors.New("usage: pile prune --bounds x1,z1,x2,z2 [--dry-run] [--no-backup] <world>")
 	}
 	var x1, z1, x2, z2 int
 	if _, err := fmt.Sscanf(*boundsFlag, "%d,%d,%d,%d", &x1, &z1, &x2, &z2); err != nil {
@@ -300,7 +300,7 @@ func cmdCheck(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile check <dir|file> [--allow ns,ns] [--max-decoded n]")
+		return errors.New("usage: pile check [--allow ns,ns] [--max-decoded n] <dir|file>")
 	}
 	allowed := map[string]bool{}
 	for _, ns := range strings.Split(*allow, ",") {

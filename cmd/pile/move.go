@@ -32,7 +32,7 @@ func cmdMove(args []string) error {
 		}
 	}
 	if fs.NArg() != 1 || modes != 1 {
-		return errors.New("usage: pile move <world-dir> (--by dx,dy,dz | --spawn-to x,y,z | --center) [--clip] [--dry-run] [--no-backup]")
+		return errors.New("usage: pile move (--by dx,dy,dz | --spawn-to x,y,z | --center) [--clip] [--dry-run] [--no-backup] <world-dir>")
 	}
 	dir := fs.Arg(0)
 
@@ -122,7 +122,7 @@ func cmdOrigin(args []string) error {
 		}
 	}
 	if fs.NArg() != 1 || modes != 1 {
-		return errors.New("usage: pile origin <structure.pile> (--set x,y,z | --zero | --center)")
+		return errors.New("usage: pile origin (--set x,y,z | --zero | --center) <structure.pile>")
 	}
 	path := fs.Arg(0)
 

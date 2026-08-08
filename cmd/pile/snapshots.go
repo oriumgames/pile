@@ -78,7 +78,7 @@ func cmdRollback(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("usage: pile rollback <world> <name> [--backup name]")
+		return errors.New("usage: pile rollback [--backup name] <world> <name>")
 	}
 	dir, name := fs.Arg(0), fs.Arg(1)
 	p, err := pile.Open(dir)

@@ -24,14 +24,22 @@ import (
 // Chunks are deliberately absent. This is for changing a spawn point, renaming
 // a marker or moving an area -- the things that are a nuisance to do any other
 // way. Editing blocks as JSON would be a worse tool than the game.
+// Every field is always present, including the empty ones. An editor is the
+// only place a reader finds out what this command can change, and a key that
+// vanishes when it holds nothing teaches that the world has no markers rather
+// than that markers exist and this world has none. `null` and `[]` say the
+// second, which is the true one.
+//
+// UserDataBase64 is the exception: it appears only when the blob is not JSON,
+// because two keys for one value would invite setting both.
 type editData struct {
 	Settings exportSettings `json:"settings"`
 	Markers  []exportMarker `json:"markers"`
-	Border   *editBorder    `json:"border,omitempty"`
+	Border   *editBorder    `json:"border"`
 
 	// UserData is the world's metadata blob: inline when it is valid JSON,
 	// base64 otherwise, so an editor shows something readable when it can.
-	UserData       json.RawMessage `json:"userData,omitempty"`
+	UserData       json.RawMessage `json:"userData"`
 	UserDataBase64 string          `json:"userDataBase64,omitempty"`
 }
 
@@ -50,7 +58,7 @@ func cmdEdit(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile edit <world> [--print] [--apply file.json] [--no-backup] [--max-decoded n]")
+		return errors.New("usage: pile edit [--print] [--apply file.json] [--no-backup] [--max-decoded n] <world>")
 	}
 	dir := fs.Arg(0)
 
@@ -102,7 +110,8 @@ func cmdEdit(args []string) error {
 
 // readEditData collects a world's metadata into the editable form.
 func readEditData(p *pile.Provider) editData {
-	d := editData{Settings: exportSettingsOf(p.Settings())}
+	// Markers start as an empty slice rather than nil so the JSON shows [].
+	d := editData{Settings: exportSettingsOf(p.Settings()), Markers: []exportMarker{}}
 	for _, m := range p.Markers() {
 		em := exportMarker{Name: m.Name, Kind: m.Kind, Pos: m.Pos, Extra: m.Extra}
 		if m.Bounds != nil {
@@ -120,6 +129,13 @@ func readEditData(p *pile.Provider) editData {
 		} else {
 			d.UserDataBase64 = base64.StdEncoding.EncodeToString(ud)
 		}
+	}
+	if len(d.UserData) == 0 {
+		// Explicit null rather than an omitted key, and rather than {}: an
+		// empty object is a blob whose content is an empty object, which is not
+		// the same as having none, and applying it would store two bytes where
+		// there were none.
+		d.UserData = json.RawMessage("null")
 	}
 	return d
 }
@@ -164,6 +180,8 @@ func applyEditData(dir string, d, before editData, noBackup bool, limit decodeLi
 	}
 
 	switch {
+	case isJSONNull(d.UserData):
+		p.SetUserData(nil)
 	case len(d.UserData) > 0:
 		// Write the bytes that were there if the edit did not change them.
 		// MarshalIndent reformats an embedded RawMessage, so a user data blob
@@ -237,7 +255,7 @@ func editorCommand() (string, []string) {
 	if runtime.GOOS == "windows" {
 		return "notepad", nil
 	}
-	for _, cand := range []string{"nano", "vim", "vi"} {
+	for _, cand := range []string{"hx", "vim", "vi", "nano"} {
 		if _, err := exec.LookPath(cand); err == nil {
 			return cand, nil
 		}
@@ -304,4 +322,10 @@ func sameJSON(a, b []byte) bool {
 		return false
 	}
 	return bytes.Equal(ca.Bytes(), cb.Bytes())
+}
+
+// isJSONNull reports whether a raw message is the literal null, which is how
+// the editable form says "this world has no user data".
+func isJSONNull(b []byte) bool {
+	return string(bytes.TrimSpace(b)) == "null"
 }

@@ -25,7 +25,7 @@ func cmdRender(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile render <world-dir> [-o map.png] [--dim overworld] [--bg #rrggbb]")
+		return errors.New("usage: pile render [-o map.png] [--dim overworld] [--bg #rrggbb] <world-dir>")
 	}
 	var bg *color.RGBA
 	if *bgFlag != "" {

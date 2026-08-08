@@ -45,7 +45,7 @@ func cmdBlocks(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile blocks <mcdb-world|dir|file.pile> [--custom] [--quiet] [--max-decoded n]")
+		return errors.New("usage: pile blocks [--custom] [--quiet] [--max-decoded n] <mcdb-world|dir|file.pile>")
 	}
 	target := fs.Arg(0)
 	var states map[string][]map[string]any
