@@ -55,6 +55,8 @@ corruption, not tampering.
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
 | `pile check <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. |
 | `pile render <world> [-o map.png] [--dim d] [--bg #rrggbb]` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
+| `pile hash <dir\|file>...` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
+| `pile version` | pile, wire format and dragonfly versions. The first three lines of any bug report. |
 
 ## Maintenance
 
@@ -63,6 +65,18 @@ corruption, not tampering.
 | `pile compact <dir\|file>` | Rewrite indexed files without garbage (also retrains the shared compression dictionary). Solid files are always canonical already. |
 | `pile upgrade <dir\|file>` | Re-encode at the current Minecraft block version so servers never pay state-upgrade cost at load. |
 | `pile prune <world> --bounds x1,z1,x2,z2 [--dry-run] [--no-backup]` | Drop chunks outside a block box (e.g. stray chunks created while flying around during map creation). Backup in `snapshots/pre-prune`. |
+
+## Snapshots
+
+`move`, `prune` and `apply` back the world up to `snapshots/pre-<command>`
+before touching it. These are how you reach those, and your own.
+
+| command | |
+|---------|---|
+| `pile snapshot <world> <name>` | Save the current state into `snapshots/<name>`. |
+| `pile snapshots <world>` | List them. |
+| `pile rollback <world> <name> [--backup name]` | Restore one. The current state is kept as `pre-rollback` first, so picking the wrong snapshot is itself recoverable; `--backup ""` skips that. |
+| `pile unsnapshot <world> <name>` | Delete one. |
 
 ## Map surgery
 

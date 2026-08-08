@@ -55,6 +55,18 @@ func main() {
 		err = cmdCheck(os.Args[2:])
 	case "prune":
 		err = cmdPrune(os.Args[2:])
+	case "hash":
+		err = cmdHash(os.Args[2:])
+	case "snapshot":
+		err = cmdSnapshot(os.Args[2:])
+	case "snapshots":
+		err = cmdSnapshots(os.Args[2:])
+	case "rollback":
+		err = cmdRollback(os.Args[2:])
+	case "unsnapshot":
+		err = cmdDeleteSnapshot(os.Args[2:])
+	case "version", "--version":
+		err = cmdVersion(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -108,6 +120,15 @@ commands:
                         current registry (exit 1 if any)
   prune   <world> --bounds x1,z1,x2,z2
                         drop chunks outside a block box
+  hash    <dir|file>... print the content identity of each world or file;
+                        identical content gives an identical hash whatever the
+                        mode or compression. --quiet exits 1 if they differ
+  snapshot   <world> <name>    copy the world into snapshots/<name>
+  snapshots  <world>           list snapshots
+  rollback   <world> <name>    restore a snapshot (keeps the current state as
+                               pre-rollback unless --backup is empty)
+  unsnapshot <world> <name>    delete a snapshot
+  version               print pile, wire format and dragonfly versions
 
 every command that decodes chunk content also takes:
   --max-decoded n       refuse a file whose decode would exceed n bytes of live
