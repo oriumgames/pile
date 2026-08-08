@@ -56,23 +56,47 @@ func ImportMCDB(src, dst string, opts ...Option) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// A conversion that fails must leave nothing, not a partial world.
+	// Provider.Close saves, so closing on the error path is what wrote a
+	// four-chunk world after a source that failed on its fifth chunk -- and a
+	// partial world is worse than none, because it opens, renders and looks
+	// like a finished one. The destination is safe to remove: this refuses to
+	// write into an existing pile world above, so whatever is there now was
+	// made by this call.
+	// closed guards against Close being called twice: it is called once here
+	// on the way out and once by abandon, and the second call must not undo
+	// the first's error.
+	closed := false
+	abandon := func(err error) (int, error) {
+		if !closed {
+			_ = p.Close()
+			closed = true
+		}
+		if rmErr := os.RemoveAll(dst); rmErr != nil {
+			return 0, fmt.Errorf("%w (and the partial world could not be removed: %v)", err, rmErr)
+		}
+		return 0, err
+	}
 	total := 0
 	it := db.NewColumnIterator(nil)
 	defer it.Release()
 	for it.Next() {
 		if err := p.StoreColumn(it.Position(), it.Dimension(), it.Column()); err != nil {
-			_ = p.Close()
-			return total, fmt.Errorf("pile: store column %v: %w", it.Position(), err)
+			return abandon(fmt.Errorf("pile: store column %v: %w", it.Position(), err))
 		}
 		total++
 	}
 	if err := it.Error(); err != nil {
-		_ = p.Close()
-		return total, fmt.Errorf("pile: iterate mcdb: %w", err)
+		return abandon(fmt.Errorf("pile: iterate mcdb: %w", err))
 	}
 	p.SaveSettings(db.Settings())
+	// Close is where a solid world is written, so it is where validation
+	// happens: every column above can store fine and the whole conversion
+	// still fail here. That makes this an abandon path too, not a plain
+	// return -- it was the one that left the partial world.
+	closed = true
 	if err := p.Close(); err != nil {
-		return total, err
+		return abandon(err)
 	}
 	return total, nil
 }
