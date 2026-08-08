@@ -74,6 +74,81 @@ func (w *IndexedWorld) UnresolvedStates() ([]string, error) {
 	return out, nil
 }
 
+// BlockStates returns every block state in a solid world or structure file's
+// palette, without resolving any of them against a registry.
+//
+// It exists because "what blocks does this world use" and "which of them can I
+// load" are different questions, and only the second needs a registry. A world
+// whose blocks come from a behaviour pack cannot be read by a program that does
+// not implement the pack -- but its palette can, because a palette entry is a
+// name, a property map and a version, and none of that requires resolution.
+//
+// That is the question worth asking *before* a conversion: it says what a
+// registry has to cover.
+func BlockStates(file []byte, opts ...ReadOption) ([]BlockState, error) {
+	_ = newReadConfig(opts)
+	h, stored, err := parseFrame(file)
+	if err != nil {
+		return nil, err
+	}
+	body, err := decompressBody(h, stored)
+	if err != nil {
+		return nil, err
+	}
+	r := &reader{b: body}
+	if _, _, _, _, _, err := readMetaBlobs(r, h.flags); err != nil {
+		return nil, err
+	}
+	entries, err := parseStatePalette(r, h.blockVersion)
+	if err != nil {
+		return nil, err
+	}
+	return statesOf(entries, h.blockVersion), nil
+}
+
+// BlockStates returns every block state in the indexed world's palette
+// segments, without resolving any of them.
+func (w *IndexedWorld) BlockStates() ([]BlockState, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, errors.New("pile: indexed world is closed")
+	}
+	var out []BlockState
+	for _, seg := range w.blockSegs {
+		body, err := w.readFrame(seg)
+		if err != nil {
+			return nil, err
+		}
+		r := &reader{b: body}
+		segVersion, err := r.u32()
+		if err != nil {
+			return nil, err
+		}
+		entries, err := parseStatePalette(r, int32(segVersion))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, statesOf(entries, int32(segVersion))...)
+	}
+	return out, nil
+}
+
+// statesOf converts parsed palette entries to the exported form, resolving the
+// "zero means the palette's own version" convention so a caller never has to
+// know it.
+func statesOf(entries []parsedState, blockVersion int32) []BlockState {
+	out := make([]BlockState, len(entries))
+	for i, e := range entries {
+		v := e.version
+		if v == 0 {
+			v = blockVersion
+		}
+		out[i] = BlockState{Name: e.name, Properties: e.props, Version: v}
+	}
+	return out
+}
+
 func unresolvedOf(entries []parsedState, reg world.BlockRegistry, blockVersion int32) []string {
 	var out []string
 	for _, e := range entries {

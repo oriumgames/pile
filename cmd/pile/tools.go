@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/oriumgames/pile"
@@ -288,11 +289,24 @@ func cmdUpgrade(args []string) error {
 func cmdCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	limit := addDecodeLimit(fs)
+	// A world whose blocks come from a behaviour pack has states this binary
+	// can never resolve, because it links the vanilla registry and nothing
+	// else. Reporting those every time makes the command useless for exactly
+	// the worlds that most need checking, and the useful question there is
+	// narrower: do the *vanilla* blocks still resolve, or did a dragonfly
+	// upgrade take one away?
+	allow := fs.String("allow", "", "comma-separated namespaces to treat as expected, e.g. --allow hive")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile check <dir|file> [--max-decoded n]")
+		return errors.New("usage: pile check <dir|file> [--allow ns,ns] [--max-decoded n]")
+	}
+	allowed := map[string]bool{}
+	for _, ns := range strings.Split(*allow, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			allowed[ns] = true
+		}
 	}
 	files, err := pileFiles(fs.Arg(0))
 	if err != nil {
@@ -326,12 +340,34 @@ func cmdCheck(args []string) error {
 				return fmt.Errorf("%s: %w", f, err)
 			}
 		}
+		expected := 0
+		kept := unresolved[:0]
+		for _, st := range unresolved {
+			if ns, _, ok := strings.Cut(st, ":"); ok && allowed[ns] {
+				expected++
+				continue
+			}
+			kept = append(kept, st)
+		}
+		unresolved = kept
+
 		if len(unresolved) == 0 {
-			fmt.Printf("%s: all block states resolve\n", f)
+			fmt.Printf("%s: all block states resolve", f)
+			if expected > 0 {
+				// Say what was set aside rather than reporting a clean bill:
+				// "all resolve" would be untrue, and the count is the thing a
+				// reader wants to sanity-check the --allow against.
+				fmt.Printf(" (%d states in allowed namespaces not checked)", expected)
+			}
+			fmt.Println()
 			continue
 		}
 		bad = true
-		fmt.Printf("%s: %d unresolved states (would load as placeholder blocks):\n", f, len(unresolved))
+		fmt.Printf("%s: %d unresolved states (would load as placeholder blocks)", f, len(unresolved))
+		if expected > 0 {
+			fmt.Printf(", plus %d in allowed namespaces", expected)
+		}
+		fmt.Println(":")
 		for _, s := range unresolved {
 			fmt.Printf("  %s\n", s)
 		}

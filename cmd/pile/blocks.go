@@ -11,8 +11,13 @@ import (
 	"sort"
 	"strings"
 
+	"os"
+
+	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/goleveldb/leveldb"
 	"github.com/df-mc/goleveldb/leveldb/opt"
+	"github.com/oriumgames/pile"
+	"github.com/oriumgames/pile/format"
 	"github.com/sandertv/gophertunnel/minecraft/nbt"
 )
 
@@ -35,19 +40,22 @@ func cmdBlocks(args []string) error {
 	fs := flag.NewFlagSet("blocks", flag.ContinueOnError)
 	customOnly := fs.Bool("custom", false, "list only identifiers outside the minecraft: namespace")
 	quiet := fs.Bool("quiet", false, "print only identifiers, one per line")
+	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: pile blocks <mcdb-world> [--custom] [--quiet]")
+		return errors.New("usage: pile blocks <mcdb-world|dir|file.pile> [--custom] [--quiet] [--max-decoded n]")
 	}
-	dir := fs.Arg(0)
-	if !IsMCDBDir(dir) {
-		return fmt.Errorf("%s is not a leveldb world; this reads the palettes of an mcdb world, "+
-			"and `pile check` is the equivalent for a pile world", dir)
+	target := fs.Arg(0)
+	var states map[string][]map[string]any
+	var err error
+	fromMCDB := IsMCDBDir(target)
+	if fromMCDB {
+		states, err = scanPalettes(target)
+	} else {
+		states, err = pilePalettes(target, limit)
 	}
-
-	states, err := scanPalettes(dir)
 	if err != nil {
 		return err
 	}
@@ -82,9 +90,13 @@ func cmdBlocks(args []string) error {
 			total += len(s)
 		}
 		fmt.Printf("\n%d identifiers, %d states\n", len(names), total)
-		if custom > 0 {
+		if custom > 0 && fromMCDB {
 			fmt.Printf("%d identifiers and %d states are outside minecraft: and must be registered "+
 				"before this world can be converted\n", custom, customStates)
+		} else if custom > 0 {
+			fmt.Printf("%d identifiers and %d states are outside minecraft: and need a registry "+
+				"that knows them; `pile check --allow %s` reports only the rest\n",
+				custom, customStates, namespaceHint(states))
 		}
 	}
 	return nil
@@ -226,4 +238,70 @@ func subChunkPalette(v []byte) ([]blockEntry, error) {
 		b = b[len(b)-r.Len():]
 	}
 	return out, nil
+}
+
+// pilePalettes reads the block palette of a pile world or file. Like the mcdb
+// path it needs no registry: format.BlockStates reports the palette as it is
+// stored, which is names and properties.
+func pilePalettes(target string, limit decodeLimit) (map[string][]map[string]any, error) {
+	files, err := pileFiles(target)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string][]map[string]any{}
+	seen := map[string]bool{}
+	add := func(list []format.BlockState) {
+		for _, st := range list {
+			key := st.Name + "\x00" + fmt.Sprint(st.Properties)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			states[st.Name] = append(states[st.Name], st.Properties)
+		}
+	}
+	for _, f := range files {
+		mode, err := pile.FileMode(f)
+		if err != nil {
+			return nil, err
+		}
+		if mode == format.ModeIndexed {
+			w, err := format.OpenIndexed(f, world.DefaultBlockRegistry, true, limit.readOpts()...)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", f, err)
+			}
+			list, err := w.BlockStates()
+			_ = w.Close()
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", f, err)
+			}
+			add(list)
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		list, err := format.BlockStates(data, limit.readOpts()...)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", f, err)
+		}
+		add(list)
+	}
+	if len(states) == 0 {
+		return nil, errors.New("no block palette found")
+	}
+	return states, nil
+}
+
+// namespaceHint picks a non-vanilla namespace to name in the hint, so the
+// suggested command is one a reader can paste rather than adapt.
+func namespaceHint(states map[string][]map[string]any) string {
+	spaces := map[string]bool{}
+	for name := range states {
+		if ns, _, ok := strings.Cut(name, ":"); ok && ns != "minecraft" {
+			spaces[ns] = true
+		}
+	}
+	return strings.Join(slices.Sorted(maps.Keys(spaces)), ",")
 }
