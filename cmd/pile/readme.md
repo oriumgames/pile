@@ -129,6 +129,8 @@ file and tells you the path, so the cost of a typo is fixing the typo.
 | `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
 | `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |
 
+| `pile replace (--from name \| --unresolved) [--to name] [--dry-run] [--no-backup] <world>` | Rewrite block states throughout a world. `--unresolved` takes every state this build cannot resolve — the custom blocks a `--permissive` conversion brought across. `--to` defaults to `minecraft:air`, so the bare form deletes them. Backup in `snapshots/pre-replace`. |
+
 ### Converting a world that uses a behaviour pack
 
 dragonfly's chunk decoder resolves every palette entry against the block
@@ -153,6 +155,19 @@ separate job.
 `pile blocks --custom <world>` lists what a world needs registered, and works
 on worlds `pile convert` cannot open, because it reads palettes without
 decoding a chunk.
+
+If you would rather not register them, `pile replace` is the other half:
+
+```sh
+pile check world                                  # what is unresolved
+pile replace --unresolved --dry-run world         # what would go, and how many blocks
+pile replace --unresolved world                   # delete them (--to defaults to air)
+pile replace --from cubecraft:portal_side --to minecraft:obsidian world
+```
+
+An identifier on its own takes every state of that block; written as
+`name[k=v,k=v]` it takes only the state matching. Matching is by what the file
+says, not by what the registry knows, so it works on states nothing implements.
 
 ### Why a converted world is mostly air
 

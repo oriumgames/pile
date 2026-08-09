@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -129,7 +130,11 @@ func RegisterMCDBStates(dir string, reg world.BlockRegistry) (int, error) {
 	}
 	added := 0
 	for _, s := range states {
-		if registerIfUnknown(reg, world.BlockState{Name: s.Name, Properties: s.Properties}) {
+		ok, err := registerIfUnknown(reg, world.BlockState{Name: s.Name, Properties: s.Properties})
+		if err != nil {
+			return 0, err
+		}
+		if ok {
 			added++
 		}
 	}
@@ -139,29 +144,51 @@ func RegisterMCDBStates(dir string, reg world.BlockRegistry) (int, error) {
 // registerIfUnknown registers a state unless the registry already has it, and
 // reports whether it added one.
 //
-// Asking first is not available: StateToRuntimeID panics on a registry that is
-// not finalized, and finalizing is what closes registration off, so there is no
-// order in which both calls work. What the registry does offer is a panic with
-// a documented message when a state is registered twice, which is the same
-// question answered by attempting it.
+// The registry makes this awkward on purpose and in both directions:
+// StateToRuntimeID panics before Finalize, and RegisterBlockState panics after
+// it -- so neither call alone works at both times, and there is no accessor
+// saying which time it is. The state is therefore probed first, which answers
+// the question when the registry is finalized and says "cannot tell" when it
+// is not; only then is registration attempted.
 //
-// Only that panic is absorbed. Anything else -- a property type the registry
-// refuses, a registry finalized behind the caller's back -- is re-raised, since
-// swallowing those would turn a broken conversion into a quiet one.
-func registerIfUnknown(reg world.BlockRegistry, s world.BlockState) (added bool) {
+// Doing it the other way round -- register, absorb the duplicate panic -- is
+// what the first version did, and it made pile replace fail on a finalized
+// registry while asking for minecraft:air, because the panic comes before the
+// duplicate check.
+func registerIfUnknown(reg world.BlockRegistry, s world.BlockState) (added bool, err error) {
+	if known, answered := stateKnown(reg, s); answered {
+		if known {
+			return false, nil
+		}
+		return false, fmt.Errorf("pile: the block registry is already finalized, so %s cannot be "+
+			"registered; register states before anything calls Finalize", s.Name)
+	}
 	defer func() {
 		r := recover()
 		if r == nil {
 			return
 		}
 		if msg, ok := r.(string); ok && strings.Contains(msg, "cannot register the same state twice") {
-			added = false
+			added, err = false, nil
 			return
 		}
 		panic(r)
 	}()
 	reg.RegisterBlockState(s)
-	return true
+	return true, nil
+}
+
+// stateKnown reports whether reg holds a state, and whether it was in a
+// condition to answer: StateToRuntimeID panics on a registry that has not been
+// finalized, which is the case where registration is still possible.
+func stateKnown(reg world.BlockRegistry, s world.BlockState) (known, answered bool) {
+	defer func() {
+		if recover() != nil {
+			known, answered = false, false
+		}
+	}()
+	_, ok := reg.StateToRuntimeID(s.Name, s.Properties)
+	return ok, true
 }
 
 // mcdbBlockEntry is one palette entry as stored on disk.
@@ -241,5 +268,60 @@ func mcdbSubChunkPalette(v []byte) ([]mcdbBlockEntry, error) {
 		}
 		b = b[len(b)-r.Len():]
 	}
+	return out, nil
+}
+
+// RegisterBlockState registers a state on reg unless it is already there, and
+// reports whether it added one. It is RegisterMCDBStates for a caller that got
+// its states from somewhere else -- a pile world's own palette, say.
+func RegisterBlockState(reg world.BlockRegistry, s format.BlockState) (bool, error) {
+	if reg == nil {
+		reg = world.DefaultBlockRegistry
+	}
+	return registerIfUnknown(reg, world.BlockState{Name: s.Name, Properties: s.Properties})
+}
+
+// WorldBlockStates returns every block state in a pile world's palettes,
+// across every dimension file, deduplicated and sorted.
+//
+// No registry is involved: pile stores a palette entry as its identifier and
+// properties, so a state nothing can resolve is still one the file states
+// plainly. That is what makes this usable on a converted world holding blocks
+// from a behaviour pack.
+func WorldBlockStates(dir string, opts ...format.ReadOption) ([]format.BlockState, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.pile"))
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("pile: no .pile files in %s", dir)
+	}
+	slices.Sort(files)
+	var out []format.BlockState
+	seen := map[string]bool{}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		states, err := format.BlockStates(raw, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("pile: %s: %w", f, err)
+		}
+		for _, s := range states {
+			key := s.Name + "\x00" + stateKey(s.Properties)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, s)
+		}
+	}
+	slices.SortFunc(out, func(a, b format.BlockState) int {
+		if a.Name != b.Name {
+			return strings.Compare(a.Name, b.Name)
+		}
+		return strings.Compare(stateKey(a.Properties), stateKey(b.Properties))
+	})
 	return out, nil
 }

@@ -44,6 +44,13 @@ func isPile(dir string) bool { return pile.IsPile(dir) }
 // decoder fails outright on a state it cannot resolve, so one block from a pack
 // stops the conversion at whichever chunk holds it.
 func convertMcdbToPile(src, dst string, permissive bool) error {
+	// The process-wide registry, not a clone. world.NewBlockRegistry would be
+	// the better answer -- placeholders belong to one conversion rather than to
+	// the process -- but in dragonfly v0.11.1 it panics on Finalize: Clone
+	// resets bitSize to 0 and the block hashes then collide ("block Stairs...
+	// already registered by block.Stairs..."). Until that is fixed upstream a
+	// converter gets one shot at the registry, which is fine for a CLI whose
+	// process ends with the conversion.
 	reg := world.DefaultBlockRegistry
 	if permissive {
 		added, err := pile.RegisterMCDBStates(src, reg)

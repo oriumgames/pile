@@ -55,6 +55,8 @@ func main() {
 		err = cmdCheck(os.Args[2:])
 	case "prune":
 		err = cmdPrune(os.Args[2:])
+	case "replace":
+		err = cmdReplace(os.Args[2:])
 	case "hash":
 		err = cmdHash(os.Args[2:])
 	case "blocks":
@@ -129,6 +131,10 @@ commands:
   upgrade <dir|file>    re-encode at the current Minecraft block version
   check   <dir|file>    list block states that do not resolve against the
                         current registry (exit 1 if any)
+  replace (--from name | --unresolved) [--to name] <world>
+                        rewrite block states throughout a world; --unresolved
+                        takes everything this build cannot resolve, --to
+                        defaults to minecraft:air
   prune   (--bounds x1,z1,x2,z2 | --empty) <world>
                         drop chunks outside a block box, or chunks holding no
                         blocks at all (converted worlds are mostly these)
