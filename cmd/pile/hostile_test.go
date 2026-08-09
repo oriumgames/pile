@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -548,5 +549,67 @@ func TestPasteRefusesAnUnaddressablePosition(t *testing.T) {
 	dst := t.TempDir()
 	if err := cmdPaste([]string{"--at", "34359738000,0,0", sp, dst}); err != nil {
 		t.Fatalf("an addressable paste position was refused: %v", err)
+	}
+}
+
+// emptyColumn is a stored column with nothing in it: what a converted world
+// carries by the thousand where a map's spawn area was pre-generated and never
+// built on.
+func emptyColumn(t testing.TB, x, z int32) format.Column {
+	t.Helper()
+	return format.Column{X: x, Z: z, Col: &chunk.Column{Chunk: chunk.New(hostileReg(t), cube.Range{0, 15})}}
+}
+
+// TestRenderIgnoresEmptyColumnsWhenSizingTheImage.
+//
+// The bounding box was measured over every stored column while the render loop
+// drew only non-air surfaces, so a column that contributes no pixel still set
+// the image's width. Converted Bedrock worlds carry those in bulk: a Skywars
+// map arrived with 5 041 empty chunks at the origin and the map itself at chunk
+// X 5 405, which measured 88 192 pixels wide and was refused outright -- and
+// had the ceiling been higher it would have written a 412 MB image that was
+// blank apart from one corner.
+func TestRenderIgnoresEmptyColumnsWhenSizingTheImage(t *testing.T) {
+	dir := t.TempDir()
+	cols := []format.Column{solidColumn(t, 5405, 0), solidColumn(t, 5406, 0)}
+	// The empty pad, far enough away that including it breaks the ceiling.
+	for x := int32(-35); x <= 35; x++ {
+		cols = append(cols, emptyColumn(t, x, 0))
+	}
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), cols)
+
+	out := filepath.Join(dir, "map.png")
+	if err := cmdRender([]string{"-o", out, dir}); err != nil {
+		t.Fatalf("empty columns 87,000 blocks from the map made it unrenderable: %v", err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two columns of content and nothing else: the pad contributes no margin.
+	if cfg.Width != 32 || cfg.Height != 16 {
+		t.Errorf("image is %dx%d, want 32x16: the empty pad still sized it",
+			cfg.Width, cfg.Height)
+	}
+}
+
+// TestRenderReportsAWorldWithNothingToDraw: once the box is measured over
+// drawing columns there may be none, and a blank PNG of no stated size is a
+// worse answer than saying so.
+func TestRenderReportsAWorldWithNothingToDraw(t *testing.T) {
+	dir := t.TempDir()
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"),
+		[]format.Column{emptyColumn(t, 0, 0), emptyColumn(t, 1, 0)})
+	err := cmdRender([]string{"-o", filepath.Join(dir, "map.png"), dir})
+	if err == nil {
+		t.Fatal("a world of nothing but air produced an image")
+	}
+	if !strings.Contains(err.Error(), "all 2 columns are air") {
+		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }

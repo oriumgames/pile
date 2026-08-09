@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/oriumgames/pile"
+	"github.com/oriumgames/pile/format"
 )
 
 func cmdRender(args []string) error {
@@ -58,9 +60,30 @@ func cmdRender(args []string) error {
 	// above 8192, and image.NewRGBA canonicalised the negative rectangle into a
 	// positive one and reserved 2.0 TiB for its pixels. The file that does it is
 	// 4,269 bytes and holds two chunks.
-	minCX, minCZ := int64(df.Columns[0].X), int64(df.Columns[0].Z)
-	maxCX, maxCZ := minCX, minCZ
+	//
+	// The box is measured over the columns that will actually draw something,
+	// not over every column stored. A column whose surface is air everywhere
+	// contributes no pixel, so letting it widen the image adds only transparent
+	// margin -- and worlds carry those in bulk: a converted Skywars map held
+	// 5 041 empty spawn chunks at the origin and the map itself 87 000 blocks
+	// away, which measured 88 192 pixels wide and was refused outright. Had the
+	// ceiling been higher it would have written a 412 MB image that was blank
+	// apart from one corner.
+	air := reg.AirRuntimeID()
+	drawn := make([]format.Column, 0, len(df.Columns))
 	for _, c := range df.Columns {
+		if columnDraws(c.Col.Chunk, air) {
+			drawn = append(drawn, c)
+		}
+	}
+	if len(drawn) == 0 {
+		return fmt.Errorf("nothing to render in %s: all %d columns are air",
+			*dimFlag, len(df.Columns))
+	}
+
+	minCX, minCZ := int64(drawn[0].X), int64(drawn[0].Z)
+	maxCX, maxCZ := minCX, minCZ
+	for _, c := range drawn {
 		minCX, maxCX = min(minCX, int64(c.X)), max(maxCX, int64(c.X))
 		minCZ, maxCZ = min(minCZ, int64(c.Z)), max(maxCZ, int64(c.Z))
 	}
@@ -76,8 +99,7 @@ func cmdRender(args []string) error {
 		}
 	}
 
-	air := reg.AirRuntimeID()
-	for _, c := range df.Columns {
+	for _, c := range drawn {
 		ch := c.Col.Chunk
 		r := ch.Range()
 		ox := int((int64(c.X) - minCX) * 16)
@@ -236,4 +258,18 @@ func shade(c color.RGBA, f float64) color.RGBA {
 		return uint8(v)
 	}
 	return color.RGBA{R: cl(float64(c.R) * f), G: cl(float64(c.G) * f), B: cl(float64(c.B) * f), A: 255}
+}
+
+// columnDraws reports whether a column would put any pixel in the image: the
+// same test the render loop applies, hoisted so the bounding box can be
+// measured over the columns that matter rather than over every stored one.
+func columnDraws(ch *chunk.Chunk, air uint32) bool {
+	for x := range uint8(16) {
+		for z := range uint8(16) {
+			if ch.Block(x, ch.HighestBlock(x, z), z, 0) != air {
+				return true
+			}
+		}
+	}
+	return false
 }
