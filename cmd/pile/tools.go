@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -144,25 +145,28 @@ func cmdDiff(args []string) error {
 
 func cmdPrune(args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
-	boundsFlag := fs.String("bounds", "", "keep only chunks intersecting block box x1,z1,x2,z2 (required)")
+	boundsFlag := fs.String("bounds", "", "keep only chunks intersecting block box x1,z1,x2,z2")
+	emptyFlag := fs.Bool("empty", false, "drop chunks that hold no blocks at all")
 	dryRun := fs.Bool("dry-run", false, "report without writing")
 	noBackup := fs.Bool("no-backup", false, "skip the snapshots/pre-prune backup")
 	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 || *boundsFlag == "" {
-		return errors.New("usage: pile prune --bounds x1,z1,x2,z2 [--dry-run] [--no-backup] <world>")
+	if fs.NArg() != 1 || (*boundsFlag == "" && !*emptyFlag) {
+		return errors.New("usage: pile prune (--bounds x1,z1,x2,z2 | --empty) [--dry-run] [--no-backup] <world>")
 	}
-	var x1, z1, x2, z2 int
-	if _, err := fmt.Sscanf(*boundsFlag, "%d,%d,%d,%d", &x1, &z1, &x2, &z2); err != nil {
-		return fmt.Errorf("invalid bounds %q: %w", *boundsFlag, err)
-	}
-	if x2 < x1 {
-		x1, x2 = x2, x1
-	}
-	if z2 < z1 {
-		z1, z2 = z2, z1
+	x1, z1, x2, z2 := math.MinInt32, math.MinInt32, math.MaxInt32, math.MaxInt32
+	if *boundsFlag != "" {
+		if _, err := fmt.Sscanf(*boundsFlag, "%d,%d,%d,%d", &x1, &z1, &x2, &z2); err != nil {
+			return fmt.Errorf("invalid bounds %q: %w", *boundsFlag, err)
+		}
+		if x2 < x1 {
+			x1, x2 = x2, x1
+		}
+		if z2 < z1 {
+			z1, z2 = z2, z1
+		}
 	}
 	dir := fs.Arg(0)
 	reg := world.DefaultBlockRegistry
@@ -171,25 +175,44 @@ func cmdPrune(args []string) error {
 	if err != nil {
 		return err
 	}
-	dropped := 0
+	air := reg.AirRuntimeID()
+	dropped, droppedEmpty := 0, 0
 	for i := range wf.Dims {
 		var kept []format.Column
 		for _, c := range wf.Dims[i].Columns {
 			bx0, bx1 := int(c.X)*16, int(c.X)*16+15
 			bz0, bz1 := int(c.Z)*16, int(c.Z)*16+15
-			if bx1 >= x1 && bx0 <= x2 && bz1 >= z1 && bz0 <= z2 {
-				kept = append(kept, c)
-			} else {
+			if bx1 < x1 || bx0 > x2 || bz1 < z1 || bz0 > z2 {
 				dropped++
+				continue
 			}
+			if *emptyFlag && columnIsAir(c, air) {
+				droppedEmpty++
+				continue
+			}
+			kept = append(kept, c)
 		}
 		wf.Dims[i].Columns = kept
 	}
+	report := func(verb string) string {
+		out := ""
+		if *boundsFlag != "" {
+			out = fmt.Sprintf("%s %d chunks outside (%d,%d)..(%d,%d)", verb, dropped, x1, z1, x2, z2)
+		}
+		if *emptyFlag {
+			if out != "" {
+				out += fmt.Sprintf(" and %d holding no blocks", droppedEmpty)
+			} else {
+				out = fmt.Sprintf("%s %d chunks holding no blocks", verb, droppedEmpty)
+			}
+		}
+		return out
+	}
 	if *dryRun {
-		fmt.Printf("would drop %d chunks outside (%d,%d)..(%d,%d)\n", dropped, x1, z1, x2, z2)
+		fmt.Println(report("would drop"))
 		return nil
 	}
-	if dropped == 0 {
+	if dropped+droppedEmpty == 0 {
 		fmt.Println("nothing to prune")
 		return nil
 	}
@@ -201,7 +224,7 @@ func cmdPrune(args []string) error {
 	if err := wf.Write(dir, reg); err != nil {
 		return err
 	}
-	fmt.Printf("dropped %d chunks outside (%d,%d)..(%d,%d)\n", dropped, x1, z1, x2, z2)
+	fmt.Println(report("dropped"))
 	return nil
 }
 
@@ -375,4 +398,30 @@ func cmdCheck(args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// columnIsAir reports whether a column holds no block at all.
+//
+// A stored-but-empty chunk is not the same thing as one that was never
+// stored -- it is an authoritative "this is void", where an absent chunk sends
+// the server to its generator -- so dropping these is opt-in. It is worth
+// offering because Bedrock writes one for every chunk that has ever entered
+// simulation, and a converted minigame map arrives with thousands: they cost
+// almost nothing on disk, where they are identical and compress away, and
+// several kilobytes each in memory once a server loads them.
+//
+// Emptiness is dragonfly's own definition (no storages, or one storage that is
+// all air), so a waterlogged section with a uniform-air layer 0 has two
+// storages and is not empty -- which is the case pile spends a spec rule on.
+func columnIsAir(c format.Column, _ uint32) bool {
+	col := c.Col
+	for _, sub := range col.Chunk.Sub() {
+		if !sub.Empty() {
+			return false
+		}
+	}
+	// A block entity or entity with no block around it would be dropped
+	// silently otherwise, and neither is recoverable from the rest of the file.
+	return len(col.BlockEntities) == 0 && len(col.Entities) == 0 &&
+		len(col.ScheduledBlocks) == 0 && len(c.UserData) == 0
 }

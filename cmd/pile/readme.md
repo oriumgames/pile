@@ -71,7 +71,7 @@ corruption, not tampering.
 |---------|---|
 | `pile compact <dir\|file>` | Rewrite indexed files without garbage (also retrains the shared compression dictionary). Solid files are always canonical already. |
 | `pile upgrade <dir\|file>` | Re-encode at the current Minecraft block version so servers never pay state-upgrade cost at load. |
-| `pile prune --bounds x1,z1,x2,z2 [--dry-run] [--no-backup] <world>` | Drop chunks outside a block box (e.g. stray chunks created while flying around during map creation). Backup in `snapshots/pre-prune`. |
+| `pile prune (--bounds x1,z1,x2,z2 \| --empty) [--dry-run] [--no-backup] <world>` | Drop chunks outside a block box, or — with `--empty` — chunks that hold no blocks at all. Either may be given, or both. Backup in `snapshots/pre-prune`. See below. |
 
 ## Snapshots
 
@@ -128,6 +128,34 @@ file and tells you the path, so the cost of a typo is fixing the typo.
 | `pile extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>` | Cut a region into a structure file (blocks, block entities, entities). |
 | `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
 | `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |
+
+### Why a converted world is mostly air
+
+Bedrock writes a chunk record for every chunk that has ever entered simulation
+— render distance around spawn, anywhere a builder flew — and in a void map
+that record holds no blocks. It is not the same as never storing the chunk: a
+stored empty chunk says "this is void", where an absent one sends the server to
+its generator. So `pile convert` keeps them, and so does the game.
+
+They arrive in bulk. A converted Skywars map here held **10 225 columns of
+which 68 contained a single block**, with the map itself 87 000 blocks from a
+pad of empty spawn chunks.
+
+On disk they are free: all 10 157 of them cost 700 bytes, because they are
+identical and compress to nothing. In memory they are not — loading that world
+holds 55 MB, against 1.6 MB for the same map with the air dropped. That is the
+number that matters if you keep minigame maps resident, and it multiplies by
+the number of instances.
+
+```sh
+pile prune --empty --dry-run world   # says what would go
+pile prune --empty world             # backs up to snapshots/pre-prune first
+```
+
+A chunk survives if it holds any block, any block entity, any entity, any
+scheduled update or any chunk user data. Emptiness is dragonfly's own
+definition, so a waterlogged section whose layer 0 is uniform air has two
+storages and stays.
 
 ### Why moving refuses a world with user data
 

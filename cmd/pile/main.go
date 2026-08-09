@@ -126,8 +126,9 @@ commands:
   upgrade <dir|file>    re-encode at the current Minecraft block version
   check   <dir|file>    list block states that do not resolve against the
                         current registry (exit 1 if any)
-  prune   --bounds x1,z1,x2,z2 <world>
-                        drop chunks outside a block box
+  prune   (--bounds x1,z1,x2,z2 | --empty) <world>
+                        drop chunks outside a block box, or chunks holding no
+                        blocks at all (converted worlds are mostly these)
   edit    <world>       edit the world's settings and user data as JSON in
                         $EDITOR; --print dumps it, --apply reads it back from
                         a file

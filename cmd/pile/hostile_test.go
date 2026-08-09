@@ -613,3 +613,74 @@ func TestRenderReportsAWorldWithNothingToDraw(t *testing.T) {
 		t.Fatalf("refused for the wrong reason: %v", err)
 	}
 }
+
+// TestPruneEmptyKeepsEverythingThatIsNotAir.
+//
+// Bedrock writes a chunk record for every chunk that has ever entered
+// simulation, so a converted minigame map arrives mostly air: one Skywars map
+// held 10 225 columns of which 68 contained a block. They cost 700 bytes on
+// disk, where they are identical and compress away, and 54 MB in memory once a
+// server loads them, which is the reason --empty exists.
+//
+// Dropping a chunk is not the same as never storing one -- an absent chunk
+// sends the server to its generator -- so this is opt-in, and everything that
+// is not literally air has to survive it.
+func TestPruneEmptyKeepsEverythingThatIsNotAir(t *testing.T) {
+	reg := hostileReg(t)
+	stone := reg.BlockRuntimeID(nil) + 1
+
+	// An empty column carrying a block entity: the blocks are gone but the
+	// entry is not recoverable from anything else in the file.
+	withBE := emptyColumn(t, 2, 0)
+	withBE.Col.BlockEntities = []chunk.BlockEntity{
+		{Pos: cube.Pos{32, 1, 0}, Data: map[string]any{"id": "minecraft:chest"}},
+	}
+	// A waterlogged-only section: layer 0 is uniform air and layer 1 holds the
+	// block. Two storages, so it is not empty -- the case the format spends a
+	// rule on, and the one a naive "is the surface air" test would delete.
+	waterlogged := emptyColumn(t, 3, 0)
+	waterlogged.Col.Chunk.SetBlock(0, 1, 0, 1, stone)
+	// An empty column carrying chunk user data.
+	withUD := emptyColumn(t, 4, 0)
+	withUD.UserData = []byte("arena-corner")
+
+	dir := t.TempDir()
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), []format.Column{
+		solidColumn(t, 0, 0),
+		emptyColumn(t, 1, 0), // the only one that may go
+		withBE, waterlogged, withUD,
+	})
+
+	if err := cmdPrune([]string{"--empty", "--no-backup", dir}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := pile.LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int32]bool{}
+	for _, c := range wf.Dim(world.Overworld).Columns {
+		got[c.X] = true
+	}
+	for _, x := range []int32{0, 2, 3, 4} {
+		if !got[x] {
+			t.Errorf("column %d was dropped and holds content", x)
+		}
+	}
+	if got[1] {
+		t.Error("the air-only column survived --empty")
+	}
+	if len(got) != 4 {
+		t.Errorf("kept %d columns, want 4", len(got))
+	}
+}
+
+// TestPruneRequiresAFilter: --bounds stopped being mandatory when --empty
+// arrived, so the two must not have left a form that drops nothing silently.
+func TestPruneRequiresAFilter(t *testing.T) {
+	dir := t.TempDir()
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), []format.Column{solidColumn(t, 0, 0)})
+	if err := cmdPrune([]string{"--no-backup", dir}); err == nil {
+		t.Fatal("prune with neither --bounds nor --empty was accepted")
+	}
+}
