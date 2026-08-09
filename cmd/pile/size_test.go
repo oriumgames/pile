@@ -59,7 +59,7 @@ func TestSizeComparison(t *testing.T) {
 
 	pileDir := t.TempDir()
 	start := time.Now()
-	if err := convertMcdbToPile(srcDir, pileDir); err != nil {
+	if err := convertMcdbToPile(srcDir, pileDir, false); err != nil {
 		t.Fatal(err)
 	}
 	convertTime := time.Since(start)

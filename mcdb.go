@@ -46,7 +46,16 @@ func ImportMCDB(src, dst string, opts ...Option) (int, error) {
 	if IsPile(dst) {
 		return 0, fmt.Errorf("pile: %s already contains a pile world; refusing to write into it", dst)
 	}
-	db, err := mcdb.Open(src)
+	// The source is read with the same registry the destination is written
+	// with. mcdb.Open would use dragonfly's default, so a caller who passed
+	// Registry() -- the only way to convert a world holding blocks from a
+	// behaviour pack, see RegisterMCDBStates -- had their registry used for
+	// one half of the conversion and ignored for the other.
+	conf := defaultConfig()
+	for _, o := range opts {
+		o(&conf)
+	}
+	db, err := (mcdb.Config{Blocks: conf.registry}).Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("pile: open mcdb %s: %w", src, err)
 	}

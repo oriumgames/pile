@@ -49,7 +49,7 @@ corruption, not tampering.
 
 | command | |
 |---------|---|
-| `pile convert <src> <dst>` | Convert between dragonfly's leveldb world (mcdb) and pile, both directions, detected from `<src>`. Output is garbage-free: pile output is a canonical solid write; mcdb output is written into a fresh database (refuses an existing one). |
+| `pile convert [--permissive] <src> <dst>` | Convert between dragonfly's leveldb world (mcdb) and pile, both directions, detected from `<src>`. Output is garbage-free: pile output is a canonical solid write; mcdb output is written into a fresh database (refuses an existing one). `--permissive` converts a world built on a behaviour pack — see below. |
 | `pile mode <dir\|file> <solid\|indexed>` | Convert files between solid mode (small worlds, deterministic full-rewrite saves) and indexed mode (large worlds, append saves). |
 
 ## Inspection
@@ -128,6 +128,31 @@ file and tells you the path, so the cost of a typo is fixing the typo.
 | `pile extract --min x,y,z --max x,y,z [--dim d] [--skip-air] <world> <out.pile>` | Cut a region into a structure file (blocks, block entities, entities). |
 | `pile paste --at x,y,z [--dim d] [--skip-air] <structure.pile> <world>` | Build a structure file into a world. |
 | `pile origin (--set x,y,z \| --zero \| --center) <structure.pile>` | Change a structure's paste anchor. Pure metadata, content untouched. |
+
+### Converting a world that uses a behaviour pack
+
+dragonfly's chunk decoder resolves every palette entry against the block
+registry and fails outright on one it does not know, so a single block from a
+pack stops the conversion at whichever chunk happens to hold it:
+
+```
+cannot get runtime ID of block state cubecraft:portal_side{...}
+```
+
+`--permissive` scans the source's own palettes first and registers every state
+the build does not know, as dragonfly's bare placeholder. The conversion then
+runs, and the identifiers survive: pile stores a palette entry as its name and
+properties, so the file carries the real `cubecraft:portal_side`, and `pile
+check` lists it as unresolved rather than silently substituting something.
+
+A server that registers those blocks properly resolves them from the same file.
+This does **not** make the block behave — a placeholder has no model, no
+collision and no behaviour. It moves the world; implementing the pack is a
+separate job.
+
+`pile blocks --custom <world>` lists what a world needs registered, and works
+on worlds `pile convert` cannot open, because it reads palettes without
+decoding a chunk.
 
 ### Why a converted world is mostly air
 

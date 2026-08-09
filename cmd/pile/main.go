@@ -91,7 +91,10 @@ flags come before the paths: "pile prune --dry-run world", not
 "pile prune world --dry-run", which leaves the flag unread
 
 commands:
-  convert <src> <dst>   convert between mcdb (leveldb) and pile world
+  convert [--permissive] <src> <dst>
+                        convert between mcdb (leveldb) and pile world;
+                        --permissive registers block states this build does not
+                        know, so a world built on a behaviour pack converts
                         directories; direction is detected from src
   inspect <file.pile>   print header and metadata without decoding chunks
   verify  <dir|file>    fully decode and validate pile files

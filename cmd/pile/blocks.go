@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,11 +12,8 @@ import (
 	"os"
 
 	"github.com/df-mc/dragonfly/server/world"
-	"github.com/df-mc/goleveldb/leveldb"
-	"github.com/df-mc/goleveldb/leveldb/opt"
 	"github.com/oriumgames/pile"
 	"github.com/oriumgames/pile/format"
-	"github.com/sandertv/gophertunnel/minecraft/nbt"
 )
 
 // cmdBlocks lists the block identifiers a leveldb world uses, and the property
@@ -106,54 +101,21 @@ func cmdBlocks(args []string) error {
 // question IsMCDB answers in the library, asked without importing it here.
 func IsMCDBDir(dir string) bool { return isMcdb(dir) }
 
-// scanPalettes walks every sub-chunk in the world and collects the distinct
-// states of each block identifier.
-//
-// The database is opened READ-ONLY. goleveldb's default is read-write and
-// rewrites the manifest and journal on open even when nothing is stored, which
-// is a change to somebody's world that listing its blocks must not make.
+// scanPalettes groups the world's block states by identifier. The scan itself
+// is pile.MCDBBlockStates, shared with the permissive converter: this used to
+// hold its own copy, and when the copy turned out to mishandle uniform storages
+// it under-reported by a factor of six while the converter it was meant to
+// inform failed on a block the report never mentioned.
 func scanPalettes(dir string) (map[string][]map[string]any, error) {
-	db, err := leveldb.OpenFile(dir+"/db", &opt.Options{ReadOnly: true})
+	states, err := pile.MCDBBlockStates(dir)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", dir, err)
-	}
-	defer func() { _ = db.Close() }()
-
-	states := map[string][]map[string]any{}
-	seen := map[string]bool{}
-	it := db.NewIterator(nil, nil)
-	defer it.Release()
-	for it.Next() {
-		k := it.Key()
-		// Sub-chunk keys: eight bytes of position, the tag, and the index.
-		// Thirteen-byte keys carry a dimension between the two; those are the
-		// nether and the end, which have their own palettes and are included.
-		if !((len(k) == 10 && k[8] == 0x2F) || (len(k) == 14 && k[12] == 0x2F)) {
-			continue
-		}
-		entries, err := subChunkPalette(it.Value())
-		if err != nil {
-			// A sub-chunk this cannot walk is skipped rather than fatal: the
-			// point is to report what is there, and one odd sub-chunk should
-			// not cost the answer for the whole world.
-			continue
-		}
-		for _, e := range entries {
-			key := e.Name + "\x00" + fmt.Sprint(e.State)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			states[e.Name] = append(states[e.Name], e.State)
-		}
-	}
-	if err := it.Error(); err != nil {
 		return nil, err
 	}
-	if len(states) == 0 {
-		return nil, errors.New("no block palettes found; is this a Bedrock world?")
+	out := map[string][]map[string]any{}
+	for _, s := range states {
+		out[s.Name] = append(out[s.Name], s.Properties)
 	}
-	return states, nil
+	return out, nil
 }
 
 // schemaOf renders the property values an identifier's states take, which is
@@ -180,64 +142,6 @@ func schemaOf(states []map[string]any) string {
 		parts = append(parts, fmt.Sprintf("%s=%s", k, strings.Join(v, ",")))
 	}
 	return strings.Join(parts, "  ")
-}
-
-// blockEntry is one palette entry as stored on disk.
-type blockEntry struct {
-	Name    string         `nbt:"name"`
-	State   map[string]any `nbt:"states"`
-	Version int32          `nbt:"version"`
-}
-
-// subChunkPalette returns every palette entry of a stored sub-chunk without
-// decoding its indices. The layout is version 8 or 9: a version byte, a storage
-// count, an index byte for version 9, then per storage a header, the packed
-// indices, a palette count, and that many NBT compounds.
-func subChunkPalette(v []byte) ([]blockEntry, error) {
-	if len(v) < 2 {
-		return nil, fmt.Errorf("sub-chunk of %d bytes", len(v))
-	}
-	ver, storages := v[0], int(v[1])
-	b := v[2:]
-	if ver == 9 {
-		if len(b) < 1 {
-			return nil, errors.New("version 9 sub-chunk with no index byte")
-		}
-		b = b[1:]
-	}
-	var out []blockEntry
-	for s := range storages {
-		if len(b) < 1 {
-			return nil, fmt.Errorf("storage %d: truncated header", s)
-		}
-		bits := int(b[0] >> 1)
-		b = b[1:]
-		if bits == 0 || bits > 32 {
-			return nil, fmt.Errorf("storage %d: %d bits per entry", s, bits)
-		}
-		per := 32 / bits
-		words := (4096 + per - 1) / per
-		if len(b) < words*4+4 {
-			return nil, fmt.Errorf("storage %d: truncated indices", s)
-		}
-		b = b[words*4:]
-		count := int32(binary.LittleEndian.Uint32(b[:4]))
-		b = b[4:]
-		if count < 0 {
-			return nil, fmt.Errorf("storage %d: palette count %d", s, count)
-		}
-		r := bytes.NewReader(b)
-		dec := nbt.NewDecoderWithEncoding(r, nbt.LittleEndian)
-		for i := range count {
-			var e blockEntry
-			if err := dec.Decode(&e); err != nil {
-				return nil, fmt.Errorf("storage %d entry %d: %w", s, i, err)
-			}
-			out = append(out, e)
-		}
-		b = b[len(b)-r.Len():]
-	}
-	return out, nil
 }
 
 // pilePalettes reads the block palette of a pile world or file. Like the mcdb

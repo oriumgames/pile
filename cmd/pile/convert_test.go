@@ -61,7 +61,7 @@ func TestConvertBothWays(t *testing.T) {
 
 	// mcdb -> pile.
 	pileDir := t.TempDir()
-	if err := convertMcdbToPile(srcDir, pileDir); err != nil {
+	if err := convertMcdbToPile(srcDir, pileDir, false); err != nil {
 		t.Fatal(err)
 	}
 	p, err := pile.Open(pileDir, pile.ReadOnly())
