@@ -180,11 +180,26 @@ and the bounding box was honest:
 world too large to render (4240x20752 blocks)
 ```
 
-Find them by their gaps and render one at a time:
+The refusal lists them, so you do not have to find them yourself:
+
+```
+world too large to render (4240x20752 blocks)
+its content sits in 5 separate places; render one with --bounds:
+  --bounds 256,-640,655,-209              563 chunks  (400x432 px)
+  --bounds 3872,2864,4127,3119            211 chunks  (256x256 px)
+  --bounds -64,6896,127,7103               83 chunks  (192x208 px)
+  --bounds -112,19888,111,20111            66 chunks  (224x224 px)
+  --bounds 0,19088,15,19103                 1 chunk   (16x16 px)
+```
+
+Copy one back in:
 
 ```sh
-pile render --bounds 200,-700,700,-200 -o map.png world
+pile render --bounds 256,-640,655,-209 -o map.png world
 ```
+
+The counts are columns that will draw something, so they can be lower than the
+chunks stored in the box.
 
 `pile prune --bounds` takes the same box if you want to keep only one for good.
 

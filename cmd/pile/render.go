@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/df-mc/dragonfly/server/world"
@@ -117,9 +119,7 @@ func cmdRender(args []string) error {
 	}
 	spanX, spanZ := (maxCX-minCX+1)*16, (maxCZ-minCZ+1)*16
 	if spanX > 8192 || spanZ > 8192 {
-		return fmt.Errorf("world too large to render (%dx%d blocks); "+
-			"its content sits in separate places, so pick one with "+
-			"--bounds x1,z1,x2,z2", spanX, spanZ)
+		return tooLargeError(spanX, spanZ, drawn)
 	}
 	w, h := int(spanX), int(spanZ)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -302,4 +302,99 @@ func columnDraws(ch *chunk.Chunk, air uint32) bool {
 		}
 	}
 	return false
+}
+
+// contentBox is one group of columns that sit together, in block coordinates.
+type contentBox struct {
+	x1, z1, x2, z2 int
+	columns        int
+}
+
+// bounds renders the box as the --bounds argument that selects it.
+func (b contentBox) bounds() string {
+	return fmt.Sprintf("%d,%d,%d,%d", b.x1, b.z1, b.x2, b.z2)
+}
+
+// tooLargeError refuses an oversized world, and lists the places its content
+// actually is.
+//
+// Telling somebody to pass --bounds without telling them what to pass is only
+// half an answer: the coordinates are in the file, and finding them otherwise
+// means writing a program. A CubeCraft export that arrived here held five
+// builds spread over 20 752 blocks, and the boxes below are what it took to get
+// a picture of any of them.
+func tooLargeError(spanX, spanZ int64, drawn []format.Column) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "world too large to render (%dx%d blocks)\n", spanX, spanZ)
+	boxes := contentClusters(drawn)
+	if len(boxes) < 2 {
+		fmt.Fprintf(&b, "its content really is that spread out; "+
+			"render part of it with --bounds x1,z1,x2,z2")
+		return errors.New(b.String())
+	}
+	fmt.Fprintf(&b, "its content sits in %d separate places; render one with --bounds:\n", len(boxes))
+	shown := min(len(boxes), 12)
+	for _, c := range boxes[:shown] {
+		noun := "chunks"
+		if c.columns == 1 {
+			noun = "chunk "
+		}
+		fmt.Fprintf(&b, "  --bounds %-28s %5d %s  (%dx%d px)\n",
+			c.bounds(), c.columns, noun, c.x2-c.x1+1, c.z2-c.z1+1)
+	}
+	if shown < len(boxes) {
+		fmt.Fprintf(&b, "  ... and %d more\n", len(boxes)-shown)
+	}
+	return errors.New(strings.TrimRight(b.String(), "\n"))
+}
+
+// contentClusters groups columns that sit near each other, largest first.
+//
+// Split on gaps in Z, then on gaps in X within each: two passes of sorting
+// rather than a flood fill, which is cheap and cannot loop, and which for a
+// world of separated builds gives the boxes somebody would draw by eye. It is
+// a hint for the --bounds flag and not a partition anybody depends on, so
+// grouping two diagonally separated builds together costs a wider box and
+// nothing else.
+func contentClusters(cols []format.Column) []contentBox {
+	const gap = 32 // chunks; half a kilometre of nothing separates two builds
+
+	byZ := slices.Clone(cols)
+	slices.SortFunc(byZ, func(a, b format.Column) int { return cmp.Compare(a.Z, b.Z) })
+
+	var out []contentBox
+	for _, band := range splitOnGap(byZ, gap, func(c format.Column) int32 { return c.Z }) {
+		byX := slices.Clone(band)
+		slices.SortFunc(byX, func(a, b format.Column) int { return cmp.Compare(a.X, b.X) })
+		for _, grp := range splitOnGap(byX, gap, func(c format.Column) int32 { return c.X }) {
+			box := contentBox{columns: len(grp),
+				x1: math.MaxInt, z1: math.MaxInt, x2: math.MinInt, z2: math.MinInt}
+			for _, c := range grp {
+				box.x1 = min(box.x1, int(c.X)*16)
+				box.x2 = max(box.x2, int(c.X)*16+15)
+				box.z1 = min(box.z1, int(c.Z)*16)
+				box.z2 = max(box.z2, int(c.Z)*16+15)
+			}
+			out = append(out, box)
+		}
+	}
+	slices.SortFunc(out, func(a, b contentBox) int { return cmp.Compare(b.columns, a.columns) })
+	return out
+}
+
+// splitOnGap cuts a slice, already sorted by key, wherever consecutive keys are
+// more than gap apart.
+func splitOnGap(sorted []format.Column, gap int32, key func(format.Column) int32) [][]format.Column {
+	if len(sorted) == 0 {
+		return nil
+	}
+	var out [][]format.Column
+	start := 0
+	for i := 1; i <= len(sorted); i++ {
+		if i == len(sorted) || key(sorted[i])-key(sorted[i-1]) > gap {
+			out = append(out, sorted[start:i])
+			start = i
+		}
+	}
+	return out
 }

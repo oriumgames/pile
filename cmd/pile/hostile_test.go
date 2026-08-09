@@ -767,3 +767,48 @@ func TestPruneEmptyKeepsColumnsAtTheEdgeOfTheWorld(t *testing.T) {
 		t.Error("the air column survived")
 	}
 }
+
+// TestRenderRefusalListsTheBuildsItFound.
+//
+// "pick one with --bounds" is half an answer if nothing says which boxes exist:
+// the coordinates are in the file, and finding them otherwise means writing a
+// program, which is what it took the first time a five-build CubeCraft export
+// turned up here.
+func TestRenderRefusalListsTheBuildsItFound(t *testing.T) {
+	dir := t.TempDir()
+	cols := []format.Column{
+		solidColumn(t, 0, 0), solidColumn(t, 1, 0), solidColumn(t, 0, 1),
+		solidColumn(t, 0, 1000), // a second build, far along Z
+		solidColumn(t, 900, 0),  // a third, far along X
+	}
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), cols)
+
+	err := cmdRender([]string{"-o", filepath.Join(dir, "m.png"), dir})
+	if err == nil {
+		t.Fatal("a world spanning 16 000 blocks was rendered")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "3 separate places") {
+		t.Errorf("the refusal did not count the builds:\n%s", msg)
+	}
+	// The largest is listed first, and every line must be a box that works.
+	for _, want := range []string{"--bounds 0,0,31,31", "--bounds 0,16000,15,16015", "--bounds 14400,0,14415,15"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal is missing %q:\n%s", want, msg)
+		}
+	}
+	// Feeding a listed box back in has to render, which is the whole promise.
+	out := filepath.Join(dir, "one.png")
+	if err := cmdRender([]string{"--bounds", "0,0,31,31", "-o", out, dir}); err != nil {
+		t.Fatalf("a box the refusal suggested did not render: %v", err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, _ := png.DecodeConfig(f)
+	if cfg.Width != 32 || cfg.Height != 32 {
+		t.Errorf("the suggested box rendered %dx%d, want 32x32", cfg.Width, cfg.Height)
+	}
+}
