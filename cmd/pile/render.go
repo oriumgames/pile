@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"strings"
 
@@ -22,6 +23,7 @@ func cmdRender(args []string) error {
 	out := fs.String("o", "map.png", "output PNG file")
 	dimFlag := fs.String("dim", "overworld", "dimension to render")
 	bgFlag := fs.String("bg", "", "background color as #rrggbb (default: transparent)")
+	boundsFlag := fs.String("bounds", "", "render only the block box x1,z1,x2,z2")
 	limit := addDecodeLimit(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -69,14 +71,40 @@ func cmdRender(args []string) error {
 	// away, which measured 88 192 pixels wide and was refused outright. Had the
 	// ceiling been higher it would have written a 412 MB image that was blank
 	// apart from one corner.
+	// The whole world when no box is given. In block coordinates, not
+	// chunk ones: a column at chunk X math.MinInt32 starts at block
+	// -34 359 738 368, so an int32-shaped default would place it outside
+	// the box that is supposed to mean everything -- silently dropping it
+	// here, and in prune silently deleting it.
+	x1, z1, x2, z2 := math.MinInt, math.MinInt, math.MaxInt, math.MaxInt
+	if *boundsFlag != "" {
+		if _, err := fmt.Sscanf(*boundsFlag, "%d,%d,%d,%d", &x1, &z1, &x2, &z2); err != nil {
+			return fmt.Errorf("invalid bounds %q: %w", *boundsFlag, err)
+		}
+		if x2 < x1 {
+			x1, x2 = x2, x1
+		}
+		if z2 < z1 {
+			z1, z2 = z2, z1
+		}
+	}
 	air := reg.AirRuntimeID()
 	drawn := make([]format.Column, 0, len(df.Columns))
 	for _, c := range df.Columns {
+		bx0, bx1 := int(c.X)*16, int(c.X)*16+15
+		bz0, bz1 := int(c.Z)*16, int(c.Z)*16+15
+		if bx1 < x1 || bx0 > x2 || bz1 < z1 || bz0 > z2 {
+			continue
+		}
 		if columnDraws(c.Col.Chunk, air) {
 			drawn = append(drawn, c)
 		}
 	}
 	if len(drawn) == 0 {
+		if *boundsFlag != "" {
+			return fmt.Errorf("nothing to render in %s within (%d,%d)..(%d,%d)",
+				*dimFlag, x1, z1, x2, z2)
+		}
 		return fmt.Errorf("nothing to render in %s: all %d columns are air",
 			*dimFlag, len(df.Columns))
 	}
@@ -89,7 +117,9 @@ func cmdRender(args []string) error {
 	}
 	spanX, spanZ := (maxCX-minCX+1)*16, (maxCZ-minCZ+1)*16
 	if spanX > 8192 || spanZ > 8192 {
-		return fmt.Errorf("world too large to render (%dx%d blocks)", spanX, spanZ)
+		return fmt.Errorf("world too large to render (%dx%d blocks); "+
+			"its content sits in separate places, so pick one with "+
+			"--bounds x1,z1,x2,z2", spanX, spanZ)
 	}
 	w, h := int(spanX), int(spanZ)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))

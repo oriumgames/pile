@@ -156,7 +156,12 @@ func cmdPrune(args []string) error {
 	if fs.NArg() != 1 || (*boundsFlag == "" && !*emptyFlag) {
 		return errors.New("usage: pile prune (--bounds x1,z1,x2,z2 | --empty) [--dry-run] [--no-backup] <world>")
 	}
-	x1, z1, x2, z2 := math.MinInt32, math.MinInt32, math.MaxInt32, math.MaxInt32
+	// The whole world when no box is given. In block coordinates, not
+	// chunk ones: a column at chunk X math.MinInt32 starts at block
+	// -34 359 738 368, so an int32-shaped default would place it outside
+	// the box that is supposed to mean everything -- silently dropping it
+	// here, and in prune silently deleting it.
+	x1, z1, x2, z2 := math.MinInt, math.MinInt, math.MaxInt, math.MaxInt
 	if *boundsFlag != "" {
 		if _, err := fmt.Sscanf(*boundsFlag, "%d,%d,%d,%d", &x1, &z1, &x2, &z2); err != nil {
 			return fmt.Errorf("invalid bounds %q: %w", *boundsFlag, err)

@@ -684,3 +684,86 @@ func TestPruneRequiresAFilter(t *testing.T) {
 		t.Fatal("prune with neither --bounds nor --empty was accepted")
 	}
 }
+
+// TestRenderBoundsPicksOneOfSeveralBuilds.
+//
+// A converted world is not always one map. A CubeCraft BedWars export turned
+// out to hold five separate builds spread over 20 752 blocks of Z -- two of
+// them quad maps, one a garden, none of them air -- so the bounding box was
+// genuine and --empty had nothing to drop. Without a way to say which one you
+// meant, the only answer the command could give was that the world was too
+// large.
+func TestRenderBoundsPicksOneOfSeveralBuilds(t *testing.T) {
+	dir := t.TempDir()
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), []format.Column{
+		solidColumn(t, 0, 0),
+		solidColumn(t, 1, 0),
+		solidColumn(t, 0, 1000), // a second build, 16 000 blocks away
+	})
+
+	// Whole world: refused, and the message has to name the way out.
+	err := cmdRender([]string{"-o", filepath.Join(dir, "all.png"), dir})
+	if err == nil {
+		t.Fatal("a world spanning 16 000 blocks was rendered")
+	}
+	if !strings.Contains(err.Error(), "--bounds") {
+		t.Fatalf("the refusal does not mention --bounds: %v", err)
+	}
+
+	out := filepath.Join(dir, "one.png")
+	if err := cmdRender([]string{"--bounds", "-16,-16,64,64", "-o", out, dir}); err != nil {
+		t.Fatalf("--bounds did not isolate the near build: %v", err)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cfg, err := png.DecodeConfig(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 32 || cfg.Height != 16 {
+		t.Errorf("image is %dx%d, want 32x16", cfg.Width, cfg.Height)
+	}
+
+	// A box with nothing in it says so rather than writing an empty image.
+	err = cmdRender([]string{"--bounds", "5000,5000,5100,5100", "-o", filepath.Join(dir, "n.png"), dir})
+	if err == nil || !strings.Contains(err.Error(), "nothing to render") {
+		t.Fatalf("an empty box gave %v", err)
+	}
+}
+
+// TestPruneEmptyKeepsColumnsAtTheEdgeOfTheWorld.
+//
+// prune shares its box filter with render, and the box that means "everywhere"
+// was written with int32 bounds while the columns are compared in block
+// coordinates. A column at chunk X math.MinInt32 begins at block
+// -34 359 738 368, which is below math.MinInt32, so the filter placed it
+// outside the everywhere-box: prune --empty, given no --bounds at all, would
+// have deleted it for being out of range.
+func TestPruneEmptyKeepsColumnsAtTheEdgeOfTheWorld(t *testing.T) {
+	dir := t.TempDir()
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), []format.Column{
+		solidColumn(t, math.MinInt32, 0),
+		solidColumn(t, math.MaxInt32, 0),
+		emptyColumn(t, 0, 0),
+	})
+	if err := cmdPrune([]string{"--empty", "--no-backup", dir}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := pile.LoadWorldFiles(dir, hostileReg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int32]bool{}
+	for _, c := range wf.Dim(world.Overworld).Columns {
+		got[c.X] = true
+	}
+	if !got[math.MinInt32] || !got[math.MaxInt32] {
+		t.Errorf("a column at the edge of the world was pruned; kept %v", got)
+	}
+	if got[0] {
+		t.Error("the air column survived")
+	}
+}

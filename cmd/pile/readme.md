@@ -60,7 +60,7 @@ corruption, not tampering.
 | `pile verify <dir\|file>` | Full decode with checksum verification; per-record verification for indexed files. On a world directory it also compares the metadata each dimension file carries and warns when they disagree. |
 | `pile stats <dir\|file>` | Chunk/section/entity counts, bytes per chunk. |
 | `pile check [--allow ns,ns] <dir\|file>` | List block states that do not resolve against the current registry (they would load as placeholder blocks). Exits 1 if any. Run before deploying maps after a dragonfly upgrade. `--allow customnamespace` treats a namespace as expected — a world whose blocks come from a behaviour pack has states this binary can never resolve, and without it the command is useless for exactly the worlds most worth checking. |
-| `pile render [-o map.png] [--dim d] [--bg #rrggbb] <world>` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. |
+| `pile render [-o map.png] [--dim d] [--bg #rrggbb] [--bounds x1,z1,x2,z2] <world>` | Top-down PNG preview, height-shaded, dye-colored wool/concrete/terracotta. Background is transparent unless `--bg`. `--bounds` renders one block box, which is how you get a picture out of a world holding several builds — see below. |
 | `pile blocks [--custom] [--quiet] <mcdb-world\|dir\|file>` | List the block identifiers a world uses and the property values each takes. Needs **no registry**, because it reads the palettes without decoding a chunk — so it works on the worlds `pile convert` cannot open. Takes an mcdb world or a pile one. `--custom` lists only what is outside `minecraft:`; `--quiet` prints bare identifiers. |
 | `pile hash [--quiet] <dir\|file> [<dir\|file>...]` | Content identity per dimension. Identical content gives an identical hash whatever the compression or file mode, so this is what "a file hash is a map version" means in practice. With two or more arguments and `--quiet`, exits 1 if they differ — the deploy check. |
 | `pile version` | pile, wire format and dragonfly versions. The first three lines of any bug report. |
@@ -168,6 +168,25 @@ pile replace --from cubecraft:portal_side --to minecraft:obsidian world
 An identifier on its own takes every state of that block; written as
 `name[k=v,k=v]` it takes only the state matching. Matching is by what the file
 says, not by what the registry knows, so it works on states nothing implements.
+
+### When a world holds more than one build
+
+An exported world is not always one map. A CubeCraft BedWars export here held
+**five separate builds** — two quad maps, a garden, an arena — spread over
+20 752 blocks of Z, all of them real blocks, so `--empty` had nothing to drop
+and the bounding box was honest:
+
+```
+world too large to render (4240x20752 blocks)
+```
+
+Find them by their gaps and render one at a time:
+
+```sh
+pile render --bounds 200,-700,700,-200 -o map.png world
+```
+
+`pile prune --bounds` takes the same box if you want to keep only one for good.
 
 ### Why a converted world is mostly air
 

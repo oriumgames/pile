@@ -126,8 +126,9 @@ commands:
                         build a binary update from old to new
   apply   <world> <file.pilepatch>
                         apply a patch to a world
-  render  [-o map.png] [--dim d] [--bg #rrggbb] <world>
-                        top-down PNG preview (transparent background unless --bg)
+  render  [-o map.png] [--dim d] [--bg #rrggbb] [--bounds x1,z1,x2,z2] <world>
+                        top-down PNG preview (transparent background unless --bg);
+                        --bounds picks one build out of a world holding several
   upgrade <dir|file>    re-encode at the current Minecraft block version
   check   <dir|file>    list block states that do not resolve against the
                         current registry (exit 1 if any)
