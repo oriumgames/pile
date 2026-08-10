@@ -347,3 +347,18 @@ func TestEditPreservesNonJSONUserData(t *testing.T) {
 		t.Fatalf("the user data blob came back as %x, want %x", got, blob)
 	}
 }
+
+// TestEditRefusesAPathWithNoWorld: pile.Open does not fail on a directory
+// holding no world, because it is also how a world is created. Editing a
+// mistyped path therefore printed a default world, and --apply would have
+// written one there.
+func TestEditRefusesAPathWithNoWorld(t *testing.T) {
+	empty := t.TempDir()
+	err := cmdEdit([]string{"--print", filepath.Join(empty, "nothing-here")})
+	if err == nil {
+		t.Fatal("a path holding no world was accepted")
+	}
+	if !strings.Contains(err.Error(), "no pile world") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}

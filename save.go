@@ -152,6 +152,7 @@ func (p *Provider) saveHeld() error {
 	}
 
 	var jobs []saveJob
+	metaDirty := p.metaDirty
 	for _, ds := range p.dims {
 		if len(ds.cols) == 0 && !ds.onDisk {
 			continue
@@ -169,6 +170,20 @@ func (p *Provider) saveHeld() error {
 			data: &format.WorldData{
 				Settings: settings, UserData: userData, Columns: cols,
 			},
+		})
+		ds.dirty = false
+	}
+	// A world with metadata but no columns must still be representable. Without
+	// this, SetUserData or SaveSettings on a world that has no chunks yet
+	// reported success and wrote nothing at all: the directory was never
+	// created, Close returned nil, and the metadata was gone. SaveAs has always
+	// handled this case; the save behind Close did not.
+	if metaDirty && len(jobs) == 0 {
+		ds := p.dim(world.Overworld)
+		jobs = append(jobs, saveJob{
+			ds:   ds,
+			path: p.dimPath(world.Overworld),
+			data: &format.WorldData{Settings: settings, UserData: userData},
 		})
 		ds.dirty = false
 	}

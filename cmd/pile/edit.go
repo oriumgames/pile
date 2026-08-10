@@ -54,6 +54,12 @@ func cmdEdit(args []string) error {
 		return errors.New("usage: pile edit [--print] [--apply file.json] [--no-backup] [--max-decoded n] <world>")
 	}
 	dir := fs.Arg(0)
+	// pile.Open on a directory holding no world does not fail -- it is also how
+	// a world is created -- so without this, editing a mistyped path printed a
+	// default world and, with --apply, wrote one there.
+	if !pile.IsPile(dir) {
+		return fmt.Errorf("%s holds no pile world (no .pile files)", dir)
+	}
 
 	p, err := pile.Open(dir, append(limit.providerOpts(), pile.ReadOnly())...)
 	if err != nil {

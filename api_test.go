@@ -3,6 +3,7 @@ package pile
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -234,5 +235,68 @@ func TestProviderMaxDecodedBytes(t *testing.T) {
 				t.Fatalf("a policy refusal claimed the world is corrupt: %v", err)
 			}
 		})
+	}
+}
+
+// TestMetadataSurvivesAWorldWithNoColumns.
+//
+// SetUserData and SaveSettings on a world that has no chunks yet reported
+// success and wrote nothing at all: the save iterates dimensions, a fresh
+// provider has none, so no file was written, the directory was never created
+// and Close returned nil. SaveAs had always handled this case; the save behind
+// Close had not, so the two disagreed about whether a world can be metadata
+// only.
+func TestMetadataSurvivesAWorldWithNoColumns(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "fresh")
+	p, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetUserData([]byte("arena-config"))
+	p.SaveSettings(&world.Settings{Name: "metadata only", TickRange: 7})
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := Open(dir, ReadOnly())
+	if err != nil {
+		t.Fatalf("a world of nothing but metadata does not reopen: %v", err)
+	}
+	defer q.Close()
+	if got := q.UserData(); !bytes.Equal(got, []byte("arena-config")) {
+		t.Errorf("user data came back as %q", got)
+	}
+	if got := q.Settings().Name; got != "metadata only" {
+		t.Errorf("settings name came back as %q", got)
+	}
+}
+
+// TestNBTUserDataRoundTrips: user data is an opaque blob, so NBT goes through
+// it byte for byte. Worth pinning because the CLI decides how to show a blob by
+// probing it, and a probe that reformatted one would be lossy.
+func TestNBTUserDataRoundTrips(t *testing.T) {
+	reg := testRegistry(t)
+	blob, err := format.MarshalNBT(map[string]any{
+		"arena": "birthday", "maxTeam": int32(4), "seed": int64(99), "flags": uint8(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	p, err := Open(dir, Registry(reg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetUserData(blob)
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q, err := Open(dir, Registry(reg), ReadOnly())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if got := q.UserData(); !bytes.Equal(got, blob) {
+		t.Fatalf("NBT user data changed across a save: %d bytes in, %d out", len(blob), len(got))
 	}
 }
