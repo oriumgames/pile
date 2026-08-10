@@ -270,8 +270,9 @@ var invariants = []Invariant{
 	{
 		Name: "trailing air layers go, internal ones stay", Category: Omission, Enforce: Decoded,
 		Rules: []string{"a9ee3ac1", "673fb00d", "12bc11b2", "90e4364e"},
-		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives", "TestRejectsNonCanonicalSections", "TestDecodersAgreeOnValidity"},
-		Note:  "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block.",
+		Tests: []string{"TestInternalAirLayerSurvives", "TestTrailingAirLayersDropped", "TestStructureInternalAirLayerSurvives", "TestRejectsNonCanonicalSections", "TestDecodersAgreeOnValidity", "TestAirOnlyLayerSeesEveryEntry"},
+		Note: "Layer numbers are semantic: dropping an internal one turns waterlogging into a liquid block. " +
+			"The writer half is where this went wrong in practice: the trim asked whether the layer's palette was one entry long and that entry was air, which is not the same question as whether the layer is air. Bedrock writes a storage listing air in two slots when an edit removes the last non-air block without rebuilding the palette, dragonfly's SubChunk.Empty does not recognise that form either, and such a layer survived the trim, folded to one air entry during global resolution, and went out uniformly air -- a file this package's own reader refuses. Every fixture here had single-entry palettes, so nothing caught it until a converted skyblock lobby produced one such chunk in 1 806 and made the whole world unopenable.",
 	},
 	{
 		Name: "light entries describe something", Category: Presence, Enforce: Decoded,

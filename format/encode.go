@@ -1118,8 +1118,28 @@ func sidecarLayerCounts(unknownBySec map[secLayer][]UnknownBlock) map[int32]int 
 
 // airOnlyLayer reports whether a layer holds nothing but air, carrying no
 // preserved state that would make it worth storing.
+//
+// Every entry is tested, not just the first of a single-entry palette. A
+// storage may hold air in more than one slot -- Bedrock writes one when an edit
+// removes the last non-air block without rebuilding the palette -- and a
+// one-slot test called that layer content. It then survived the trim below,
+// global resolution folded both slots onto the one air entry, and the blob went
+// out uniformly air: a file this package's own reader rejects with "section 0
+// ends in an all-air layer". A converted skyblock lobby produced exactly one
+// such chunk out of 1 806.
 func airOnlyLayer(rs rawBlockSec, air uint32) bool {
-	return len(rs.rids) == 1 && rs.rids[0] == air && (rs.states == nil || rs.states[0] < 0)
+	for i, rid := range rs.rids {
+		if rid != air {
+			return false
+		}
+		// A preserved unresolved state stands in the palette as its
+		// placeholder, which may itself be air; it is content regardless, and
+		// dropping the layer would discard the state it was preserving.
+		if rs.states != nil && rs.states[i] >= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveColumn maps a raw column's local palettes into the global palette
