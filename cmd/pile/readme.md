@@ -134,12 +134,25 @@ file and tells you the path, so the cost of a typo is fixing the typo.
 ### Converting a world that uses a behaviour pack
 
 dragonfly's chunk decoder resolves every palette entry against the block
-registry and fails outright on one it does not know, so a single block from a
-pack stops the conversion at whichever chunk happens to hold it:
+registry and fails outright on one it does not know, so a single block stops the
+conversion at whichever chunk happens to hold it:
 
 ```
 cannot get runtime ID of block state cubecraft:portal_side{...}
 ```
+
+There are two reasons that happens and the refusal tells them apart, because the
+right answer differs:
+
+- **A behaviour pack's block** — a `namespace:` other than `minecraft:`. This
+  build could never have known it, and `--permissive` is the whole answer.
+- **A vanilla `minecraft:` block** — the world and the block list are different
+  ages. Minecraft split blocks like `minecraft:carpet` into
+  `minecraft:blue_carpet`, so a world written before that no longer resolves. A
+  lobby here had 200 such states across 34 identifiers. `--permissive` still
+  converts, but a *vanilla* block kept as a placeholder will not render or
+  behave. Upgrading the world — open it once in a current Minecraft, or run it
+  through chunker — is the fix worth doing.
 
 `--permissive` scans the source's own palettes first and registers every state
 the build does not know, as dragonfly's bare placeholder. The conversion then

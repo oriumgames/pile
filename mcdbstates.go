@@ -62,7 +62,7 @@ func MCDBBlockStates(dir string) ([]format.BlockState, error) {
 				continue
 			}
 			seen[key] = true
-			out = append(out, format.BlockState{Name: e.Name, Properties: e.State})
+			out = append(out, format.BlockState{Name: e.Name, Properties: e.State, Version: e.Version})
 		}
 	}
 	if err := it.Error(); err != nil {

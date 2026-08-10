@@ -110,3 +110,52 @@ func TestConvertBothWays(t *testing.T) {
 		t.Fatalf("mcdb round trip lost entities: %d", len(bcol.Entities))
 	}
 }
+
+// TestUnresolvedConvertErrorTellsThemApart.
+//
+// A conversion stops on a state the registry cannot resolve for two quite
+// different reasons, and the message used to assert the wrong one: it blamed a
+// behaviour pack even when every unresolved identifier was minecraft:. A lobby
+// that arrived here had 200 unresolved states, all vanilla, because the world
+// predates the Minecraft that split minecraft:carpet into minecraft:blue_carpet
+// -- for which --permissive converts but leaves vanilla blocks placeholdered,
+// and upgrading the world is the real fix.
+func TestUnresolvedConvertErrorTellsThemApart(t *testing.T) {
+	// A real leveldb world is out of reach here, so the classifier is driven
+	// through the pieces the message is built from.
+	vanilla := map[string]int{"minecraft:carpet": 10, "minecraft:wool": 11, "minecraft:log": 5}
+	custom := map[string]int{"cubecraft:portal_side": 3}
+
+	if got := countStates(vanilla); got != 26 {
+		t.Errorf("countStates = %d, want 26", got)
+	}
+	// Most states first, ties by name, so the list is stable and the biggest
+	// offender is the one somebody sees.
+	if got := topNames(vanilla, 2); got[0] != "minecraft:wool" || got[1] != "minecraft:carpet" {
+		t.Errorf("topNames = %v, want wool then carpet", got)
+	}
+	if got := topNames(custom, 6); len(got) != 1 {
+		t.Errorf("topNames over one identifier returned %v", got)
+	}
+	if got := topNames(nil, 6); len(got) != 0 {
+		t.Errorf("topNames over nothing returned %v", got)
+	}
+}
+
+// TestBlockVersionString: the version is four packed bytes, and it is quoted at
+// somebody trying to work out which Minecraft their world came from.
+func TestBlockVersionString(t *testing.T) {
+	for _, c := range []struct {
+		v    int32
+		want string
+	}{
+		{18105860, "1.20.70.4"},
+		{18040335, "1.19.70.15"},
+		{18022400, "1.19.0.0"},
+		{0, "an unrecorded version"},
+	} {
+		if got := blockVersionString(c.v); got != c.want {
+			t.Errorf("blockVersionString(%d) = %q, want %q", c.v, got, c.want)
+		}
+	}
+}
