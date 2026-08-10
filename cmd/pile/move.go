@@ -67,7 +67,19 @@ func cmdMove(args []string) error {
 		if !ok {
 			return errors.New("world has no blocks to center")
 		}
-		offset = cube.Pos{-(min.X() + max.X()) / 2, 0, -(min.Z() + max.Z()) / 2}
+		exact := cube.Pos{-(min.X() + max.X()) / 2, 0, -(min.Z() + max.Z()) / 2}
+		// Snapped to the chunk grid. Centring to the block put a map at an
+		// offset like (0,0,-19999), which forces the block-level rewrite: every
+		// chunk is cut across a boundary, so a 66-column arena came out as 80
+		// and any build laid out on chunk boundaries stopped being. Rounding
+		// costs at most eight blocks of centring, which nobody centring a map
+		// can see, and buys the re-key fast path and the column count intact.
+		// Anybody who wants the exact offset can pass it with --by.
+		offset = cube.Pos{snapToChunk(exact.X()), 0, snapToChunk(exact.Z())}
+		if offset != exact {
+			fmt.Printf("centring at (%d,%d,%d), rounded to the chunk grid from (%d,%d,%d)\n",
+				offset.X(), offset.Y(), offset.Z(), exact.X(), exact.Y(), exact.Z())
+		}
 	}
 	if offset == (cube.Pos{}) {
 		fmt.Println("offset is 0,0,0; nothing to do")
@@ -190,4 +202,15 @@ func cmdOrigin(args []string) error {
 	}
 	fmt.Printf("origin: %v -> %v\n", old, data.Origin)
 	return nil
+}
+
+// snapToChunk rounds a block offset to the nearest multiple of 16, so a move
+// keeps the chunk grid where it was and takes the re-key fast path. Ties round
+// away from zero, which only decides which of two equally centred results is
+// chosen.
+func snapToChunk(v int) int {
+	if v < 0 {
+		return -((-v + 8) / 16 * 16)
+	}
+	return (v + 8) / 16 * 16
 }

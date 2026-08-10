@@ -94,3 +94,56 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// TestSnapToChunk pins the rounding --center applies.
+func TestSnapToChunk(t *testing.T) {
+	for _, c := range []struct{ in, want int }{
+		{0, 0}, {7, 0}, {8, 16}, {15, 16}, {16, 16}, {23, 16}, {24, 32},
+		{-7, 0}, {-8, -16}, {-15, -16}, {-16, -16}, {-19999, -20000},
+		{-16023, -16016},
+	} {
+		if got := snapToChunk(c.in); got != c.want {
+			t.Errorf("snapToChunk(%d) = %d, want %d", c.in, got, c.want)
+		}
+		if got := snapToChunk(c.in); got%16 != 0 {
+			t.Errorf("snapToChunk(%d) = %d, which is not on the chunk grid", c.in, got)
+		}
+	}
+}
+
+// TestMoveCenterKeepsTheChunkGrid.
+//
+// --center used to centre to the block, which for a map far from the origin
+// means an offset like (0,0,-19999): not a multiple of 16, so every chunk is
+// cut across a boundary and rewritten. A 66-column arena came back as 80, and a
+// build laid out on chunk boundaries stopped being on them.
+//
+// Rounding to the grid costs at most eight blocks of centring and keeps both
+// the fast path and the column count. --by is still there for an exact offset.
+func TestMoveCenterKeepsTheChunkGrid(t *testing.T) {
+	reg := hostileReg(t)
+	dir := t.TempDir()
+	var cols []format.Column
+	for x := int32(1000); x <= 1002; x++ {
+		cols = append(cols, solidColumn(t, x, 0))
+	}
+	writeWorldAt(t, filepath.Join(dir, "overworld.pile"), cols)
+
+	if err := cmdMove([]string{"--center", "--no-backup", dir}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := pile.LoadWorldFiles(dir, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := wf.Dim(world.Overworld).Columns
+	if len(got) != 3 {
+		t.Fatalf("the move turned 3 columns into %d: the offset was not chunk-aligned", len(got))
+	}
+	// Centred to within half a chunk of the origin, and still on the grid.
+	for _, c := range got {
+		if c.X < -2 || c.X > 2 {
+			t.Errorf("column landed at chunk X %d, which is not near the origin", c.X)
+		}
+	}
+}
