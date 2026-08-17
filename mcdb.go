@@ -1,13 +1,17 @@
 package pile
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/world"
+	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/df-mc/dragonfly/server/world/mcdb"
 	"github.com/df-mc/goleveldb/leveldb/opt"
+	"github.com/oriumgames/pile/format"
 )
 
 // mcdbDimensions is the set a conversion walks. dragonfly's provider interface
@@ -96,7 +100,9 @@ func ImportMCDB(src, dst string, opts ...Option) (int, error) {
 	it := db.NewColumnIterator(nil)
 	defer it.Release()
 	for it.Next() {
-		if err := p.StoreColumn(it.Position(), it.Dimension(), it.Column()); err != nil {
+		col := it.Column()
+		dedupeBlockEntities(col)
+		if err := p.StoreColumn(it.Position(), it.Dimension(), col); err != nil {
 			return abandon(fmt.Errorf("pile: store column %v: %w", it.Position(), err))
 		}
 		total++
@@ -162,4 +168,36 @@ func ExportMCDB(src, dst string, opts ...Option) (int, error) {
 		return total, err
 	}
 	return total, nil
+}
+
+// dedupeBlockEntities drops block entities that repeat an earlier one at the
+// same position exactly.
+//
+// The format requires one block entity per position, since two have no defined
+// record order, and real worlds carry repeats: one bedwars map stores the same
+// Jukebox four times at one block. An exact repeat states the same fact twice,
+// so keeping the first loses nothing. Entries that differ are left alone and
+// the writer refuses them, because choosing between two different facts at one
+// position would be guessing.
+func dedupeBlockEntities(col *chunk.Column) {
+	if len(col.BlockEntities) < 2 {
+		return
+	}
+	seen := make(map[cube.Pos][]byte, len(col.BlockEntities))
+	kept := col.BlockEntities[:0]
+	for _, be := range col.BlockEntities {
+		encoded, err := format.MarshalNBT(be.Data)
+		if err != nil {
+			kept = append(kept, be)
+			continue
+		}
+		if prev, ok := seen[be.Pos]; ok && bytes.Equal(prev, encoded) {
+			continue
+		}
+		if _, ok := seen[be.Pos]; !ok {
+			seen[be.Pos] = encoded
+		}
+		kept = append(kept, be)
+	}
+	col.BlockEntities = kept
 }
