@@ -7,6 +7,7 @@ import (
 
 	"github.com/df-mc/dragonfly/server/world"
 	"github.com/df-mc/dragonfly/server/world/mcdb"
+	"github.com/df-mc/goleveldb/leveldb/opt"
 )
 
 // mcdbDimensions is the set a conversion walks. dragonfly's provider interface
@@ -55,7 +56,12 @@ func ImportMCDB(src, dst string, opts ...Option) (int, error) {
 	for _, o := range opts {
 		o(&conf)
 	}
-	db, err := (mcdb.Config{Blocks: conf.registry}).Open(src)
+	// Read-only: goleveldb's default rewrites the manifest and journal on open,
+	// so converting a world modified it.
+	db, err := (mcdb.Config{
+		Blocks:     conf.registry,
+		LDBOptions: &opt.Options{ReadOnly: true},
+	}).Open(src)
 	if err != nil {
 		return 0, fmt.Errorf("pile: open mcdb %s: %w", src, err)
 	}
